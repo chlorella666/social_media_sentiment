@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>社交媒体情感分析报告 — {{ subject }}</title>
+  <style>
+    body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    header { background: linear-gradient(135deg, #1e3a8a, #2563eb); color: #fff; border-radius: 12px; padding: 28px; margin-bottom: 20px; }
+    header h1 { margin: 0 0 8px; font-size: 24px; }
+    header p { margin: 4px 0; opacity: .9; font-size: 14px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .card .label { font-size: 13px; color: #888; }
+    .card .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .section { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .section h2 { margin: 0 0 14px; font-size: 18px; border-left: 4px solid #2563eb; padding-left: 10px; }
+    .chart { margin-bottom: 18px; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; }
+    th { background: #f3f4f6; }
+    .warning { background: #fef3c7; border: 1px solid #f59e0b; color: #92400e; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+    .conclusion { line-height: 1.9; white-space: pre-line; }
+    .insight { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 10px 14px; line-height: 1.8; color: #374151; margin: 8px 0 16px; font-size: 14px; }
+    footer { color: #999; font-size: 12px; text-align: center; padding: 16px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>社交媒体情感分析报告</h1>
+      <p>分析对象：{{ subject }} ｜ 生成时间：{{ created_at }}</p>
+      <p>关键词数：{{ keyword_count }} ｜ 渠道数：{{ channel_count }} ｜ 帖子数：{{ total_posts }} ｜ 编码文本数：{{ total_items }}</p>
+    </header>
+
+    {% if warnings %}
+    <div class="warning">
+      {% for w in warnings %}<div>⚠ {{ w }}</div>{% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="cards">
+      <div class="card"><div class="label">整体倾向</div><div class="value">{{ overall_sentiment }}</div></div>
+      <div class="card"><div class="label">平均情感分</div><div class="value">{{ avg_score }}</div></div>
+      <div class="card"><div class="label">正面占比</div><div class="value">{{ pos_ratio }}%</div></div>
+      <div class="card"><div class="label">负面占比</div><div class="value">{{ neg_ratio }}%</div></div>
+      <div class="card"><div class="label">中性占比</div><div class="value">{{ neu_ratio }}%</div></div>
+    </div>
+
+    <div class="section">
+      <h2>数据可信度</h2>
+      <table>
+        <tr>
+          <th>时间范围</th><td>{{ trust.date_range }}</td>
+          <th>采集 / 保留 / 丢弃</th><td>{{ trust.collected }} / {{ total_posts }} / {{ trust.dropped }}（丢弃率 {{ trust.drop_rate }}%）</td>
+        </tr>
+        <tr>
+          <th>评论数</th><td>{{ trust.comments }}</td>
+          <th>编码文本数</th><td>{{ total_items }}</td>
+        </tr>
+        <tr>
+          <th>LLM 精分析占比</th><td>{{ trust.llm_ratio }}%（{{ trust.llm_count }} 条）</td>
+          <th>LLM 修正词典判定</th><td>{{ trust.llm_corrected }} 条</td>
+        </tr>
+        <tr>
+          <th>LLM 实际用量</th>
+          <td colspan="3">输入 {{ trust.prompt_tokens }} token / 输出 {{ trust.completion_tokens }} token，约 ¥{{ "%.4f"|format(trust.estimated_cost) }}（以 DeepSeek 官方计费为准）</td>
+        </tr>
+      </table>
+      <p style="color:#6b7280;font-size:12px">说明：样本量、丢弃率与 LLM 处理占比影响结论可信度；样本越少、丢弃率越高、词典直判占比越高，结论越应谨慎参考。</p>
+    </div>
+
+    <div class="section">
+      <h2>情感与分布</h2>
+      <div class="chart">{{ chart_overall }}</div>
+      <p class="insight">{{ chart_insights.get('overall', '') }}</p>
+      <div class="chart">{{ chart_platform }}</div>
+      <p class="insight">{{ chart_insights.get('platform', '') }}</p>
+    </div>
+
+    <div class="section">
+      <h2>时间趋势</h2>
+      <div class="chart">{{ chart_trend }}</div>
+      <p class="insight">{{ chart_insights.get('trend', '') }}</p>
+    </div>
+
+    <div class="section">
+      <h2>情绪强度</h2>
+      <div class="chart">{{ chart_intensity }}</div>
+      <p class="insight">{{ chart_insights.get('intensity', '') }}</p>
+    </div>
+
+    {% if chart_dimensions %}
+    <div class="section">
+      <h2>维度分析</h2>
+      <div class="chart">{{ chart_dimensions }}</div>
+      <p class="insight">{{ chart_insights.get('dimensions', '') }}</p>
+      <div class="chart">{{ chart_heatmap }}</div>
+      <p class="insight">{{ chart_insights.get('heatmap', '') }}</p>
+      {% if chart_radar %}
+      <div class="chart">{{ chart_radar }}</div>
+      <p class="insight">{{ chart_insights.get('radar', '') }}</p>
+      {% endif %}
+      {% if chart_date_dim %}
+      <div class="chart">{{ chart_date_dim }}</div>
+      <p class="insight">{{ chart_insights.get('date_dim', '') }}</p>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if chart_platform_dim %}
+    <div class="section">
+      <h2>平台 × 维度负面率</h2>
+      <div class="chart">{{ chart_platform_dim }}</div>
+      <p class="insight">{{ chart_insights.get('platform_dim', '') }}</p>
+    </div>
+    {% endif %}
+
+    <div class="section">
+      <h2>高频情感词 Top {{ top_words|length }}</h2>
+      <div class="chart">{{ chart_words }}</div>
+      <p class="insight">{{ chart_insights.get('words', '') }}</p>
+      {% if chart_wordcloud %}
+      <h3>内容关键词词云（jieba 分词）</h3>
+      <img src="{{ chart_wordcloud }}" alt="词云" style="width:100%; max-width:900px;">
+      <p class="insight">{{ chart_insights.get('wordcloud', '') }}</p>
+      {% endif %}
+    </div>
+
+    {% if chart_cooccurrence %}
+    <div class="section">
+      <h2>关键词共现网络</h2>
+      <div class="chart">{{ chart_cooccurrence }}</div>
+      <p class="insight">{{ chart_insights.get('cooccurrence', '') }}</p>
+    </div>
+    {% endif %}
+
+    {% if narrative_rows %}
+    <div class="section">
+      <h2>叙事框架与归因（LLM 高级分析）</h2>
+      <table>
+        <tr><th>文本</th><th>叙事框架</th><th>归因主体</th></tr>
+        {% for r in narrative_rows %}
+        <tr><td>{{ r.text }}</td><td>{{ r.narrative }}</td><td>{{ r.attribution }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endif %}
+
+    <div class="section">
+      <h2>概览</h2>
+      <div class="conclusion">{{ report_text }}</div>
+    </div>
+
+    <div class="section">
+      <h2>深度结论与建议（按叙事框架）</h2>
+      <div class="conclusion">{{ conclusion }}</div>
+    </div>
+
+    <div class="section">
+      <h2>方法与数据说明</h2>
+      <p>情感分析采用「词典预筛 + 大模型精分析」混合策略（本次：词典 {{ method_counts.lexicon }} 条，LLM {{ method_counts.llm }} 条）；综合评分 = 主帖 40% + 评论均值 60%。</p>
+      <p>样本量不足时图表与结论仅供参考。原始数据请下载 Excel 查看。</p>
+    </div>
+
+    <footer>由社交媒体情感分析器自动生成</footer>
+  </div>
+</body>
+</html>

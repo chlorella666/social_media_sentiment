@@ -1,0 +1,183 @@
+"""统一数据模型（Pydantic）。"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from enum import Enum
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# 领域维度体系
+# ---------------------------------------------------------------------------
+
+class SubDimension(BaseModel):
+    id: str
+    name: str
+    keywords: list[str] = Field(default_factory=list)
+
+
+class Dimension(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    source: str = ""  # 来源（学术/业界/预置）
+    keywords: list[str] = Field(default_factory=list)  # 维度识别关键词
+    sub_dimensions: list[SubDimension] = Field(default_factory=list)
+
+
+class DomainSchema(BaseModel):
+    """领域维度 schema（预置或缓存）。"""
+
+    domain_id: str
+    domain_name: str
+    dimensions: list[Dimension]
+
+
+# ---------------------------------------------------------------------------
+# 采集计划
+# ---------------------------------------------------------------------------
+
+class KeywordGroup(BaseModel):
+    """按维度分组的关键词。"""
+
+    dimension_id: str
+    dimension_name: str
+    keywords: list[str]
+
+
+class ChannelConfig(BaseModel):
+    channel_id: str
+    enabled: bool = True
+    params: dict[str, Any] = Field(default_factory=dict)  # 渠道特有参数（如 cookie）
+
+
+class AnalysisPlan(BaseModel):
+    """向导确认后生成的采集计划（可作为协议文件落盘）。"""
+
+    subject: str  # 品牌/产品名或核心主题
+    domain_id: Optional[str] = None
+    dimensions: list[str] = Field(default_factory=list)  # 选中的维度 id
+    keyword_groups: list[KeywordGroup] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)  # 平铺关键词（含手输）
+    channels: list[ChannelConfig] = Field(default_factory=list)
+    date_start: Optional[date] = None
+    date_end: Optional[date] = None
+    per_keyword_limit: int = 50
+    comments_enabled: bool = True
+    comments_per_post: int = 20
+    llm_enabled: bool = False
+    narrative_enabled: bool = False  # 叙事框架/归因分析（默认关）
+    relevance_check_enabled: bool = False  # LLM 相关性复核（可选，按量计费）
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+# ---------------------------------------------------------------------------
+# 采集数据（统一模型，参考 Chrome 扩展版 v4 规格）
+# ---------------------------------------------------------------------------
+
+class Comment(BaseModel):
+    author: str = ""
+    text: str
+    likes: int = 0
+    time: str = ""
+    is_reply: bool = False
+    reply_to: str = ""
+    depth: int = 0
+
+
+class Post(BaseModel):
+    id: str
+    platform: str
+    keyword: str = ""
+    author: str = ""
+    title: str = ""
+    content: str = ""
+    url: str = ""
+    timestamp: str = ""
+    likes: int = 0
+    reposts: int = 0
+    comments_count: int = 0
+    comments: list[Comment] = Field(default_factory=list)
+    platform_specific: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChannelResult(BaseModel):
+    """单渠道采集结果。"""
+
+    channel_id: str
+    ok: bool
+    posts: list[Post] = Field(default_factory=list)
+    dropped: list[dict] = Field(default_factory=list)  # 清洗丢弃记录（含原因）
+    error: str = ""
+    degraded: bool = False  # 自动降级标记
+
+
+# ---------------------------------------------------------------------------
+# 编码结果
+# ---------------------------------------------------------------------------
+
+class SentimentLabel(str, Enum):
+    positive = "positive"
+    negative = "negative"
+    neutral = "neutral"
+
+
+class NarrativeFrame(str, Enum):
+    """Semetko & Valkenburg (2000) 五框架（可选分析）。"""
+
+    conflict = "conflict"
+    human_interest = "human_interest"
+    attribution = "attribution"
+    economic = "economic"
+    morality = "morality"
+
+
+class CodedItem(BaseModel):
+    text_id: str
+    text: str
+    platform: str
+    keyword: str = ""  # 所属关键词（关键词效果统计用）
+    pub_date: str = ""
+    dimensions: list[str] = Field(default_factory=list)
+    sentiment: SentimentLabel = SentimentLabel.neutral
+    intensity: int = 0  # 1-5
+    sentiment_score: float = 0.0  # -1 ~ +1
+    confidence: float = 0.0
+    method: str = "lexicon"  # lexicon | llm
+    lexicon_sentiment: Optional[str] = None  # LLM 修正前的词典判定
+    keywords: list[str] = Field(default_factory=list)
+    narrative: Optional[NarrativeFrame] = None
+    attribution: Optional[str] = None  # 政府/企业/个人/制度/技术/社会/自然/不明确
+
+
+# ---------------------------------------------------------------------------
+# 任务与报告
+# ---------------------------------------------------------------------------
+
+class TaskStatus(str, Enum):
+    pending = "pending"
+    collecting = "collecting"
+    cleaning = "cleaning"
+    coding = "coding"
+    reporting = "reporting"
+    completed = "completed"
+    cancelled = "cancelled"
+    failed = "failed"
+
+
+class ReportBundle(BaseModel):
+    """一次分析的完整结果。"""
+
+    plan: AnalysisPlan
+    channel_results: list[ChannelResult] = Field(default_factory=list)
+    coded_items: list[CodedItem] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    report_text: str = ""  # 结论与建议（LLM 生成或模板兜底）
+    chart_insights: dict[str, str] = Field(default_factory=dict)  # 每张图表的解析文字
+    conclusion: str = ""  # 按叙事框架的深度结论与建议
+    llm_usage: dict = Field(default_factory=dict)  # {"prompt_tokens","completion_tokens","estimated_cost"}
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.now)

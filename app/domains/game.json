@@ -1,0 +1,71 @@
+{
+  "domain_id": "game",
+  "domain_name": "游戏",
+  "dimensions": [
+    {
+      "id": "character",
+      "name": "角色偏好",
+      "description": "角色设计、人设、CV、立绘",
+      "source": "游戏玩家社区高频讨论 + 乙女游戏用户研究",
+      "keywords": ["角色", "立绘", "人设", "声优", "CV", "老公", "老婆", "角色塑造"],
+      "sub_dimensions": [
+        {"id": "character_design", "name": "角色设计", "keywords": ["立绘", "建模", "外形", "设计"]},
+        {"id": "character_persona", "name": "人设剧情", "keywords": ["人设", "性格", "故事线"]}
+      ]
+    },
+    {
+      "id": "story",
+      "name": "剧情评价",
+      "description": "叙事、文案、世界观",
+      "source": "叙事型游戏评价标准",
+      "keywords": ["剧情", "文案", "世界观", "故事", "结局", "主线", "文本"],
+      "sub_dimensions": [
+        {"id": "story_plot", "name": "剧情", "keywords": ["剧情", "故事", "结局", "主线"]},
+        {"id": "story_world", "name": "世界观", "keywords": ["世界观", "设定", "背景"]}
+      ]
+    },
+    {
+      "id": "monetization",
+      "name": "氪金体验",
+      "description": "定价、抽卡、性价比、逼氪",
+      "source": "手游付费机制 + 消费者投诉热点",
+      "keywords": ["氪金", "抽卡", "保底", "充钱", "付费", "皮肤", "礼包", "概率", "性价比"],
+      "sub_dimensions": [
+        {"id": "monetization_price", "name": "定价水平", "keywords": ["定价", "价格", "贵", "便宜"]},
+        {"id": "monetization_gacha", "name": "抽卡概率", "keywords": ["抽卡", "保底", "概率", "出货"]}
+      ]
+    },
+    {
+      "id": "art",
+      "name": "美术反馈",
+      "description": "画面、UI、音乐",
+      "source": "游戏视觉评价",
+      "keywords": ["美术", "画面", "画风", "UI", "界面", "音乐", "BGM", "特效"],
+      "sub_dimensions": []
+    },
+    {
+      "id": "gameplay",
+      "name": "玩法体验",
+      "description": "战斗、养成、日常、平衡性",
+      "source": "游戏设计评价",
+      "keywords": ["玩法", "战斗", "养成", "操作", "平衡", "副本", "活动", "手感", "打击感"],
+      "sub_dimensions": []
+    },
+    {
+      "id": "operation",
+      "name": "运营与社区",
+      "description": "活动、客服、社区管理",
+      "source": "游戏运营 + 玩家社区管理",
+      "keywords": ["运营", "客服", "补偿", "活动", "公告", "社区", "发福利", "策划"],
+      "sub_dimensions": []
+    },
+    {
+      "id": "bug",
+      "name": "Bug/技术",
+      "description": "稳定性、优化、兼容性",
+      "source": "游戏稳定性评价",
+      "keywords": ["闪退", "卡顿", "Bug", "bug", "优化", "崩溃", "发热", "掉帧", "加载"],
+      "sub_dimensions": []
+    }
+  ]
+}

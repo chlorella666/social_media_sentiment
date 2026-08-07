@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.workbuddy/
+# 本地敏感信息（API Key / Cookie），一律不入库
+llm_apikey.txt
+*.key
+cookies/
+data/
+!data/.gitkeep
+*.log
+.streamlit/secrets.toml

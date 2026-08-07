@@ -1,0 +1,13 @@
+streamlit>=1.60
+pandas>=2.2
+openpyxl>=3.1
+pydantic>=2.7
+requests>=2.31
+python-docx>=1.1
+jinja2>=3.1
+plotly>=5.22
+jieba>=0.42
+wordcloud>=1.9
+networkx>=3.0
+kaleido>=1.0
+cnsenti>=0.0.7

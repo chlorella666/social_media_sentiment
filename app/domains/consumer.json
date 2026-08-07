@@ -1,0 +1,68 @@
+{
+  "domain_id": "consumer",
+  "domain_name": "消费品",
+  "dimensions": [
+    {
+      "id": "product_quality",
+      "name": "产品质量",
+      "description": "材质、耐用性、效果",
+      "source": "Nielsen Brand Health — Product/Quality",
+      "keywords": ["质量", "材质", "耐用", "效果", "做工", "手感", "坏", "破损", "褪色"],
+      "sub_dimensions": [
+        {"id": "quality_material", "name": "材质做工", "keywords": ["材质", "做工", "手感"]},
+        {"id": "quality_durable", "name": "耐用性", "keywords": ["耐用", "坏", "破损", "褪色"]}
+      ]
+    },
+    {
+      "id": "price_value",
+      "name": "价格价值",
+      "description": "定价、性价比、折扣",
+      "source": "Nielsen Pricing Tracker + NPS Price Driver",
+      "keywords": ["价格", "贵", "便宜", "性价比", "涨价", "降价", "折扣", "优惠", "促销", "划算"],
+      "sub_dimensions": [
+        {"id": "price_level", "name": "定价水平", "keywords": ["价格", "贵", "便宜", "涨价", "降价"]},
+        {"id": "price_promo", "name": "促销折扣", "keywords": ["折扣", "优惠", "促销", "划算", "券"]}
+      ]
+    },
+    {
+      "id": "experience",
+      "name": "使用体验",
+      "description": "易用性、舒适度、包装",
+      "source": "零售 CX 研究",
+      "keywords": ["好用", "方便", "体验", "包装", "舒适", "难用", "麻烦", "异味", "密封"],
+      "sub_dimensions": []
+    },
+    {
+      "id": "brand_image",
+      "name": "品牌形象",
+      "description": "广告、代言、声誉",
+      "source": "RepTrak — Reputation Pulse",
+      "keywords": ["广告", "代言", "品牌", "形象", "营销", "网红", "联名", "曝光", "315"],
+      "sub_dimensions": []
+    },
+    {
+      "id": "channel_service",
+      "name": "渠道服务",
+      "description": "电商、物流、售后",
+      "source": "零售 CX 研究 — Access & Convenience",
+      "keywords": ["发货", "物流", "快递", "售后", "客服", "退款", "退货", "缺货", "旗舰店", "门店"],
+      "sub_dimensions": []
+    },
+    {
+      "id": "safety",
+      "name": "成分安全",
+      "description": "成分、安全、资质",
+      "source": "RepTrak + 消费者投诉热点",
+      "keywords": ["成分", "安全", "过敏", "添加剂", "防腐", "检测", "超标", "认证", "标准"],
+      "sub_dimensions": []
+    },
+    {
+      "id": "competitor",
+      "name": "竞品对比",
+      "description": "同类产品比较",
+      "source": "社交媒体 NLP 方法 — 自然语言特有",
+      "keywords": ["对比", "比", "不如", "更好", "替代", "平替", "PK", "vs", "竞品", "其他牌子"],
+      "sub_dimensions": []
+    }
+  ]
+}
