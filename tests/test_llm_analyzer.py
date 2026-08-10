@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -17,14 +18,22 @@ from app.coding.llm_analyzer import LLMConfig, MockAnalyzer, OpenAICompatibleAna
 
 
 class FakeResponse:
-    def __init__(self, content: str):
+    def __init__(self, content: str, finish_reason: str = ""):
         self.content = content
+        self.finish_reason = finish_reason
 
     def raise_for_status(self) -> None:
         pass
 
     def json(self) -> dict:
-        return {"choices": [{"message": {"content": self.content}}]}
+        return {
+            "choices": [
+                {
+                    "message": {"content": self.content},
+                    "finish_reason": self.finish_reason,
+                }
+            ]
+        }
 
 
 class SlowLLM(OpenAICompatibleAnalyzer):
@@ -164,6 +173,53 @@ def test_narrative_sanitizes_invalid_values() -> None:
     print("✓ 非法叙事/归因取值自动清洗（修复 unclear 崩溃）")
 
 
+def test_truncation_split_retry() -> None:
+    """finish_reason=length 触发拆小批重试，整层不丢失。"""
+    cfg = LLMConfig(api_key="sk-test", base_url="https://api.deepseek.com", model="deepseek-chat")
+    analyzer = OpenAICompatibleAnalyzer(cfg)
+    calls = {"n": 0}
+
+    def fake_post(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse('{"items":[{"index":0}]}', finish_reason="length")
+        body = kwargs["json"]["messages"][1]["content"]
+        texts = json.loads(body)["texts"]
+        items = [
+            {"index": i, "narrative": "conflict", "attribution": "enterprise"}
+            for i in range(len(texts))
+        ]
+        return FakeResponse(json.dumps({"items": items}, ensure_ascii=False))
+
+    with mock.patch("app.coding.llm_analyzer.requests.post", side_effect=fake_post):
+        texts = [f"文本{i}" for i in range(8)]
+        results = analyzer._request_narrative_batch(texts)
+    assert len(results) == 8
+    assert results[0]["narrative"] == "conflict"
+    assert calls["n"] == 3, f"应为 1 次截断 + 2 次小批成功，实际 {calls['n']}"
+    assert not any("批量请求失败" in e for e in analyzer.errors)
+    print("✓ 截断自动拆小批重试（8 条 → 1 次截断 + 2 次小批成功）")
+
+
+def test_small_batch_fallback_on_truncation() -> None:
+    """小批（≤3 条）截断时不再拆分，走兜底并上报错误。"""
+    cfg = LLMConfig(api_key="sk-test", base_url="https://api.deepseek.com", model="deepseek-chat")
+    analyzer = OpenAICompatibleAnalyzer(cfg)
+    with mock.patch(
+        "app.coding.llm_analyzer.requests.post",
+        side_effect=lambda *a, **k: FakeResponse(
+            '{"items":[{"index":0}]}', finish_reason="length"
+        ),
+    ):
+        results = analyzer._request_narrative_batch(["a", "b"])
+    assert results == [
+        {"narrative": None, "attribution": None},
+        {"narrative": None, "attribution": None},
+    ]
+    assert any("批量请求失败" in e for e in analyzer.errors)
+    print("✓ 小批截断走兜底并上报错误")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_ping_unreachable()
@@ -174,4 +230,6 @@ if __name__ == "__main__":
     test_batch_progress_updates_per_completion()
     test_narrative_batching_progress()
     test_narrative_sanitizes_invalid_values()
+    test_truncation_split_retry()
+    test_small_batch_fallback_on_truncation()
     print("LLM 分析器测试全部通过 ✅")

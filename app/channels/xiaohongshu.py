@@ -11,6 +11,7 @@ opencli 由 Node 运行（npm install -g @jackwener/opencli），要求 Chrome
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -58,6 +59,9 @@ def _run_opencli(*args: str) -> object:
         text=True,
         encoding="utf-8",
         timeout=OPENCLI_TIMEOUT,
+        # Windows 下禁止弹出 node 控制台窗口（worker 为 pythonw 无窗口进程，
+        # 不加此标志每次采集都会闪一个黑色命令行窗口）
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     out = (proc.stdout or "").strip()
     if not out:
@@ -264,9 +268,14 @@ class XiaohongshuChannel(ChannelAdapter):
                     post.platform_specific["tags"] = str(detail["tags"])
                 time.sleep(OPERATION_INTERVAL)
 
-            # 评论只对前 N 条拉取
+            # 评论只对热度最高的 N 条拉取（按点赞降序，优先最热讨论）
             if plan.comments_enabled:
-                for post in keyword_posts[:MAX_COMMENT_NOTES_PER_KEYWORD]:
+                hot_posts = sorted(
+                    keyword_posts,
+                    key=lambda p: p.likes,
+                    reverse=True,
+                )
+                for post in hot_posts[:MAX_COMMENT_NOTES_PER_KEYWORD]:
                     if cancel_event and cancel_event.is_set():
                         break
                     try:

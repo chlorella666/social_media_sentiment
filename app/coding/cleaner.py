@@ -89,6 +89,25 @@ def normalize_datetime(raw: str, now: datetime | None = None) -> str:
     return s
 
 
+def normalize_pub_date(raw: str, now: datetime | None = None) -> str:
+    """把平台时间统一为发布日期 yyyy-mm-dd（用于趋势/热力图时间轴）。
+
+    - 处理"07-09上海 / 07-09 上海 / 2026-07-09 上海"等带地区后缀的微博时间；
+    - "MM-DD"补当前年份；无法解析返回 ""（展示层归为"未知"）。
+    """
+    if not raw:
+        return ""
+    now = now or datetime.now()
+    s = raw.strip()
+    m = re.search(r"(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})", s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m = re.search(r"(\d{1,2})[-/月.](\d{1,2})", s)
+    if m:
+        return f"{now.year}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+    return normalize_datetime(raw, now)[:10]
+
+
 def clean_text(text: str) -> str:
     """清洗单条文本：Unicode 规范化 → HTML/URL 清理 → 噪声过滤 → 空白合并。"""
     if not text:

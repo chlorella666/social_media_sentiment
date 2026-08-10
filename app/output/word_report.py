@@ -21,6 +21,7 @@ from app.output.html_report import (
     platform_dim_fig,
     platform_fig,
     radar_fig,
+    sentiment_sources_fig,
     trend_fig,
     wordcloud_png_bytes,
     words_fig,
@@ -39,6 +40,7 @@ CHART_BUILDERS = [
     ("platform_dim", "平台 × 维度负面率", platform_dim_fig),
     ("date_dim", "日期 × 维度负面率热力图", date_dim_heatmap_fig),
     ("words", "高频情感词 Top20", words_fig),
+    ("sources", "负面情绪来源话题榜", sentiment_sources_fig),
     ("cooccurrence", "关键词共现网络图", cooccurrence_fig),
 ]
 
@@ -148,15 +150,20 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         if insight:
             p = doc.add_paragraph(insight)
             p.paragraph_format.first_line_indent = Pt(24)
-    wc_bytes = wordcloud_png_bytes(s)
-    if wc_bytes:
-        doc.add_picture(BytesIO(wc_bytes), width=Inches(6.2))
-        run = doc.add_paragraph().add_run("内容关键词词云（jieba 分词）")
-        run.bold = True
-        wc_insight = bundle.chart_insights.get("wordcloud", "")
-        if wc_insight:
-            p = doc.add_paragraph(wc_insight)
-            p.paragraph_format.first_line_indent = Pt(24)
+    for which, caption in (
+        ("positive", "正面讨论词云"),
+        ("negative", "负面讨论词云"),
+        ("worst_dim", "负面率最高维度词云"),
+    ):
+        wc_bytes = wordcloud_png_bytes(s, which)
+        if wc_bytes:
+            doc.add_picture(BytesIO(wc_bytes), width=Inches(6.2))
+            run = doc.add_paragraph().add_run(caption)
+            run.bold = True
+    wc_insight = bundle.chart_insights.get("wordcloud", "")
+    if wc_insight:
+        p = doc.add_paragraph(wc_insight)
+        p.paragraph_format.first_line_indent = Pt(24)
 
     doc.add_heading("六、深度结论与建议（按叙事框架）", level=1)
     if bundle.conclusion:

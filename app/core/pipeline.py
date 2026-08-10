@@ -22,9 +22,16 @@ from app.coding.llm_analyzer import (
     OpenAICompatibleAnalyzer,
     create_analyzer,
 )
-from app.coding.tokenizer import build_cooccurrence, build_word_freq
+from app.coding.tokenizer import (
+    GENERIC_NOUNS,
+    build_cooccurrence,
+    build_word_freq,
+    segment,
+)
+from app.coding import lexicon_v2
 from app.core.models import (
     AnalysisPlan,
+    ChannelResult,
     CodedItem,
     Post,
     ReportBundle,
@@ -58,6 +65,23 @@ def _quality_gate_warnings(total: int) -> list[str]:
     elif total < 100:
         warnings.append("样本量一般（<100 条），建议扩大关键词或时间段")
     return warnings
+
+
+def _subject_stopwords(plan: AnalysisPlan) -> set[str]:
+    """词云/共现网络的主题过滤停用词：泛话题词 + 分析对象 + 关键词词组词。"""
+    extra = set(GENERIC_NOUNS)
+    if plan.subject:
+        extra.add(plan.subject)
+    for kw in plan.keywords:
+        for tok in segment(kw):
+            extra.add(tok)
+    for phrase in plan.exclude_words or []:
+        phrase = phrase.strip()
+        if len(phrase) >= 2:
+            extra.add(phrase)
+        for tok in segment(phrase):
+            extra.add(tok)
+    return extra
 
 
 def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post]) -> dict:
@@ -111,6 +135,144 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         ks = kw_stats[it.keyword or "未分类"]
         ks["coded"] += 1
         ks[it.sentiment.value] += 1
+
+    # 情感词正负榜：词典极性 + |情感分| 加权
+    pos_w: Counter[str] = Counter()
+    neg_w: Counter[str] = Counter()
+    for it in items:
+        w = abs(it.sentiment_score)
+        for kw in it.keywords:
+            pol = lexicon_v2.word_polarity(kw)
+            if pol > 0:
+                pos_w[kw] += w
+            elif pol < 0:
+                neg_w[kw] += w
+
+    # 主题/泛词过滤（词云与共现网络共用）
+    extra_stop = _subject_stopwords(plan)
+
+    # 情感一致性：正负文本混用的词（角色名/地名/泛词）信号≈0，
+    # 从词云与共现网络剔除；权重 = 词频 × 情感强度
+    tok_pos: dict[str, float] = defaultdict(float)
+    tok_neg: dict[str, float] = defaultdict(float)
+    tok_cnt: Counter[str] = Counter()
+    for it in items:
+        sc = it.sentiment_score
+        for tok in set(segment(it.text, extra_stop)):
+            tok_cnt[tok] += 1
+            if sc >= 0:
+                tok_pos[tok] += sc
+            else:
+                tok_neg[tok] += -sc
+    signal: dict[str, float] = {}
+    for tok in tok_cnt:
+        denom = tok_pos[tok] + tok_neg[tok]
+        signal[tok] = (tok_pos[tok] - tok_neg[tok]) / denom if denom > 0 else 0.0
+
+    def _cloud_weight(tok: str) -> float:
+        """词云权重：情感信号强，或弱信号但有词典极性（如"喜欢"）才保留。"""
+        sig = signal.get(tok, 0.0)
+        pol = lexicon_v2.word_polarity(tok)
+        if sig > 0 and (sig >= 0.25 or (pol > 0 and sig >= 0.1)):
+            pass
+        elif sig < 0 and (abs(sig) >= 0.25 or (pol < 0 and abs(sig) >= 0.1)):
+            pass
+        else:
+            return 0.0
+        return (tok_pos[tok] + tok_neg[tok]) * min(tok_cnt[tok], 20)
+
+    pos_cloud = Counter(
+        {
+            tok: _cloud_weight(tok) * signal[tok]
+            for tok in tok_cnt
+            if signal[tok] >= 0.25
+            or (
+                signal[tok] > 0
+                and lexicon_v2.word_polarity(tok) > 0
+                and signal[tok] >= 0.1
+            )
+        }
+    )
+    neg_cloud = Counter(
+        {
+            tok: _cloud_weight(tok) * abs(signal[tok])
+            for tok in tok_cnt
+            if signal[tok] <= -0.25
+            or (
+                signal[tok] < 0
+                and lexicon_v2.word_polarity(tok) < 0
+                and abs(signal[tok]) >= 0.1
+            )
+        }
+    )
+
+    # 负面率最高维度（样本 ≥3）的负面词云
+    worst_dim = ""
+    valid_dims = [d for d, v in dim_stats.items() if v["count"] >= 3]
+    if valid_dims:
+        worst_dim = max(
+            valid_dims, key=lambda d: dim_stats[d]["negative"] / dim_stats[d]["count"]
+        )
+    worst_cloud: Counter[str] = Counter()
+    if worst_dim:
+        for it in items:
+            if worst_dim in it.dimensions and it.sentiment == SentimentLabel.negative:
+                for tok in set(segment(it.text, extra_stop)):
+                    sig = signal.get(tok, 0.0)
+                    if sig <= -0.25 or (
+                        sig < 0 and lexicon_v2.word_polarity(tok) < 0
+                    ):
+                        worst_cloud[tok] += abs(it.sentiment_score)
+
+    # 情绪来源话题榜（数据驱动，不依赖词典）：话题词在正面/负面评论中的占比
+    pos_docs: Counter[str] = Counter()
+    neg_docs: Counter[str] = Counter()
+    for it in items:
+        toks = set(segment(it.text, extra_stop))
+        if it.sentiment == SentimentLabel.positive:
+            for t in toks:
+                pos_docs[t] += 1
+        elif it.sentiment == SentimentLabel.negative:
+            for t in toks:
+                neg_docs[t] += 1
+    sentiment_sources = []
+    for t in pos_docs | neg_docs:
+        p, n = pos_docs[t], neg_docs[t]
+        if p + n >= 5:
+            sentiment_sources.append(
+                {
+                    "word": t,
+                    "positive": p,
+                    "negative": n,
+                    "negative_rate": round(n / (p + n), 3),
+                }
+            )
+    sentiment_sources.sort(
+        key=lambda r: (-r["negative_rate"], -(r["positive"] + r["negative"]))
+    )
+    sentiment_sources = sentiment_sources[:12]
+
+    # 共现网络（文档级去重后的讨论结构；PMI 加权 + 主题过滤）
+    cooccurrence = build_cooccurrence(
+        content_texts,
+        window=3,
+        top_n=30,
+        extra_stopwords=extra_stop,
+        min_count=3,
+    )
+    node_set = {e["source"] for e in cooccurrence} | {e["target"] for e in cooccurrence}
+    w_dims: dict[str, Counter] = defaultdict(Counter)
+    for it in items:
+        for tok in segment(it.text, extra_stop):
+            if tok in node_set:
+                for dim in it.dimensions:
+                    w_dims[tok][dim] += 1
+    word_dims = {w: c.most_common(1)[0][0] for w, c in w_dims.items() if c}
+    node_negative_rate = {
+        t: round(neg_docs[t] / (neg_docs[t] + pos_docs[t]), 3)
+        for t in node_set
+        if neg_docs[t] + pos_docs[t] > 0
+    }
 
     for post in posts:
         ks = kw_stats[post.keyword or "未分类"]
@@ -184,8 +346,19 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
             for d, v in sorted(trend.items())
         },
         "top_words": all_keywords.most_common(20),
-        "top_content_words": build_word_freq(content_texts, top_n=50),
-        "cooccurrence": build_cooccurrence(content_texts, window=3, top_n=30),
+        "top_content_words": build_word_freq(
+            content_texts, top_n=50, extra_stopwords=extra_stop
+        ),
+        "cooccurrence": cooccurrence,
+        "sentiment_sources": sentiment_sources,
+        "node_negative_rate": node_negative_rate,
+        "positive_words": pos_w.most_common(10),
+        "negative_words": neg_w.most_common(10),
+        "positive_wordcloud": pos_cloud.most_common(40),
+        "negative_wordcloud": neg_cloud.most_common(40),
+        "worst_dim_id": worst_dim,
+        "worst_dim_wordcloud": worst_cloud.most_common(40),
+        "word_dims": word_dims,
         "keyword_stats": {
             kw: {
                 "posts": v["posts"],
@@ -267,10 +440,40 @@ class TaskRunner:
             self.on_progress(status, message, phase_progress, self.tracker.snapshot())
 
     def run(self, analyzer: BaseAnalyzer | None = None) -> ReportBundle:
+        """完整流水线：采集+清洗 → 编码+报告（兼容原调用）。"""
+        res = self.collect_and_clean(analyzer=analyzer)
+        return self.code_and_report(
+            res["posts"], res["channel_results"], res["warnings"],
+            analyzer=res["analyzer"],
+        )
+
+    def restore_tracker(self, snapshot: dict | None) -> None:
+        """续跑时恢复阶段1的任务清单状态（collect/clean 已 done）。"""
+        if not snapshot:
+            return
+        for sid, s in (snapshot.get("steps") or {}).items():
+            cur = self.tracker.get(sid)
+            if cur is not None:
+                cur.state = s.get("state", cur.state)
+                cur.detail = s.get("detail", cur.detail)
+                try:
+                    cur.frac = float(s.get("frac", cur.frac))
+                except (TypeError, ValueError):
+                    pass
+
+    def collect_and_clean(
+        self, analyzer: BaseAnalyzer | None = None, review_mode: bool = False
+    ) -> dict:
+        """阶段1：采集 + 清洗。
+
+        review_mode=True（人工筛选启用）时，LLM 相关性复核只记录标注
+        （llm_relevant_by_url）不剔除，最终由人工决定。
+        """
         plan = self.plan
         posts: list[Post] = []
         channel_results = []
         warnings: list[str] = []
+        llm_relevant_by_url: dict[str, bool] = {}
 
         # 1. 采集（多渠道并行，失败自动降级；整体进度按完成渠道数单调推进）
         self.tracker.step("collect", state="running", detail="开始采集", frac=0.0)
@@ -281,14 +484,25 @@ class TaskRunner:
         results: list = [None] * len(channel_configs)
         lock = threading.Lock()
         completed = 0
+        channel_fracs = [0.0] * len(channel_configs)  # 各渠道自身进度，整体=求和（单调）
 
-        def _safe_collect(channel_cfg):
+        def _safe_collect(channel_cfg, idx: int):
             channel = get_channel(channel_cfg.channel_id)
 
             def _thread_progress(msg, p, c=channel):
                 with lock:
                     self.tracker.step(
                         "collect", state="running", detail=f"{c.name}：{msg}"
+                    )
+                    frac = min(max(float(p or 0.0), 0.0), 1.0)
+                    channel_fracs[idx] = max(channel_fracs[idx], frac)
+                    overall = collect_start + collect_span * (
+                        sum(channel_fracs) / max(len(channel_configs), 1)
+                    )
+                    self._progress(
+                        TaskStatus.collecting,
+                        f"{c.name}：{msg}",
+                        overall,
                     )
 
             return channel, channel.collect(
@@ -297,7 +511,7 @@ class TaskRunner:
 
         with ThreadPoolExecutor(max_workers=min(4, max(len(channel_configs), 1))) as pool:
             futures = {
-                pool.submit(_safe_collect, cfg): i
+                pool.submit(_safe_collect, cfg, i): i
                 for i, cfg in enumerate(channel_configs)
                 if not self.cancel_event.is_set()
             }
@@ -310,6 +524,7 @@ class TaskRunner:
                     result = degraded_result(channel.id, f"采集异常: {exc}")
                 results[i] = result
                 completed += 1
+                channel_fracs[i] = 1.0
                 if result.ok:
                     posts.extend(result.posts)
                 else:
@@ -339,6 +554,9 @@ class TaskRunner:
 
         # 分析器创建与自检（提前，供清洗阶段的 LLM 相关性复核使用）
         analyzer = analyzer or create_analyzer()
+        if not plan.llm_enabled:
+            # LLM 未开启时一律词典模式，避免环境变量/本机残留 Key 误触发计费
+            analyzer = MockAnalyzer()
         if plan.llm_enabled and isinstance(analyzer, OpenAICompatibleAnalyzer):
             ok, msg = analyzer.ping()
             if not ok:
@@ -353,6 +571,7 @@ class TaskRunner:
                 "llm", state="skipped", detail="未配置 API Key，使用词典模式"
             )
             self.tracker.step("narrative", state="skipped", detail="LLM 不可用")
+        self._analyzer_ready = True
 
         # 2. 清洗与去重（记录丢弃原因；可选 LLM 相关性复核；丢弃率>15% 补采）
         self.tracker.step("clean", state="running", detail="正在清洗", frac=0.0)
@@ -379,20 +598,25 @@ class TaskRunner:
                 flags = analyzer.check_relevance(
                     plan.subject, [f"{p.title} {p.content}" for p in posts]
                 )
-                kept2: list[Post] = []
-                for post, flag in zip(posts, flags):
-                    if flag:
-                        kept2.append(post)
-                    else:
-                        dropped.append(
-                            {
-                                "platform": post.platform,
-                                "url": post.url,
-                                "title": (post.title or post.content)[:80],
-                                "reason": "LLM 相关性复核：不相关",
-                            }
-                        )
-                posts = kept2
+                if review_mode:
+                    # 人工筛选模式：只标注建议，不剔除
+                    for post, flag in zip(posts, flags):
+                        llm_relevant_by_url[post.url] = bool(flag)
+                else:
+                    kept2: list[Post] = []
+                    for post, flag in zip(posts, flags):
+                        if flag:
+                            kept2.append(post)
+                        else:
+                            dropped.append(
+                                {
+                                    "platform": post.platform,
+                                    "url": post.url,
+                                    "title": (post.title or post.content)[:80],
+                                    "reason": "LLM 相关性复核：不相关",
+                                }
+                            )
+                    posts = kept2
             # 渠道结果写回：原始数据 sheet 只展示清洗保留的帖子，丢弃记录进 dropped
             kept_urls = {p.url for p in posts}
             for ch in channel_results:
@@ -467,7 +691,8 @@ class TaskRunner:
                 break
         else:
             warnings.append(
-                "部分渠道丢弃率补采 3 轮后仍高于 15%，已在丢弃明细标注原因"
+                "部分渠道丢弃率补采 3 轮后仍高于 15%，已在丢弃明细标注原因；"
+                "该渠道结果可能不完整，其余渠道不受影响"
             )
         self.tracker.step(
             "collect", state="done", detail=f"完成 {len(plan.channels)} 个渠道", frac=1.0
@@ -484,6 +709,45 @@ class TaskRunner:
             f"清洗完成：保留 {len(posts)} 帖",
             self._phase_weights["cleaning"][1],
         )
+
+        return {
+            "posts": posts,
+            "channel_results": channel_results,
+            "warnings": warnings,
+            "analyzer": analyzer,
+            "llm_relevant_by_url": llm_relevant_by_url,
+            "tracker_snapshot": self.tracker.snapshot(),
+        }
+
+    def code_and_report(
+        self,
+        posts: list[Post],
+        channel_results: list[ChannelResult],
+        warnings: list[str],
+        analyzer: BaseAnalyzer | None = None,
+    ) -> ReportBundle:
+        """阶段2：编码 + 汇总报告（可基于人工筛选后的数据续跑）。"""
+        plan = self.plan
+        if not getattr(self, "_analyzer_ready", False):
+            analyzer = analyzer or create_analyzer()
+            if not plan.llm_enabled:
+                analyzer = MockAnalyzer()
+            if plan.llm_enabled and isinstance(analyzer, OpenAICompatibleAnalyzer):
+                ok, msg = analyzer.ping()
+                if not ok:
+                    warnings.append(f"LLM 连接失败：{msg}，已自动降级为词典模式")
+                    self.tracker.step(
+                        "llm", state="failed",
+                        detail=f"连接失败：{msg}，已降级为词典", frac=0.0,
+                    )
+                    self.tracker.step("narrative", state="skipped", detail="LLM 不可用")
+                    analyzer = MockAnalyzer()
+            elif plan.llm_enabled and not isinstance(analyzer, OpenAICompatibleAnalyzer):
+                self.tracker.step(
+                    "llm", state="skipped", detail="未配置 API Key，使用词典模式"
+                )
+                self.tracker.step("narrative", state="skipped", detail="LLM 不可用")
+            self._analyzer_ready = True
 
         # 3. 编码
         coding_start, coding_end = self._phase_weights["coding"]

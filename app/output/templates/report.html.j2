@@ -121,18 +121,35 @@
       <h2>高频情感词 Top {{ top_words|length }}</h2>
       <div class="chart">{{ chart_words }}</div>
       <p class="insight">{{ chart_insights.get('words', '') }}</p>
-      {% if chart_wordcloud %}
-      <h3>内容关键词词云（jieba 分词）</h3>
-      <img src="{{ chart_wordcloud }}" alt="词云" style="width:100%; max-width:900px;">
+      {% if chart_wordcloud_pos or chart_wordcloud_neg %}
+      <h3>情感词云（按情感拆分，权重 = 词频 × 情感强度）</h3>
+      {% if chart_wordcloud_pos %}
+      <h4>正面讨论词云</h4>
+      <img src="{{ chart_wordcloud_pos }}" alt="正面词云" style="width:100%; max-width:900px;">
+      {% endif %}
+      {% if chart_wordcloud_neg %}
+      <h4>负面讨论词云</h4>
+      <img src="{{ chart_wordcloud_neg }}" alt="负面词云" style="width:100%; max-width:900px;">
+      {% endif %}
+      {% if chart_wordcloud_worst and worst_dim_name %}
+      <h4>「{{ worst_dim_name }}」维度负面词云（负面率最高维度）</h4>
+      <img src="{{ chart_wordcloud_worst }}" alt="最差维度词云" style="width:100%; max-width:900px;">
+      {% endif %}
       <p class="insight">{{ chart_insights.get('wordcloud', '') }}</p>
       {% endif %}
     </div>
 
-    {% if chart_cooccurrence %}
+    {% if chart_sources or chart_cooccurrence %}
     <div class="section">
-      <h2>关键词共现网络</h2>
-      <div class="chart">{{ chart_cooccurrence }}</div>
+      <h2>情绪来源与讨论结构</h2>
+      {% if chart_sources %}
+      <div class="chart">{{ chart_sources }}</div>
       <p class="insight">{{ chart_insights.get('cooccurrence', '') }}</p>
+      {% endif %}
+      {% if chart_cooccurrence %}
+      <h3>讨论话题共现网络（颜色=话题负面倾向：红负面 / 绿正面 / 灰中性）</h3>
+      <div class="chart">{{ chart_cooccurrence }}</div>
+      {% endif %}
     </div>
     {% endif %}
 

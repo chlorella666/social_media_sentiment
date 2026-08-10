@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -13,6 +14,7 @@ from jinja2 import Environment, FileSystemLoader
 from plotly.io import to_html
 
 from app.core.models import ReportBundle
+from app.core.names import dimension_cn, platform_cn
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 SENTIMENT_COLORS = {"positive": "#16a34a", "negative": "#dc2626", "neutral": "#94a3b8"}
@@ -36,11 +38,12 @@ def overall_fig(s: dict) -> go.Figure:
 
 def platform_fig(s: dict) -> go.Figure:
     platforms = s["platforms"]
+    pnames = [platform_cn(p) for p in platforms.keys()]
     fig = go.Figure(
         [
-            go.Bar(name="正面", x=list(platforms.keys()), y=[v["positive"] for v in platforms.values()], marker_color="#16a34a"),
-            go.Bar(name="负面", x=list(platforms.keys()), y=[v["negative"] for v in platforms.values()], marker_color="#dc2626"),
-            go.Bar(name="中性", x=list(platforms.keys()), y=[v["neutral"] for v in platforms.values()], marker_color="#94a3b8"),
+            go.Bar(name="正面", x=pnames, y=[v["positive"] for v in platforms.values()], marker_color="#16a34a"),
+            go.Bar(name="负面", x=pnames, y=[v["negative"] for v in platforms.values()], marker_color="#dc2626"),
+            go.Bar(name="中性", x=pnames, y=[v["neutral"] for v in platforms.values()], marker_color="#94a3b8"),
         ]
     )
     fig.update_layout(barmode="stack", title="各平台情感分布", height=360, margin=dict(l=20, r=20, t=50, b=20))
@@ -83,13 +86,14 @@ def make_subplots_dual_dim(dims: dict) -> go.Figure:
     from plotly.subplots import make_subplots
 
     names = list(dims.keys())
+    cnames = [dimension_cn(n) for n in names]
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
-        go.Bar(x=names, y=[dims[n]["count"] for n in names], name="讨论量", marker_color="#93c5fd"),
+        go.Bar(x=cnames, y=[dims[n]["count"] for n in names], name="讨论量", marker_color="#93c5fd"),
         secondary_y=False,
     )
     fig.add_trace(
-        go.Scatter(x=names, y=[dims[n]["negative_rate"] for n in names], name="负面率", mode="lines+markers", line=dict(color="#dc2626")),
+        go.Scatter(x=cnames, y=[dims[n]["negative_rate"] for n in names], name="负面率", mode="lines+markers", line=dict(color="#dc2626")),
         secondary_y=True,
     )
     fig.update_layout(title="维度讨论量与负面率", height=380, margin=dict(l=20, r=20, t=50, b=20))
@@ -102,40 +106,83 @@ def heatmap_fig(s: dict) -> go.Figure | None:
     dims = s["dimensions"]
     if not dims:
         return None
-    # MVP：维度负面率热力（单行矩阵）；平台×维度矩阵在 V1 补充
     names = list(dims.keys())
-    rates = [[dims[d]["negative_rate"] for d in names]]
+    cnames = [dimension_cn(n) for n in names]
+    rates_row = []
+    texts_row = []
+    for d in names:
+        v = dims[d]
+        if v["count"] >= 3:
+            rates_row.append(v["negative_rate"])
+            texts_row.append(f"{v['negative_rate'] * 100:.0f}%")
+        else:
+            rates_row.append(None)
+            texts_row.append(f"n={v['count']}")
     fig = go.Figure(
         go.Heatmap(
-            z=rates,
-            x=names,
+            z=[rates_row],
+            x=cnames,
             y=["负面率"],
             colorscale="Reds",
             zmin=0,
             zmax=1,
-            text=[[f"{r * 100:.1f}%" for r in rates[0]]],
+            text=[texts_row],
             texttemplate="%{text}",
             showscale=False,
         )
     )
     fig.update_xaxes(side="top")
-    fig.update_layout(height=360, margin=dict(l=20, r=20, t=50, b=20))
+    fig.update_layout(
+        title="维度负面率（n<3 样本不评级）",
+        height=360,
+        margin=dict(l=20, r=20, t=50, b=20),
+    )
     return fig
 
 
 def words_fig(s: dict) -> go.Figure:
-    words = s["top_words"]
-    if not words:
-        return go.Figure().update_layout(title="暂无高频词")
-    fig = go.Figure(
-        go.Bar(
-            x=[c for _, c in reversed(words)],
-            y=[w for w, _ in reversed(words)],
-            orientation="h",
-            marker_color="#2563eb",
-        )
+    """高频情感词：按词典极性分"正面 Top / 负面 Top"展示（|情感分| 加权）。"""
+    from plotly.subplots import make_subplots
+
+    pos = s.get("positive_words") or []
+    neg = s.get("negative_words") or []
+    if not pos and not neg:
+        return go.Figure().update_layout(title="暂无高频情感词")
+    fig = make_subplots(
+        rows=2,
+        subplot_titles=("正面情感词 Top 10", "负面情感词 Top 10"),
+        vertical_spacing=0.22,
     )
-    fig.update_layout(title="高频情感词 Top 20", height=420, margin=dict(l=20, r=20, t=50, b=20))
+    if pos:
+        fig.add_trace(
+            go.Bar(
+                x=[c for _, c in reversed(pos)],
+                y=[w for w, _ in reversed(pos)],
+                orientation="h",
+                marker_color="#16a34a",
+                name="正面",
+            ),
+            row=1,
+            col=1,
+        )
+    if neg:
+        fig.add_trace(
+            go.Bar(
+                x=[c for _, c in reversed(neg)],
+                y=[w for w, _ in reversed(neg)],
+                orientation="h",
+                marker_color="#dc2626",
+                name="负面",
+            ),
+            row=2,
+            col=1,
+        )
+    fig.update_layout(
+        title="高频情感词（情感分加权，按正负分列）",
+        height=540,
+        showlegend=False,
+        margin=dict(l=20, r=20, t=60, b=20),
+    )
     return fig
 
 
@@ -163,13 +210,14 @@ def radar_fig(s: dict) -> go.Figure | None:
     if not dims:
         return None
     names = list(dims.keys())
+    cnames = [dimension_cn(d) for d in names]
     neg_rates = [dims[d]["negative_rate"] for d in names]
     avg_scores = [max(0.0, (dims[d]["avg_score"] + 1) / 2) for d in names]  # -1~1 → 0~1
     fig = go.Figure()
     fig.add_trace(
         go.Scatterpolar(
             r=neg_rates + [neg_rates[0]],
-            theta=names + [names[0]],
+            theta=cnames + [cnames[0]],
             fill="toself",
             name="负面率（越高越差）",
             line_color="#dc2626",
@@ -178,7 +226,7 @@ def radar_fig(s: dict) -> go.Figure | None:
     fig.add_trace(
         go.Scatterpolar(
             r=avg_scores + [avg_scores[0]],
-            theta=names + [names[0]],
+            theta=cnames + [cnames[0]],
             fill="toself",
             name="平均分映射（越高越好）",
             line_color="#16a34a",
@@ -200,13 +248,14 @@ def platform_dim_fig(s: dict) -> go.Figure | None:
     if not pd_data or not dims:
         return None
     dim_names = list(dims.keys())
+    cdim_names = [dimension_cn(d) for d in dim_names]
     fig = go.Figure()
     colors = px.colors.qualitative.Set2
     for i, (platform, dmap) in enumerate(pd_data.items()):
         fig.add_trace(
             go.Bar(
-                name=platform,
-                x=dim_names,
+                name=platform_cn(platform),
+                x=cdim_names,
                 y=[dmap.get(d, {}).get("negative_rate", 0) for d in dim_names],
                 marker_color=colors[i % len(colors)],
             )
@@ -234,9 +283,17 @@ def _cjk_font() -> str | None:
     return None
 
 
-def wordcloud_png_bytes(s: dict) -> bytes | None:
-    """用 jieba 高频词生成词云 PNG（无依赖可用时返回 None）。"""
-    words = dict(s.get("top_content_words", [])[:60])
+def wordcloud_png_bytes(s: dict, which: str = "positive") -> bytes | None:
+    """按情感/维度生成词云 PNG（无依赖或数据为空时返回 None）。
+
+    which: positive（正面词云）/ negative（负面词云）/ worst_dim（负面率最高维度词云）。
+    """
+    key = {
+        "positive": "positive_wordcloud",
+        "negative": "negative_wordcloud",
+        "worst_dim": "worst_dim_wordcloud",
+    }.get(which, "positive_wordcloud")
+    words = dict(s.get(key, [])[:60])
     if not words:
         return None
     try:
@@ -260,15 +317,15 @@ def wordcloud_png_bytes(s: dict) -> bytes | None:
         return None
 
 
-def _wordcloud_data_uri(s: dict) -> str:
-    data = wordcloud_png_bytes(s)
+def _wordcloud_data_uri(s: dict, which: str = "positive") -> str:
+    data = wordcloud_png_bytes(s, which)
     if not data:
         return ""
     return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
 def cooccurrence_fig(s: dict) -> go.Figure | None:
-    """关键词共现网络图（networkx 布局 + plotly 渲染）。"""
+    """关键词共现网络图（PMI 关联；节点颜色=情感，大小=度数，悬停看维度）。"""
     edges = s.get("cooccurrence", [])
     if not edges:
         return None
@@ -277,20 +334,50 @@ def cooccurrence_fig(s: dict) -> go.Figure | None:
     except ImportError:
         return None
     g = nx.Graph()
-    for e in edges[:25]:
-        g.add_edge(e["source"], e["target"], weight=e["weight"])
+    for e in edges:
+        g.add_edge(
+            e["source"], e["target"],
+            weight=float(e.get("weight", 0)),
+            count=e.get("count", 0),
+        )
     if not g.nodes:
         return None
     pos = nx.spring_layout(g, seed=42, k=0.6)
-    node_size = [g.degree(n) * 400 + 800 for n in g.nodes]
+    wmin = min((d["weight"] for _, _, d in g.edges(data=True)), default=0.0)
+    wmax = max((d["weight"] for _, _, d in g.edges(data=True)), default=1.0)
+    wspan = (wmax - wmin) or 1.0
+    word_dims = s.get("word_dims") or {}
+    node_neg = s.get("node_negative_rate") or {}
+    degree = dict(g.degree())
+    max_deg = max(degree.values()) or 1
+
+    def _node_color(n: str) -> str:
+        share = node_neg.get(n)
+        if share is None:
+            return "#94a3b8"  # 样本不足/中性
+        if share >= 0.6:
+            return "#dc2626"  # 偏负面
+        if share <= 0.4:
+            return "#16a34a"  # 偏正面
+        return "#94a3b8"  # 中性
+
+    node_colors = [_node_color(n) for n in g.nodes]
+    hover_texts = [
+        (
+            f"<b>{n}</b><br>负面倾向 {node_neg.get(n, 0.0) * 100:.0f}%"
+            f"<br>主要维度：{word_dims.get(n, '未标注')}"
+        )
+        for n in g.nodes
+    ]
     fig = go.Figure()
-    for a, b, w in g.edges(data=True):
+    for a, b, d in g.edges(data=True):
+        wnorm = (d["weight"] - wmin) / wspan
         fig.add_trace(
             go.Scatter(
                 x=[pos[a][0], pos[b][0], None],
                 y=[pos[a][1], pos[b][1], None],
                 mode="lines",
-                line=dict(width=1 + w["weight"] * 0.3, color="#cbd5e1"),
+                line=dict(width=1 + wnorm * 6, color="#cbd5e1"),
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -302,62 +389,118 @@ def cooccurrence_fig(s: dict) -> go.Figure | None:
             mode="markers+text",
             text=[n for n in g.nodes],
             textposition="top center",
-            marker=dict(size=node_size, color="#3b82f6", opacity=0.75),
+            textfont=dict(size=10),
+            hovertext=hover_texts,
+            hoverinfo="text",
+            marker=dict(
+                size=[600 + degree[n] / max_deg * 2400 for n in g.nodes],
+                color=node_colors,
+                line=dict(width=1, color="#64748b"),
+                opacity=0.9,
+            ),
             name="关键词",
         )
     )
     fig.update_layout(
-        title="关键词共现网络图（前 25 对共现）",
-        height=520,
+        title="讨论话题共现网络（颜色=话题负面倾向：红负面 / 绿正面 / 灰中性）",
+        height=560,
         showlegend=False,
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
-        margin=dict(l=10, r=10, t=50, b=10),
+        margin=dict(l=10, r=10, t=60, b=10),
+    )
+    return fig
+
+
+def sentiment_sources_fig(s: dict) -> go.Figure | None:
+    """负面情绪来源话题榜：负面占比 >50% 且讨论量 ≥5 的话题词。"""
+    sources = [
+        r
+        for r in (s.get("sentiment_sources") or [])
+        if r["negative_rate"] > 0.5
+    ]
+    if not sources:
+        return None
+    rows = sorted(sources, key=lambda r: r["negative_rate"])[:10]
+    labels = [f"{r['word']}（{r['positive'] + r['negative']} 条）" for r in rows]
+    rates = [r["negative_rate"] for r in rows]
+    fig = go.Figure(
+        go.Bar(
+            x=rates,
+            y=labels,
+            orientation="h",
+            marker_color="#dc2626",
+            text=[f"{r * 100:.0f}%" for r in rates],
+            textposition="outside",
+        )
+    )
+    fig.update_layout(
+        title="负面情绪来源话题榜（负面占比，讨论量≥5）",
+        height=360,
+        xaxis_title="负面占比",
+        xaxis_tickformat=".0%",
+        margin=dict(l=20, r=20, t=50, b=20),
     )
     return fig
 
 
 def date_dim_heatmap_fig(s: dict) -> go.Figure | None:
-    """日期 × 维度负面率热力图。"""
+    """日期 × 维度负面率热力图（n<3 不评级；自适应文字色；日期轴）。"""
     dd = s.get("date_dim", {})
     dims = s.get("dimensions", {})
     if not dd or not dims:
         return None
-    dates = list(dd.keys())
+    dates = sorted({d for d in dd.keys() if re.match(r"^\d{4}-\d{2}-\d{2}$", d)})
+    if not dates:
+        return None
     dim_names = list(dims.keys())
+    cdim_names = [dimension_cn(d) for d in dim_names]
     z = []
-    text = []
     for d in dates:
         row = []
-        trow = []
         for dim in dim_names:
             v = dd[d].get(dim)
-            if v and v["count"] > 0:
+            if v and v["count"] >= 3:
                 row.append(v["negative_rate"])
-                trow.append(f"{v['negative_rate'] * 100:.0f}%")
             else:
                 row.append(None)
-                trow.append("")
         z.append(row)
-        text.append(trow)
     fig = go.Figure(
         go.Heatmap(
             z=z,
-            x=dim_names,
+            x=cdim_names,
             y=dates,
             colorscale="Reds",
             zmin=0,
             zmax=1,
-            text=text,
-            texttemplate="%{text}",
-            hovertemplate="%{x}<br>%{y}<br>负面率 %{z}<extra></extra>",
+            hovertemplate="%{x}<br>%{y}<br>负面率 %{z:.0%}<extra></extra>",
         )
     )
+    # 逐格标注：自适应黑白文字；小样本只显示 n（灰）
+    for i, d in enumerate(dates):
+        for j, dim in enumerate(dim_names):
+            v = dd[d].get(dim)
+            if not v or v["count"] <= 0:
+                continue
+            if v["count"] >= 3:
+                rate = v["negative_rate"]
+                txt = f"{rate * 100:.0f}%"
+                color = "white" if rate > 0.55 else "#333333"
+            else:
+                txt = f"n={v['count']}"
+                color = "#9ca3af"
+            fig.add_annotation(
+                x=cdim_names[j],
+                y=d,
+                text=txt,
+                showarrow=False,
+                font=dict(color=color, size=10),
+            )
     fig.update_layout(
-        title="日期 × 维度 负面率热力图",
-        height=max(360, 24 * len(dates) + 120),
-        yaxis=dict(autorange="reversed"),
-        margin=dict(l=20, r=20, t=50, b=40),
+        title="日期 × 维度 负面率热力图（n<3 样本不评级）",
+        height=max(360, 22 * len(dates) + 140),
+        yaxis=dict(type="date", autorange="reversed"),
+        margin=dict(l=20, r=20, t=60, b=40),
     )
     return fig
 
@@ -404,6 +547,11 @@ def _chart_platform_dim(s: dict) -> str:
 
 def _chart_cooccurrence(s: dict) -> str:
     fig = cooccurrence_fig(s)
+    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+
+
+def _chart_sources(s: dict) -> str:
+    fig = sentiment_sources_fig(s)
     return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
 
 
@@ -477,8 +625,12 @@ def build_html(bundle: ReportBundle) -> str:
         chart_intensity=_chart_intensity(s),
         chart_radar=_chart_radar(s),
         chart_platform_dim=_chart_platform_dim(s),
-        chart_wordcloud=_wordcloud_data_uri(s),
+        chart_wordcloud_pos=_wordcloud_data_uri(s, "positive"),
+        chart_wordcloud_neg=_wordcloud_data_uri(s, "negative"),
+        chart_wordcloud_worst=_wordcloud_data_uri(s, "worst_dim"),
+        worst_dim_name=dimension_cn(s.get("worst_dim_id", "")),
         chart_cooccurrence=_chart_cooccurrence(s),
+        chart_sources=_chart_sources(s),
         chart_date_dim=_chart_date_dim(s),
         top_words=s["top_words"],
         report_text=bundle.report_text,

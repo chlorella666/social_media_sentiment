@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 
 import jieba
@@ -28,15 +29,31 @@ STOPWORDS = set(
     重要 关键 问题 事情 想法 观点 意见 评论 评价""".split()
 )
 
+STOPWORDS.update(
+    """以为 还要 并且 以及 因此 于是 然而 从而 综上 此外 另外 总之 无论
+    不仅 而且 反而 甚至 既然 倘若 即便 除非 假如 哪怕 只好 只能 只能 不过""".split()
+)
 
-def segment(text: str) -> list[str]:
+# 通用名词/泛话题词：对情感归因无信息量，词云与共现网络默认过滤
+GENERIC_NOUNS = set(
+    """剧情 副本 玩家 任务 攻略 论坛 讨论 游戏 内容 帖子 评论 官方 版本
+    更新 活动 公告 时候 地方 东西 朋友 现在 今天 昨天 明天 这次 整体
+    体验 感觉 想法 观点 建议 消息 情况 问题 东西 关系 事情 时间
+    一次 一张 很多 那么 这么 只能 个人 结果 直接 最近 遇到 出现 当时
+    目前 特殊 好像 风格 时代 能力 部分 那边 发生 各位 感谢 次数 消耗
+    分析 每张 最高 只少 回合 综艺 主动 亲亲 无间 此间 夫人 资源 背景
+    显示 自动 超卡 超级 还是 还有 其实 非常 比较 有点 一些 这样 那样""".split()
+)
+
+
+def segment(text: str, extra_stopwords: set[str] | None = None) -> list[str]:
     """jieba 分词 + 停用词/噪声过滤。"""
     words = []
     for w in jieba.lcut(text):
         w = w.strip()
         if len(w) < 2:
             continue
-        if w in STOPWORDS:
+        if w in STOPWORDS or (extra_stopwords and w in extra_stopwords):
             continue
         if w.isdigit() or not any("\u4e00" <= c <= "\u9fff" for c in w):
             continue
@@ -44,25 +61,64 @@ def segment(text: str) -> list[str]:
     return words
 
 
-def build_word_freq(texts: list[str], top_n: int = 50) -> list[tuple[str, int]]:
+def build_word_freq(
+    texts: list[str], top_n: int = 50, extra_stopwords: set[str] | None = None
+) -> list[tuple[str, int]]:
     counter: Counter[str] = Counter()
     for text in texts:
-        counter.update(segment(text))
+        counter.update(segment(text, extra_stopwords))
     return counter.most_common(top_n)
 
 
-def build_cooccurrence(texts: list[str], window: int = 3, top_n: int = 30) -> list[dict]:
-    """句子窗口内关键词共现统计，返回 [{source, target, weight}]。"""
+def build_cooccurrence(
+    texts: list[str],
+    window: int = 3,
+    top_n: int = 30,
+    extra_stopwords: set[str] | None = None,
+    min_count: int = 1,
+    metric: str = "pmi",
+) -> list[dict]:
+    """句子窗口内关键词共现统计（文档级去重）。
+
+    metric="pmi"：用点互信息（log(p_ab / p_a*p_b)）衡量关联强度，
+    突出有信息量的搭配而非必然共现（如品牌名拆词）；原始次数在 count 字段。
+    同一词对在单条文本内只计 1 次，避免长帖重复词灌水统计。
+    """
     pair_counter: Counter[tuple[str, str]] = Counter()
+    word_counter: Counter[str] = Counter()
+    total = 0  # 文档数
     for text in texts:
-        words = segment(text)
+        words = segment(text, extra_stopwords)
+        uniq = set(words)
+        if not uniq:
+            continue
+        total += 1
+        for w in uniq:
+            word_counter[w] += 1
+        seen: set[tuple[str, str]] = set()
         for i in range(len(words)):
             for j in range(i + 1, min(i + 1 + window, len(words))):
                 a, b = words[i], words[j]
                 if a != b:
-                    key = tuple(sorted((a, b)))
-                    pair_counter[key] += 1
+                    seen.add(tuple(sorted((a, b))))
+        for key in seen:
+            pair_counter[key] += 1
+    if metric == "pmi" and total > 0:
+        scored = []
+        for (a, b), c in pair_counter.items():
+            if c < min_count:
+                continue
+            pa = word_counter[a] / total
+            pb = word_counter[b] / total
+            pab = c / total
+            if pa > 0 and pb > 0:
+                scored.append((a, b, c, math.log(pab / (pa * pb))))
+        scored.sort(key=lambda x: -x[3])
+        return [
+            {"source": a, "target": b, "count": c, "weight": round(pmi, 3)}
+            for a, b, c, pmi in scored[:top_n]
+        ]
     return [
-        {"source": a, "target": b, "weight": c}
+        {"source": a, "target": b, "count": c, "weight": c}
         for (a, b), c in pair_counter.most_common(top_n)
     ]

@@ -63,17 +63,18 @@ def load_schema(domain: str) -> dict[str, dict]:
 
 def get_llm_analyzer():
     from app.coding.llm_analyzer import LLMConfig, OpenAICompatibleAnalyzer
+    from app.core.secrets import ensure_legacy_key_migrated, load_api_key
 
     import os
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    # 旧明文 Key 一次性迁移（幂等；导入并验证后删除明文文件）
+    ensure_legacy_key_migrated()
+    # 开发脚本通道：DPAPI → OPENAI_API_KEY（1.5 决策，env 仅限开发用途）
+    api_key = load_api_key(allow_env=True)
     if not api_key:
-        key_file = ROOT / "llm_apikey.txt"
-        if key_file.exists():
-            lines = [ln.strip() for ln in key_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
-            api_key = next((ln for ln in lines if ln.startswith("sk-")), lines[-1] if lines else "")
-    if not api_key:
-        raise SystemExit("--llm 需要 API Key：设置 OPENAI_API_KEY 或填写 llm_apikey.txt")
+        raise SystemExit(
+            "--llm 需要 API Key：应用侧边栏保存（Windows DPAPI）或设置 OPENAI_API_KEY"
+        )
     config = LLMConfig(
         api_key=api_key,
         base_url=os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com"),
@@ -227,7 +228,18 @@ def main():
     ap = argparse.ArgumentParser(description="黄金集基准评测")
     ap.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN)
     ap.add_argument("--llm", action="store_true", help="混合流水线（词典+LLM），需 API Key")
-    ap.add_argument("--record", action="store_true", default=True, help="追加结果到 docs/评测记录.md")
+    ap.add_argument(
+        "--record", dest="record", action="store_true", default=True,
+        help="追加结果到 docs/评测记录.md",
+    )
+    ap.add_argument(
+        "--no-record", dest="record", action="store_false",
+        help="不追加 docs/评测记录.md（回归/CI 用，避免污染文档）",
+    )
+    ap.add_argument(
+        "--report-out", type=Path, default=None,
+        help="报告 JSON 输出路径（默认 data/datasets/benchmark_report.json）",
+    )
     args = ap.parse_args()
 
     if not args.golden.exists():
@@ -305,9 +317,10 @@ def main():
               f"（一致率 {cl['human_agreement']:.0%}），规则命中率 {cl['rule_hit_rate']:.0%}，"
               f"原因匹配率 {cl['category_match_rate']:.0%}；不可复现 {len(cl['unreproducible'])} 条")
 
-    REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_JSON.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n报告已保存：{REPORT_JSON}")
+    report_path = args.report_out or REPORT_JSON
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n报告已保存：{report_path}")
 
     if args.record:
         RECORD_DOC.parent.mkdir(parents=True, exist_ok=True)

@@ -11,3 +11,4 @@ wordcloud>=1.9
 networkx>=3.0
 kaleido>=1.0
 cnsenti>=0.0.7
+send2trash>=1.8

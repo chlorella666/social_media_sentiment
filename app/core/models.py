@@ -69,8 +69,12 @@ class AnalysisPlan(BaseModel):
     comments_enabled: bool = True
     comments_per_post: int = 20
     llm_enabled: bool = False
+    llm_base_url: str = ""  # LLM 服务地址（非敏感，随计划传给 worker）
+    llm_model: str = ""  # LLM 模型名（非敏感，随计划传给 worker）
     narrative_enabled: bool = False  # 叙事框架/归因分析（默认关）
     relevance_check_enabled: bool = False  # LLM 相关性复核（可选，按量计费）
+    exclude_words: list[str] = Field(default_factory=list)  # 词云/共现排除词（角色名、地名等）
+    review_enabled: bool = False  # 人工相关性筛选：采集后暂停，人工剔除不相关帖/评论
     created_at: datetime = Field(default_factory=datetime.now)
 
 

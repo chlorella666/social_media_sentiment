@@ -18,6 +18,8 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+from app.coding.tokenizer import STOPWORDS
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ECSD_DIR = PROJECT_ROOT / "data" / "dicts" / "ecsd"
 MAX_WORD_LEN = 8  # 子串扫描的最大词长，控制开销
@@ -51,6 +53,9 @@ CONTEXT_WORDS = {
     "普通", "相比", "对比", "比较", "反而", "只是", "情况", "问题", "表现",
     "感觉", "觉得", "看看", "选择", "考虑", "建议", "说法", "说法", "观点",
 }
+
+# 词典噪声词：虽在 ECSD 词表中但无语义极性（"第一/唯一"等），不进入情感词报告
+NOISE_WORDS = {"第一", "第二", "唯一"}
 
 # 反讽/阴阳怪气标记：命中且存在情感词时压低置信度，交 LLM 复核
 IRONY_MARKERS = [
@@ -161,6 +166,22 @@ def _scan(
     return matches
 
 
+def _report_keyword(word: str) -> bool:
+    """情感词报告过滤：长度≥2，且非停用/否定/程度/噪声词。"""
+    if len(word) < 2:
+        return False
+    if word in NOISE_WORDS or word in NEGATION_WORDS or word in DEGREE_ADVERBS:
+        return False
+    if word in STOPWORDS:
+        return False
+    return True
+
+
+def word_polarity(word: str) -> float:
+    """词的极性分数（>0 正面、<0 负面、0 未知/不报告）。"""
+    return _word_scores().get(word, 0.0)
+
+
 def score_text(text: str) -> dict:
     """词典预筛评分（V2），输出契约与 lexicon.py 一致。"""
     lowered = text.lower()
@@ -208,7 +229,8 @@ def score_text(text: str) -> dict:
         else:
             total += amount * 0.8  # 负面词被否定 → 正面
             hits_pos += 1
-        keywords.append(word)
+        if _report_keyword(word):
+            keywords.append(word)
 
     # 信号一致性：正负命中冲突越强，置信度越低（交 LLM 精分析）
     agreement = 1.0

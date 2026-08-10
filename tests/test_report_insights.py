@@ -51,7 +51,7 @@ def test_report_contains_chart_insights_and_conclusion() -> None:
     assert 'class="insight"' in html
     assert "情感与分布" in html
     assert "情绪强度" in html
-    assert "关键词共现网络" in html
+    assert "情绪来源与讨论结构" in html
 
     word = build_word(bundle).getvalue()
     assert len(word) > 1000

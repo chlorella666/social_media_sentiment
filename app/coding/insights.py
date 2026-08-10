@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 from app.coding.llm_analyzer import OpenAICompatibleAnalyzer
+from app.coding import lexicon_v2
 from app.core.models import AnalysisPlan
+from app.core.names import dimension_cn, platform_cn
 
 CHART_IDS = [
     "overall", "platform", "trend", "dimensions", "heatmap", "words",
@@ -22,12 +24,10 @@ def build_descriptors(summary: dict) -> dict:
     platforms = summary["platforms"]
     trend = summary["trend"]
     dims = summary["dimensions"]
-    words = summary["top_words"]
     intensity = summary.get("intensity_distribution", {})
     pd_data = summary.get("platform_dim", {})
     dd_data = summary.get("date_dim", {})
     cooccurrence = summary.get("cooccurrence", [])
-    content_words = summary.get("top_content_words", [])
 
     def pct(key: str) -> str:
         return f"{dist[key]['ratio'] * 100:.1f}%"
@@ -43,7 +43,7 @@ def build_descriptors(summary: dict) -> dict:
         "platform": (
             "各平台内容量："
             + "；".join(
-                f"{pid} {v['posts']} 条、平均分 {v['avg_score']}"
+                f"{platform_cn(pid)} {v['posts']} 条、平均分 {v['avg_score']}"
                 for pid, v in platforms.items()
             )
             or "无平台数据"
@@ -54,7 +54,8 @@ def build_descriptors(summary: dict) -> dict:
         "dimensions": (
             "各维度讨论量与负面率："
             + "；".join(
-                f"{did} 讨论 {v['count']} 条、负面率 {v['negative_rate'] * 100:.1f}%"
+                f"{dimension_cn(did)} 讨论 {v['count']} 条、"
+                f"负面率 {v['negative_rate'] * 100:.1f}%"
                 for did, v in sorted(dims.items(), key=lambda kv: -kv[1]["count"])
             )
             if dims
@@ -63,33 +64,60 @@ def build_descriptors(summary: dict) -> dict:
         "heatmap": (
             _heatmap_descriptor(dims) if dims else "未启用维度分析"
         ),
-        "words": (
-            "高频情感词 Top："
-            + "、".join(f"{w}（{c}）" for w, c in words[:10])
-            if words
-            else "无明显高频词"
-        ),
+        "words": _words_descriptor(summary),
         "intensity": _intensity_descriptor(intensity),
         "radar": _radar_descriptor(dims),
         "platform_dim": _platform_dim_descriptor(pd_data),
         "date_dim": _date_dim_descriptor(dd_data),
-        "wordcloud": (
-            "分词后内容高频词 Top："
-            + "、".join(f"{w}（{c}）" for w, c in content_words[:10])
-            if content_words
-            else "无内容高频词"
-        ),
-        "cooccurrence": (
-            "共现关系 Top："
-            + "、".join(
-                f"{e['source']}-{e['target']}（{e['weight']}）"
-                for e in cooccurrence[:6]
-            )
-            if cooccurrence
-            else "无显著共现关系"
-        ),
+        "wordcloud": _wordcloud_descriptor(summary),
+        "cooccurrence": _cooccurrence_descriptor(cooccurrence, summary),
     }
     return descriptors
+
+
+def _words_descriptor(summary: dict) -> str:
+    pos = summary.get("positive_words") or []
+    neg = summary.get("negative_words") or []
+    parts = []
+    if neg:
+        parts.append("负面：" + "、".join(f"{w}（{c}）" for w, c in neg[:8]))
+    if pos:
+        parts.append("正面：" + "、".join(f"{w}（{c}）" for w, c in pos[:8]))
+    return "高频情感词（|情感分| 加权）：" + "；".join(parts) if parts else "无明显高频情感词"
+
+
+def _wordcloud_descriptor(summary: dict) -> str:
+    pos = summary.get("positive_wordcloud") or []
+    neg = summary.get("negative_wordcloud") or []
+    worst = summary.get("worst_dim_wordcloud") or []
+    parts = []
+    if neg:
+        parts.append("负面词云聚焦：" + "、".join(w for w, _ in neg[:8]))
+    if pos:
+        parts.append("正面词云聚焦：" + "、".join(w for w, _ in pos[:8]))
+    if worst:
+        parts.append(
+            f"「{dimension_cn(summary.get('worst_dim_id', ''))}」维度负面聚焦："
+            + "、".join(w for w, _ in worst[:8])
+        )
+    return "词云（权重=词频×情感强度）：" + "；".join(parts) if parts else "暂无词云数据"
+
+
+def _cooccurrence_descriptor(edges: list[dict], summary: dict) -> str:
+    sources = [
+        r
+        for r in (summary.get("sentiment_sources") or [])
+        if r["negative_rate"] > 0.5
+    ]
+    if not sources:
+        return "无显著负面来源话题（负面占比 >50% 且讨论量≥5 的话题不足）"
+    parts = []
+    for r in sources[:6]:
+        total = r["positive"] + r["negative"]
+        parts.append(
+            f"{r['word']}：负面 {r['negative_rate'] * 100:.0f}%（{total} 条）"
+        )
+    return "负面情绪来源话题 Top：" + "；".join(parts)
 
 
 def _intensity_descriptor(intensity: dict) -> str:
@@ -109,8 +137,9 @@ def _radar_descriptor(dims: dict) -> str:
     worst = max(dims.items(), key=lambda kv: kv[1]["negative_rate"])
     best = min(dims.items(), key=lambda kv: kv[1]["negative_rate"])
     return (
-        f"维度负面率雷达显示：负面率最高为「{worst[0]}」（{worst[1]['negative_rate'] * 100:.1f}%），"
-        f"最低为「{best[0]}」（{best[1]['negative_rate'] * 100:.1f}%），"
+        f"维度负面率雷达显示：负面率最高为「{dimension_cn(worst[0])}」"
+        f"（{worst[1]['negative_rate'] * 100:.1f}%），"
+        f"最低为「{dimension_cn(best[0])}」（{best[1]['negative_rate'] * 100:.1f}%），"
         f"共 {len(dims)} 个维度，分布{'失衡' if worst[1]['negative_rate'] > 0.5 else '相对均衡'}"
     )
 
@@ -123,7 +152,10 @@ def _platform_dim_descriptor(pd_data: dict) -> str:
         valid = [(d, v) for d, v in dims.items() if v["count"] > 0]
         if valid:
             d, v = max(valid, key=lambda kv: kv[1]["negative_rate"])
-            rows.append(f"{platform} 的「{d}」负面率 {v['negative_rate'] * 100:.1f}%")
+            rows.append(
+                f"{platform_cn(platform)} 的「{dimension_cn(d)}」"
+                f"负面率 {v['negative_rate'] * 100:.1f}%"
+            )
     return "各平台负面率最高维度：" + "；".join(rows[:5]) if rows else "无数据"
 
 
@@ -141,7 +173,8 @@ def _date_dim_descriptor(dd_data: dict) -> str:
     cells.sort(key=lambda c: -c[2]["negative_rate"])
     top = cells[:3]
     return "负面率最高的日期×维度：" + "；".join(
-        f"{d} 的「{dim}」{v['negative_rate'] * 100:.1f}%" for d, dim, v in top
+        f"{d} 的「{dimension_cn(dim)}」{v['negative_rate'] * 100:.1f}%"
+        for d, dim, v in top
     )
 
 
@@ -171,7 +204,8 @@ def _trend_descriptor(trend: dict) -> str:
 def _heatmap_descriptor(dims: dict) -> str:
     worst = max(dims.items(), key=lambda kv: kv[1]["negative_rate"])
     return (
-        f"负面率最高维度为「{worst[0]}」（{worst[1]['negative_rate'] * 100:.1f}%），"
+        f"负面率最高维度为「{dimension_cn(worst[0])}」"
+        f"（{worst[1]['negative_rate'] * 100:.1f}%），"
         f"共讨论 {worst[1]['count']} 条"
     )
 

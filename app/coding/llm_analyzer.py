@@ -132,7 +132,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
     def errors(self) -> list[str]:
         return self._errors
 
-    def _chat(
+    def _post_chat(
         self,
         system: str,
         user: str,
@@ -140,7 +140,11 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
         use_json: bool = True,
         max_tokens: int | None = None,
         timeout: int = 60,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """发送一次 chat 请求，返回 (content, finish_reason)。
+
+        finish_reason="length" 表示输出被 max_tokens 截断，调用方据此拆批重试。
+        """
         payload: dict = {
             "model": self.config.model,
             "messages": [
@@ -173,7 +177,22 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
         with self._lock:
             self.prompt_tokens += int(usage.get("prompt_tokens") or 0)
             self.completion_tokens += int(usage.get("completion_tokens") or 0)
-        return data["choices"][0]["message"]["content"]
+        choice = (data.get("choices") or [{}])[0]
+        return choice["message"]["content"], choice.get("finish_reason") or ""
+
+    def _chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        use_json: bool = True,
+        max_tokens: int | None = None,
+        timeout: int = 60,
+    ) -> str:
+        content, _ = self._post_chat(
+            system, user, use_json=use_json, max_tokens=max_tokens, timeout=timeout
+        )
+        return content
 
     def ping(self, timeout: int = 20) -> tuple[bool, str]:
         """发送最小请求，验证 Key / Base URL / 模型名是否可用。"""
@@ -236,6 +255,67 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             )
         return results
 
+    def _structured_batch(
+        self,
+        texts: list[str],
+        *,
+        system: str,
+        user_fn: "Callable[[list[str]], str]",
+        max_tokens_fn: "Callable[[int], int]",
+        parse_fn: "Callable[[str, int], list[dict]]",
+        sanitize_fn: "Callable[[list[dict]], list[dict]]",
+        fallback_fn: "Callable[[list[str]], list[dict]]",
+        error_label: str,
+        error_suffix: str,
+        min_split: int = 3,
+    ) -> list[dict]:
+        """单批结构化 LLM 请求的统一处理：截断检测 + 拆小批重试 + 兜底。
+
+        - finish_reason=="length"（输出被 max_tokens 截断）→ 抛"条目不完整"；
+        - 截断且批次 > min_split → 对半拆分递归重试，分批后更易完整返回；
+        - 小批仍失败 → 记录错误并返回 fallback（不中断主流程）。
+        返回与 texts 等长、按 index 对齐的结果列表。
+        """
+        try:
+            content, finish = self._post_chat(
+                system,
+                user_fn(texts),
+                max_tokens=max_tokens_fn(len(texts)),
+            )
+            if finish == "length":
+                raise ValueError("模型返回条目不完整（输出被截断）")
+            return sanitize_fn(parse_fn(content, len(texts)))
+        except Exception as exc:
+            if len(texts) > min_split and "条目不完整" in str(exc):
+                mid = len(texts) // 2
+                return self._structured_batch(
+                    texts[:mid],
+                    system=system,
+                    user_fn=user_fn,
+                    max_tokens_fn=max_tokens_fn,
+                    parse_fn=parse_fn,
+                    sanitize_fn=sanitize_fn,
+                    fallback_fn=fallback_fn,
+                    error_label=error_label,
+                    error_suffix=error_suffix,
+                    min_split=min_split,
+                ) + self._structured_batch(
+                    texts[mid:],
+                    system=system,
+                    user_fn=user_fn,
+                    max_tokens_fn=max_tokens_fn,
+                    parse_fn=parse_fn,
+                    sanitize_fn=sanitize_fn,
+                    fallback_fn=fallback_fn,
+                    error_label=error_label,
+                    error_suffix=error_suffix,
+                    min_split=min_split,
+                )
+            self._errors.append(
+                f"{error_label}（{len(texts)} 条）：{self._friendly_error(exc)}，{error_suffix}"
+            )
+            return fallback_fn(texts)
+
     def _request_batch(self, texts: list[str]) -> list[dict]:
         system = (
             "你是中文社交媒体情感分析专家。对输入的每条文本输出情感判断。"
@@ -249,17 +329,17 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             '"score":-1到1的浮点数,"confidence":0到1的浮点数,"keywords":[最多3个情感关键词]}]}。'
             "items 长度必须与输入条数一致，index 从 0 开始。只输出 JSON，不要其他文字。"
         )
-        user = json.dumps({"texts": texts}, ensure_ascii=False)
-        try:
-            content = self._chat(
-                system, user, max_tokens=min(2000, 150 + 100 * len(texts))
-            )
-            return self._parse_batch(content, len(texts))
-        except Exception as exc:
-            self._errors.append(
-                f"LLM 批量请求失败（{len(texts)} 条）：{self._friendly_error(exc)}，该批次已用词典结果兜底"
-            )
-            return self._lexicon_fallback(texts)
+        return self._structured_batch(
+            texts,
+            system=system,
+            user_fn=lambda chunk: json.dumps({"texts": chunk}, ensure_ascii=False),
+            max_tokens_fn=lambda n: min(2000, 150 + 100 * n),
+            parse_fn=self._parse_batch,
+            sanitize_fn=lambda items: items,
+            fallback_fn=self._lexicon_fallback,
+            error_label="LLM 批量请求失败",
+            error_suffix="该批次已用词典结果兜底",
+        )
 
     def _request_narrative_batch(self, texts: list[str]) -> list[dict]:
         frames = "conflict|human_interest|attribution|economic|morality"
@@ -272,18 +352,19 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             '"unclear" 只允许出现在 attribution 中，不允许出现在 narrative 中。'
             "items 长度必须与输入条数一致，index 从 0 开始。只输出 JSON，不要其他文字。"
         )
-        user = json.dumps({"texts": texts}, ensure_ascii=False)
-        try:
-            content = self._chat(
-                system, user, max_tokens=min(1500, 120 + 60 * len(texts))
-            )
-            raw_items = self._parse_batch(content, len(texts))
-            return self._sanitize_narrative_items(raw_items)
-        except Exception as exc:
-            self._errors.append(
-                f"叙事/归因批量请求失败（{len(texts)} 条）：{self._friendly_error(exc)}，已跳过该层"
-            )
-            return [{"narrative": None, "attribution": None} for _ in texts]
+        return self._structured_batch(
+            texts,
+            system=system,
+            user_fn=lambda chunk: json.dumps({"texts": chunk}, ensure_ascii=False),
+            max_tokens_fn=lambda n: min(2500, 150 + 200 * n),
+            parse_fn=self._parse_batch,
+            sanitize_fn=self._sanitize_narrative_items,
+            fallback_fn=lambda chunk: [
+                {"narrative": None, "attribution": None} for _ in chunk
+            ],
+            error_label="叙事/归因批量请求失败",
+            error_suffix="已自动跳过叙事/归因层，不影响情感编码结果",
+        )
 
     def _sanitize_narrative_items(self, items: list[dict]) -> list[dict]:
         """校验并清洗叙事/归因取值：模型偶尔会把 unclear 等非法值填错字段。"""
@@ -323,19 +404,27 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             '输出 JSON：{"items":[{"index":0,"relevant":true}]}。'
             "items 长度必须与输入条数一致，index 从 0 开始。只输出 JSON，不要其他文字。"
         )
-        user = json.dumps({"subject": subject, "texts": texts}, ensure_ascii=False)
-        try:
-            content = self._chat(
-                system, user, max_tokens=min(2000, 150 + 60 * len(texts))
+        results: list[bool] = []
+        for i in range(0, len(texts), self.batch_size):
+            chunk = texts[i : i + self.batch_size]
+            results.extend(
+                self._structured_batch(
+                    chunk,
+                    system=system,
+                    user_fn=lambda c: json.dumps(
+                        {"subject": subject, "texts": c}, ensure_ascii=False
+                    ),
+                    max_tokens_fn=lambda n: min(2000, 150 + 60 * n),
+                    parse_fn=self._parse_batch,
+                    sanitize_fn=lambda its: [
+                        bool(it.get("relevant")) for it in its
+                    ],
+                    fallback_fn=lambda c: [True] * len(c),
+                    error_label="LLM 相关性复核失败",
+                    error_suffix="本次跳过复核",
+                )
             )
-            items = self._parse_batch(content, len(texts))
-            return [bool(it.get("relevant")) for it in items]
-        except Exception as exc:
-            self._errors.append(
-                f"LLM 相关性复核失败（{len(texts)} 条）："
-                f"{self._friendly_error(exc)}，本次跳过复核"
-            )
-            return [True] * len(texts)
+        return results
 
     def analyze_batch(
         self,
@@ -462,15 +551,26 @@ def create_analyzer(
     api_key: str | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    allow_env: bool = False,
 ) -> BaseAnalyzer:
-    """按配置创建分析器；无 Key 时返回 Mock（词典）分析器。"""
-    key = api_key or os.environ.get("OPENAI_API_KEY", "")
+    """按配置创建分析器；无 Key 时返回 Mock（词典）分析器。
+
+    allow_env=False（默认）：应用链路不读环境变量，Key 由调用方显式传入
+    （worker 只从 DPAPI 读取，见 1.5）；开发/评测脚本可显式传 allow_env=True。
+    """
+    key = api_key or (os.environ.get("OPENAI_API_KEY", "") if allow_env else "")
     if not key:
         return MockAnalyzer()
+    base = base_url or (
+        os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL) if allow_env else DEFAULT_BASE_URL
+    )
+    model_name = model or (
+        os.environ.get("OPENAI_MODEL", DEFAULT_MODEL) if allow_env else DEFAULT_MODEL
+    )
     return OpenAICompatibleAnalyzer(
         LLMConfig(
             api_key=key,
-            base_url=base_url or os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL),
-            model=model or os.environ.get("OPENAI_MODEL", DEFAULT_MODEL),
+            base_url=base,
+            model=model_name,
         )
     )

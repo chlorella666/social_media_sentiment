@@ -14,7 +14,7 @@ from app.core.models import (
     SentimentLabel,
 )
 from app.coding import lexicon_v2 as lexicon
-from app.coding.cleaner import clean_text
+from app.coding.cleaner import clean_text, normalize_pub_date
 from app.coding.llm_analyzer import CONFIDENCE_THRESHOLD, OpenAICompatibleAnalyzer
 
 
@@ -88,7 +88,7 @@ class Coder:
                         text=content,
                         platform=post.platform,
                         keyword=post.keyword,
-                        pub_date=(post.timestamp or "")[:10],
+                        pub_date=normalize_pub_date(post.timestamp),
                         dimensions=_match_dimensions(content, self.schema),
                         sentiment=SentimentLabel(pre["sentiment"]),
                         intensity=_intensity(pre["score"]),
@@ -112,7 +112,7 @@ class Coder:
                     text=ctext,
                     platform=post.platform,
                     keyword=post.keyword,
-                    pub_date=(comment.time or "")[:10],
+                    pub_date=normalize_pub_date(comment.time),
                     dimensions=_match_dimensions(ctext, self.schema),
                     sentiment=SentimentLabel(pre["sentiment"]),
                     intensity=_intensity(pre["score"]),

@@ -6,7 +6,8 @@
   python tests/manual_acceptance.py --days 90 --limit 3 --xhs-limit 2
   python tests/manual_acceptance.py --brands 恋与深空,大疆 --skip-llm
 
-前置：llm_apikey.txt（本地）、微博 Cookie（env WB_SUB）、Chrome 已登录小红书。
+前置：API Key（应用侧边栏保存到 DPAPI，或 env OPENAI_API_KEY）、
+      微博 Cookie（env WB_SUB）、Chrome 已登录小红书。
 输出：data/reports/验收试跑manual_<时间戳>/<品牌>/（Excel 5 sheet + result.json）
 """
 
@@ -60,11 +61,14 @@ def main() -> None:
 
     api_key = ""
     if not args.skip_llm:
-        key_file = ROOT / "llm_apikey.txt"
-        if key_file.exists():
-            api_key = key_file.read_text(encoding="utf-8").splitlines()[-1].strip()
-        else:
-            print("⚠ 未找到 llm_apikey.txt，将使用词典模式")
+        from app.core.secrets import ensure_legacy_key_migrated, load_api_key
+
+        # 旧明文 Key 一次性迁移（幂等；导入并验证后删除明文文件）
+        ensure_legacy_key_migrated()
+        # 开发脚本通道：DPAPI → OPENAI_API_KEY（1.5 决策，env 仅限开发用途）
+        api_key = load_api_key(allow_env=True)
+        if not api_key:
+            print("⚠ 未找到 API Key（应用侧边栏保存或设置 OPENAI_API_KEY），将使用词典模式")
             args.skip_llm = True
 
     ts = time.strftime("%Y%m%d_%H%M%S")
