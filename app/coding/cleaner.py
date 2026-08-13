@@ -15,6 +15,9 @@ URL_RE = re.compile(r"https?://\S+|www\.\S+")
 HTML_RE = re.compile(r"<[^>]+>")
 MENTION_RE = re.compile(r"@[\w\u4e00-\u9fff\-]+")
 HASHTAG_RE = re.compile(r"#([^#\s]+)#")
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
+IDCARD_RE = re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)")
 NOISE_RE = re.compile(
     r"^(哈哈哈+|嘿嘿嘿+|呵呵+|2333*|666+|6666+|hhhh+|hhhhh+|路过|围观|沙发|前排|纯表情|\.{2,}|…+)$",
     re.IGNORECASE,
@@ -52,6 +55,9 @@ OFFICIAL_PAGE_PATTERNS = [
     r"官方周边",
 ]
 OFFICIAL_PAGE_RE = re.compile("|".join(OFFICIAL_PAGE_PATTERNS))
+
+# 第三方评价/评分聚合页特征：标题含这些词时，"XX官网/首页"更可能是聚合页而非官方页
+REVIEW_AGG_WORDS = ("评价", "评论", "评分", "讨论", "论坛", "测评", "攻略")
 
 
 def normalize_datetime(raw: str, now: datetime | None = None) -> str:
@@ -122,6 +128,26 @@ def clean_text(text: str) -> str:
     return t.strip()
 
 
+def desensitize_text(text: str) -> str:
+    """发 LLM 前脱敏（P1-7 评测 / P1-3 应用侧共用）。
+
+    去除：@用户名、链接、邮箱、11 位手机号、18 位身份证号。
+    保守原则：不删除任意短数字串（避免误伤长文本中的游戏模组码/订单号/产品
+    编号等，如「模组码:8099410」），因此纯数字"账号 ID/QQ 号"不在此处理——
+    评测记录注明该局限，后续有明确可识别规则再收窄。
+    """
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKC", text)
+    t = URL_RE.sub(" ", t)
+    t = MENTION_RE.sub(" ", t)
+    t = EMAIL_RE.sub(" ", t)
+    t = PHONE_RE.sub(" ", t)
+    t = IDCARD_RE.sub(" ", t)
+    t = WHITESPACE_RE.sub(" ", t)
+    return t.strip()
+
+
 def dedupe_posts(posts: list[Post]) -> list[Post]:
     """四重去重：ID / URL / 标题前50字 / 内容前50字。
 
@@ -157,7 +183,16 @@ def is_boilerplate(text: str) -> bool:
 
 
 def is_official_page(title: str) -> bool:
-    return bool(title and OFFICIAL_PAGE_RE.search(title))
+    if not title:
+        return False
+    if any(w in title for w in ("官方网站", "服务与支持", "官方周边", "欢迎您")):
+        return True
+    if "官网" in title or "首页" in title:
+        # 应用宝官网/TapTap 等第三方页标题常含"评价/评分"等特征，不算官方页
+        if any(w in title for w in REVIEW_AGG_WORDS):
+            return False
+        return True
+    return False
 
 
 def clean_posts(
@@ -180,13 +215,16 @@ def clean_posts(
         reasons: list[str] = []
         title = (post.title or "").strip()
         content = clean_text(post.content or "")
+        is_ws = str(getattr(post, "platform", "") or "").startswith("websearch")
         if not content:
             reasons.append("正文为空")
-        if is_boilerplate(content) or is_boilerplate(title):
+        boiler = is_boilerplate(content) or is_boilerplate(title)
+        if boiler and not (is_ws and not is_boilerplate(title) and len(content) >= 10):
             reasons.append("样板/页面壳文本")
         if is_official_page(title):
             reasons.append("官方页面")
-        if len(content) < 10 and len(title) < 10:
+        short_limit = 5 if is_ws else 10
+        if len(content) < short_limit and len(title) < short_limit:
             reasons.append("文本过短")
         hay = title + content
         if subject or keywords:
@@ -222,6 +260,8 @@ def clean_posts(
                     "platform": post.platform,
                     "url": post.url,
                     "title": title[:80],
+                    "keyword": post.keyword,
+                    "query": (post.platform_specific or {}).get("query", ""),
                     "reason": "；".join(reasons),
                 }
             )
@@ -230,6 +270,7 @@ def clean_posts(
 
 CLEANERS = {
     "clean_text": clean_text,
+    "desensitize_text": desensitize_text,
     "dedupe_posts": dedupe_posts,
     "clean_posts": clean_posts,
     "is_boilerplate": is_boilerplate,

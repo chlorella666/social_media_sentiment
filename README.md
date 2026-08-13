@@ -48,6 +48,8 @@ python -m streamlit run app/main.py
 
 ## 渠道安全与配额
 
+- 各渠道**每关键词条数上限**有默认值与封顶（B站 20/50、微博 20/30、小红书 10/10、
+  WebSearch 13/13，详见项目方案 §九）；加量建议**增加关键词**（策略加词）而非调大上限；
 - 「渠道/时间」步骤提供渠道安全设置：每个渠道可设**每日上限**
   （按预计采集条数计，-1=不限）、**暂停/恢复**、**解除风控冷却**；
 - 检测到平台风控（限频/验证码/429）时渠道**自动冷却**（10 分钟起步，
@@ -68,13 +70,16 @@ python -m streamlit run app/main.py
 
 - 一键回归（单元测试 + 黄金集词典门槛）：双击 `regress.bat`（POSIX 用
   `./regress.sh`），等价于 `python tests/run_regression.py`；
-- 全量 13 个单元/UI 测试逐文件子进程隔离运行，失败自动重跑 1 次；
+- 全量 21 个单元/UI 测试逐文件子进程隔离运行，失败自动重跑 1 次；
   黄金集词典直判准确率**跌破基线 1.0pp 即 FAIL**，需 `--accept-baseline`
   显式接受新基线（基线文件 `tests/fixtures/baseline_lexicon.json`，随代码提交）；
 - 报告落 `data/regression/<时间戳>/report.json`，历史曲线在
   `data/regression/history.jsonl`（均为本地数据，不入库）；
 - 混合 LLM 评测（需 API Key）：`python tests/run_regression.py --llm`
   （仅记录不设门槛）；真实验收（需微博 Cookie）：`--acceptance`，不进 CI；
+- 边界集词典评测随回归自动跑（`benchmark_golden.py --edge`，46.4% 提示项），
+  strict-edge A 档只提示不设硬门槛；边界集混合基线 77.73% 已冻结
+  （`baseline_edge_hybrid.json`，脱敏口径）；
 - 常用子命令：`--unit-only` / `--benchmark-only` / `--fail-fast` / `--smoke`（runner 自检）；
 - CI：`.github/workflows/ci.yml`（windows-latest + ubuntu-latest 双平台，
   `python tests/run_regression.py --ci`），推送 GitHub 后自动生效；
@@ -93,6 +98,41 @@ python -m streamlit run app/main.py
 - worker 任务开始前预检磁盘（可用 <500MB 直接失败并指向数据管理）；data/ 总占用超 2GB 时启动提示；
 - CLI：`python app/core/lifecycle.py --repair --archive --purge 90 --logs 30 --regression`
   （默认 dry-run，加 `--apply` 真正执行）。
+
+## 评测中心（2.1，开发者工具）
+
+- 一键打开：双击 `eval.bat`（等价 `python -m streamlit run app/eval_dashboard.py`），
+  查看黄金集按渠道/领域/情感类别/类型/语言现象的细分跑分；
+- 每次跑分自动沉淀历史并出对比：`python tests/benchmark_golden.py`（词典，无需 Key）或
+  `--llm`（混合，需 Key）；历史与完整明细（含错误样本）存 `data/benchmark/`（本地不入库）；
+- 仪表盘内容：概览指标（一句话总结 + 术语悬浮「？」解释）、准确率趋势、细分跑分
+  （本次 vs 上次 Δpp、n<30 标"参考"、渠道/领域/情感类别 n≥30 且准确率<75% 标"短板"）、
+  情感类别 P/R/F1 + 混淆矩阵、任选两次运行对比 + 错误样本下钻、关键词效果
+  （前后对照/候选确认/策略配置页）、运行历史、一键重跑词典评测；
+- 冻结基线：`tests/fixtures/baseline_lexicon.json`（词典 0.3543，回归门槛）+
+  `baseline_hybrid.json`（混合 0.7829，仅记录不设门槛）；黄金集内容变更后
+  指纹变化，跨版本对比会被拦截；
+- 边界：细分回退默认只提示不设硬门槛（小样本噪声），混合模式受 LLM 温度影响仅供参考。
+
+## 关键词策略调优（2.2）
+
+- 目标：解决 websearch 纯品牌词丢弃率高，用"关键词效果"数据反推后缀与同义词；
+- 数据层：`python app/core/keyword_effects.py --scan-dir data/reports --candidates`
+  （解析历史任务 → 每查询串采集/丢弃/保留/编码漏斗 → 候选清单 candidates.csv）；
+- 每次真实采集后，丢弃记录自动带关键词/查询串，WebSearch 结果记录实际查询串，
+  "关键词效果"从下个任务起全量可归因（旧报告无此字段，按关键词兜底）；
+- 反推只出候选、人工确认后启用：确认写入 `app/channels/keyword_strategy.json`
+  （同义词每品牌≤2、额外查询≤5、后缀池≤5），WebSearch 下次采集生效，配置缺失自动
+  回退旧行为（默认「评价」后缀）；
+- 仪表盘（`eval.bat`）含"关键词效果"区块：漏斗表、丢弃原因、后缀效果、候选确认；
+- 真实验收：`python tests/manual_acceptance.py --keyword-check` 跑三品牌并输出
+  websearch 有效供给率（判定口径分档：基准 <85% 用提升验证 +5pp；≥85% 用扩容验证，
+  详见 docs/受控对照跑分操作单.md）；
+- 受控对照判定：恋与深空提升验证达标（77.5%→90.6%）；小象超市经**跨任务按 URL
+  去重**后比率稳定（评价 12/12、新增词合计 89.8%）但品质 75% 未达 80% 门槛且
+  n<30，**第 2 品牌待严格达标**；操作单见 docs/受控对照跑分操作单.md；
+- WebSearch 每关键词上限封顶 **13 条**（实测单查询可获取量 5~13 条），加量建议策略加词；
+- 边界：Tier 2 延后——新词自动启用、跨渠道差异化关键词矩阵、关键词预算自动分配。
 
 ## 大模型配置（可选）
 

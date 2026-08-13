@@ -1,4 +1,4 @@
-"""Excel 导出：原始数据 / 情感编码明细 / 统计汇总 三个 sheet。"""
+"""Excel 导出：原始数据 / 情感编码明细 / 统计汇总 / 关键词效果 / 实际查询串。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import pandas as pd
 
 from app.core.models import ReportBundle
 from app.domains.loader import load_domain
+from app.output.html_report import keyword_rows, query_rows
 
 NARRATIVE_CN = {
     "conflict": "冲突",
@@ -225,6 +226,8 @@ def _dropped_rows(bundle: ReportBundle) -> list[dict]:
                     "平台": d.get("platform", ""),
                     "链接": d.get("url", ""),
                     "标题": d.get("title", ""),
+                    "关键词": d.get("keyword", ""),
+                    "查询串": d.get("query", ""),
                     "丢弃原因": d.get("reason", ""),
                 }
             )
@@ -266,32 +269,67 @@ def _summary_frames(bundle: ReportBundle) -> list[tuple[str, pd.DataFrame]]:
                     {"字段": "叙事框架/归因主体", "说明": "仅对 LLM 精分析过的文本执行（成本控制设计）"},
                     {"字段": "已采集评论数", "说明": "原始数据中的平台评论总数来自平台字段；实际采集按每帖上限抓取热门评论"},
                     {"字段": "丢弃明细", "说明": "清洗阶段被排除的帖子及原因（官方页面/样板文本/重复/不相关等）"},
+                    {"字段": "关键词效果", "说明": "按确认关键词统计采集/保留/丢弃/有效供给率（保留÷采集），与 HTML/Word 报告口径一致"},
+                    {"字段": "实际查询串（WebSearch）", "说明": "系统实际发给搜索引擎的查询词（确认词+子渠道提示+自动后缀），仅 WebSearch；可核对'实际搜了什么'"},
                 ]
             ),
         )
     )
-    kw_stats = s.get("keyword_stats") or {}
-    if kw_stats:
+    kw_rows, kw_unattr = keyword_rows(bundle)
+    if kw_rows:
         frames.append(
             (
                 "关键词效果",
                 pd.DataFrame(
                     [
                         {
-                            "关键词": kw,
-                            "帖子数": v["posts"],
-                            "评论数": v["comments"],
-                            "编码文本数": v["coded"],
-                            "正面": v["positive"],
-                            "负面": v["negative"],
-                            "中性": v["neutral"],
-                            "负面率": v["negative_rate"],
+                            "关键词": r["keyword"],
+                            "采集": r["collected"],
+                            "保留": r["kept"],
+                            "丢弃": r["dropped"],
+                            "有效供给率": r["effective_rate"],
+                            "编码文本": r["coded"],
+                            "正面": r["positive"],
+                            "负面": r["negative"],
+                            "中性": r["neutral"],
+                            "负面率": r["negative_rate"],
                         }
-                        for kw, v in sorted(kw_stats.items())
+                        for r in kw_rows
                     ]
                 ),
             )
         )
+    q_rows, q_unattr = query_rows(bundle)
+    if q_rows:
+        frames.append(
+            (
+                "实际查询串（WebSearch）",
+                pd.DataFrame(
+                    [
+                        {
+                            "实际查询串": r["query"],
+                            "渠道": r["channel"],
+                            "采集": r["collected"],
+                            "保留": r["kept"],
+                            "丢弃": r["dropped"],
+                            "有效供给率": r["effective_rate"],
+                            "编码文本": r["coded"],
+                            "负面": r["negative"],
+                            "负面率": r["negative_rate"],
+                        }
+                        for r in q_rows
+                    ]
+                ),
+            )
+        )
+    if kw_unattr or q_unattr:
+        for idx, (name, df) in enumerate(frames):
+            if name == "字段说明":
+                frames[idx][1].loc[len(df)] = {
+                    "字段": "未归属丢弃",
+                    "说明": f"旧版数据未记录关键词/查询串的丢弃 {kw_unattr + q_unattr} 条，不计入上表",
+                }
+                break
     usage = bundle.llm_usage or {}
     if usage.get("prompt_tokens"):
         frames.append(

@@ -14,7 +14,7 @@ from app.core.models import (
     SentimentLabel,
 )
 from app.coding import lexicon_v2 as lexicon
-from app.coding.cleaner import clean_text, normalize_pub_date
+from app.coding.cleaner import clean_text, desensitize_text, normalize_pub_date
 from app.coding.llm_analyzer import CONFIDENCE_THRESHOLD, OpenAICompatibleAnalyzer
 
 
@@ -129,7 +129,8 @@ class Coder:
 
         # 第二遍：低置信度文本交给 LLM
         if llm_indices:
-            texts = [t for _, t in llm_indices]
+            # P1-3：发 LLM 前脱敏（@/链接/邮箱/手机号/身份证），与评测链路同函数
+            texts = [desensitize_text(t) for _, t in llm_indices]
             n_llm = len(texts)
             llm_weight = 0.35 if plan.narrative_enabled else 0.5
             llm_started = time.monotonic()
@@ -181,7 +182,7 @@ class Coder:
                         0.0,
                     )
                 n_results = self.analyzer.analyze_narrative(
-                    [it.text for it in narrative_items],
+                    [desensitize_text(it.text) for it in narrative_items],
                     on_batch_progress=(
                         (lambda done_n, total_n: on_progress(
                             f"叙事/归因分析 {done_n}/{total_n}（"

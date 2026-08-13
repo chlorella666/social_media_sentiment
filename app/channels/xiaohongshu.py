@@ -39,6 +39,8 @@ OPENCLI_TIMEOUT = 180
 # 笔记详情与评论请求较慢（每次约 10~15s），设置每个关键词的上限
 MAX_NOTE_DETAILS_PER_KEYWORD = 10
 MAX_COMMENT_NOTES_PER_KEYWORD = 5
+# 每关键词条数上限封顶：反爬最严（xsec_token+签名、批量必验证码）；加量建议加关键词
+MAX_LIMIT = 10
 
 
 def _opencli_base() -> list[str]:
@@ -199,6 +201,7 @@ class XiaohongshuChannel(ChannelAdapter):
         for channel in plan.channels:
             if channel.channel_id == self.id:
                 limit = int(channel.params.get("limit") or limit)
+        limit = min(limit, MAX_LIMIT)
 
         for idx, keyword in enumerate(keywords):
             if cancel_event and cancel_event.is_set():

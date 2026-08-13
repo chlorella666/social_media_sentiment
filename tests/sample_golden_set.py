@@ -46,6 +46,8 @@ if sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 REPORTS_DIR = ROOT / "data" / "reports"
 OUT_DIR = ROOT / "data" / "datasets"
 DOMAINS_DIR = ROOT / "app" / "domains"
@@ -66,6 +68,22 @@ EDGE_TARGETS = {
     "multi_dimension": 0.15,  # 多维度文本
     "mixed_script": 0.05,  # 中英/繁体/emoji 混杂
     "irony_hint": 0.10,    # 疑似反讽（启发式，仅供采样偏置）
+}
+
+# 边界样本专项集（docs/边界样本专项集方案.md，2026-08-13 定稿）
+EDGE_QUOTA = 50
+LOWCONF_MIN, LOWCONF_MAX = 0.55, 0.95  # 低置信子集：词典得分区间
+EDGE_CHANNELS = {
+    "irony":   {"weibo": 20, "xiaohongshu": 14, "websearch": 16},
+    "jargon":  {"weibo": 20, "xiaohongshu": 15, "websearch": 15},
+    "dialect": {"weibo": 25, "websearch": 25},
+    "long":    {"websearch": 20, "weibo": 15, "bilibili": 15},
+    "emoji":   {"weibo": 25, "xiaohongshu": 20, "websearch": 5},
+    "lowconf": {},
+}
+EDGE_SUBSET_CN = {
+    "irony": "反讽", "jargon": "黑话", "dialect": "方言",
+    "long": "长文本", "emoji": "emoji主导", "lowconf": "低置信",
 }
 
 BRAND_DOMAIN = {"恋与深空": "game"}
@@ -92,6 +110,17 @@ TRADITIONAL_CHARS = set(
 )
 EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]")
 LATIN_RE = re.compile(r"[A-Za-z]")
+
+# 方言特征词（2.3 边界集：粤/川渝/东北/吴湘闽，仅作采样偏置，标注时人工确认）
+DIALECT_WORDS = (
+    "嘅", "咁", "唔", "乜", "係", "喺", "咗", "冇", "啲", "嘢", "睇", "喎", "埋单", "巴闭",
+    "好正", "犀利",
+    "咁正", "冇得顶", "好鬼正",
+    "啥子", "咋子", "要得", "巴适", "安逸",
+    "咋了", "咋样", "咋办", "咋回事", "咋整", "整得", "整点", "整活", "整挺好", "贼拉", "贼好",
+    "得瑟", "埋汰", "干哈", "唠嗑", "唠唠", "稀罕",
+    "阿拉", "侬", "晓得", "哉",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +221,107 @@ def edge_flags(text: str, domain: str, domain_keywords: dict) -> set[str]:
         flags.add("official")
     if LATIN_RE.search(t) or any(c in TRADITIONAL_CHARS for c in t) or EMOJI_RE.search(t):
         flags.add("mixed_script")
+    if _emoji_dominant(t):
+        flags.add("emoji_dominant")
+    if any(w in t for w in DIALECT_WORDS):
+        flags.add("dialect")
     if any(w in t for w in IRONY_HINTS):
         flags.add("irony_hint")
     hit_dims = [name for name, kws in domain_keywords.get(domain, {}).items() if any(k in t for k in kws)]
     if len(hit_dims) >= 2:
         flags.add("multi_dimension")
     return flags
+
+
+def _emoji_dominant(text: str) -> bool:
+    """emoji 主导：≥2 个 emoji，且文本短或 emoji 占比高（采样偏置用）。"""
+    t = text or ""
+    n = len(EMOJI_RE.findall(t))
+    if n < 2:
+        return False
+    return len(t) <= 60 or (n / max(len(t), 1) >= 0.05)
+
+
+def _lexicon_confidence(text: str) -> float:
+    """词典判定置信度（低置信子集抽取依据；不写入标注表）。"""
+    from app.coding import lexicon_v2
+
+    res = lexicon_v2.score_text(text)
+    return float(res.get("confidence") or 0.0)
+
+
+def edge_subset_of(sample: dict) -> set[str]:
+    """样本命中的边界子集（黑话/反讽/方言/长文本/emoji 主导）。"""
+    flags = sample.get("flags") or set()
+    out: set[str] = set()
+    if "irony_hint" in flags:
+        out.add("irony")
+    if "slang" in flags:
+        out.add("jargon")
+    if "dialect" in flags:
+        out.add("dialect")
+    if "long" in flags:
+        out.add("long")
+    if "emoji_dominant" in flags:
+        out.add("emoji")
+    return out
+
+
+def sample_edge(
+    all_samples: list[dict],
+    rng: random.Random,
+    quota: int = EDGE_QUOTA,
+    conf_fn=None,
+) -> tuple[list[dict], dict]:
+    """边界样本专项集抽样：每子集独立配额、渠道配额优先、跨子集不重复。
+
+    conf_fn(text)->float 用于低置信子集（测试可注入，默认词典打分）。
+    返回 (selected, stats)，stats 记录每子集目标/达成/渠道分布/候选池大小。
+    """
+    conf_fn = conf_fn or _lexicon_confidence
+    used: set[str] = set()
+    selected: list[dict] = []
+    stats: dict[str, dict] = {}
+    for sub in ("dialect", "irony", "jargon", "emoji", "long", "lowconf"):
+        channels = EDGE_CHANNELS.get(sub, {})
+        if sub == "lowconf":
+            cands = [
+                s for s in all_samples
+                if s["text_id"] not in used
+                and len((s.get("text") or "")) >= 10
+                and LOWCONF_MIN <= conf_fn(s.get("text") or "") <= LOWCONF_MAX
+            ]
+            picked = weighted_sample(cands, quota, rng)
+        else:
+            cands = [
+                s for s in all_samples
+                if sub in edge_subset_of(s) and s["text_id"] not in used
+            ]
+            picked = []
+            if channels:
+                for ch, q in sorted(channels.items()):
+                    pool_ch = [s for s in cands if s["platform"] == ch]
+                    picked.extend(weighted_sample(pool_ch, min(q, quota), rng))
+            else:
+                picked = weighted_sample(cands, quota, rng)
+        if sub != "lowconf" and len(picked) < quota:
+            picked_ids = {p["text_id"] for p in picked}
+            rest = [s for s in cands if s["text_id"] not in picked_ids]
+            picked.extend(weighted_sample(rest, quota - len(picked), rng))
+        picked = picked[:quota]
+        for s in picked:
+            s = dict(s)
+            s["edge_subset"] = sub
+            selected.append(s)
+            used.add(s["text_id"])
+        stats[sub] = {
+            "target": quota,
+            "achieved": len(picked),
+            "by_channel": dict(Counter(p["platform"] for p in picked)),
+            "pool_n": len(cands),
+            "shortfall": quota - len(picked),
+        }
+    return selected, stats
 
 
 def build_pool(domain_keywords: dict):
@@ -697,6 +821,97 @@ def write_cleaning_csv(rows: list[dict], path: Path):
             w.writerow([i, s["text_id"], s["platform"], s["url"], s["title"], s["batch"], s["reason_raw"], "", "", "", ""])
 
 
+def _edge_row(seq: int, s: dict, dims: list[str]) -> list:
+    return [
+        seq, s["text_id"], s["platform"], s["domain"], s["brand"], s["keyword"],
+        {"post": "帖子正文", "comment": "评论", "reply": "楼中楼"}[s["kind"]],
+        "是" if s["kind"] == "reply" else "",
+        s["text"], s["title"], s["author"], s["url"], s["time"], s["likes"], s["batch"],
+        "",  # 情感(整条)：标注时填写，禁止预填（独立标注，避免诱导）
+        "",  # 强度(1-5)
+        EDGE_SUBSET_CN.get(s.get("edge_subset", ""), ""),  # 子集：抽样预分组，仅供标注者参考
+    ] + ["" for _ in dims] + ["", "", "", "", ""]
+
+
+def write_edge_csv(rows: list[dict], cols: list[str], dims: list[str], path: Path):
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(cols)
+        for i, s in enumerate(rows, 1):
+            w.writerow(_edge_row(i, s, dims))
+
+
+def write_edge_xlsx(rows: dict[str, list[dict]], dims: dict[str, list[str]],
+                    domain_keywords: dict, path: Path):
+    """边界集标注宽表：按领域分 sheet，额外带「子集」列与说明页。"""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    header_fill = PatternFill("solid", fgColor="E2EFDA")
+    header_font = Font(bold=True)
+    wrap = Alignment(wrap_text=True, vertical="top")
+    base_n = len(_base_columns())  # 含"情感/强度"
+
+    for dom, samples in rows.items():
+        ws = wb.create_sheet("游戏标注" if dom == "game" else "消费品标注")
+        cols = _base_columns() + ["子集"] + dims[dom] + ["语言现象", "是否相关", "备注", "标注人", "标注日期"]
+        ws.append(cols)
+        for i, s in enumerate(samples, 1):
+            ws.append(_edge_row(i, s, dims[dom]))
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+        ws.freeze_panes = "C2"
+        widths = [6, 14, 10, 8, 14, 14, 10, 10, 60, 30, 12, 34, 14, 8, 24, 12, 10, 10] + [10] * len(dims[dom]) + [12, 10, 20, 10, 12]
+        for i, wd in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = wd
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = wrap
+        dv_sent = DataValidation(type="list", formula1='"positive,negative,neutral,mixed"', allow_blank=True)
+        dv_int = DataValidation(type="list", formula1='"1,2,3,4,5"', allow_blank=True)
+        dv_rel = DataValidation(type="list", formula1='"是,否"', allow_blank=True)
+        dv_dim = DataValidation(type="list", formula1='"positive,negative"', allow_blank=True)
+        ws.add_data_validation(dv_sent)
+        ws.add_data_validation(dv_int)
+        ws.add_data_validation(dv_rel)
+        ws.add_data_validation(dv_dim)
+        n = len(samples) + 1
+        dv_sent.add(f"P2:P{n}")
+        dv_int.add(f"Q2:Q{n}")
+        dim_start = base_n + 2  # 子集占一列，维度列从 base_n+2 开始（1-based）
+        dim_cols = [get_column_letter(i) for i in range(dim_start, dim_start + len(dims[dom]))]
+        for col in dim_cols:
+            dv_dim.add(f"{col}2:{col}{n}")
+        rel_col = get_column_letter(dim_start + len(dims[dom]) + 1)
+        dv_rel.add(f"{rel_col}2:{rel_col}{n}")
+
+    guide = wb.create_sheet("说明")
+    lines = [
+        "边界样本专项集标注说明（docs/边界样本专项集方案.md + docs/抽样与标注规范.md）",
+        "",
+        "一、标注规则与主集完全一致：先定整条情感与强度，再对「明确带情感」的维度填 positive/negative；",
+        "    反讽=表面正向/中性、实际负向；黑话标了在备注写含义；emoji 承载情感时标「emoji主导」。",
+        "二、「子集」列是抽样时预分的组（反讽/黑话/方言/长文本/emoji主导/低置信），标注时请人工确认：",
+        "    命中「子集」对应的语言现象就填到「语言现象」列；不命中就留空（子集只是抽样偏置，不是标签）。",
+        "三、低置信子集：词典判定没把握的文本，请重点核对，拿不准在备注写理由。",
+        "四、是否相关：跑题/引流填「否」，整条 neutral，不计入主评分。",
+        "五、独立标注：不要参考程序或词典判定，避免被诱导。",
+        "",
+        "维度关键词参考（命中即标，可多维度同时标）：",
+    ]
+    for dom, d in domain_keywords.items():
+        label = "游戏" if dom == "game" else "消费品"
+        parts = [f"{name}[{'、'.join(kws[:12])}]" for name, kws in d.items()]
+        lines.append(f" - {label}：{'；'.join(parts)}")
+    for line in lines:
+        guide.append([line])
+    guide.column_dimensions["A"].width = 110
+    guide["A1"].font = Font(bold=True, size=12)
+    wb.save(path)
+
+
 def sample_trial(samples: list[dict], n: int, rng: random.Random) -> list[dict]:
     """试标集：先保证平台×文本类型全覆盖，再按边缘标记加权补齐。"""
     chosen: list[dict] = []
@@ -847,6 +1062,10 @@ def main():
     ap.add_argument("--per-reason", type=int, default=20, help="清洗验证集每类丢弃原因抽样条数")
     ap.add_argument("--trial", type=int, default=0, help="生成试标集条数（默认 0 不生成）")
     ap.add_argument("--trial-domain", default="game", choices=["game", "consumer"])
+    ap.add_argument("--edge-only", action="store_true",
+                    help="只生成边界样本专项集标注表（2.3，docs/边界样本专项集方案.md）")
+    ap.add_argument("--edge-quota", type=int, default=EDGE_QUOTA,
+                    help="边界集每子集目标条数（默认 50）")
     ap.add_argument("--force", action="store_true", help="覆盖已存在的产物文件（默认跳过）")
     args = ap.parse_args()
 
@@ -863,6 +1082,80 @@ def main():
     dims = {dom: list(kws.keys()) for dom, kws in domain_keywords.items()}
 
     posts, comments, replies = build_pool(domain_keywords)
+    if args.edge_only:
+        all_samples = posts + comments + replies
+        print("边界集样本池：帖子", len(posts), "评论", len(comments),
+              "楼中楼", len(replies), "合计", len(all_samples))
+        selected, edge_stats = sample_edge(all_samples, rng, args.edge_quota)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        edge_csv = OUT_DIR / "annotation_edge_v1.csv"
+        edge_xlsx = OUT_DIR / "annotation_edge_v1.xlsx"
+
+        def _safe(path: Path, writer, *fargs):
+            if path.exists() and not args.force:
+                print(f"跳过（已存在，用 --force 覆盖）：{path.name}")
+                return
+            writer(*fargs)
+
+        by_domain_edge: dict[str, list[dict]] = {"game": [], "consumer": []}
+        for s in sorted(selected, key=lambda x: (x["edge_subset"], x["platform"], x["text_id"])):
+            by_domain_edge[s["domain"]].append(s)
+        for dom in ("game", "consumer"):
+            cols_edge = _base_columns() + ["子集"] + dims[dom] + \
+                ["语言现象", "是否相关", "备注", "标注人", "标注日期"]
+            _safe(OUT_DIR / f"annotation_edge_v1_{dom}.csv",
+                  write_edge_csv, by_domain_edge[dom], cols_edge, dims[dom],
+                  OUT_DIR / f"annotation_edge_v1_{dom}.csv")
+        _safe(edge_csv, write_edge_csv,
+              sum(by_domain_edge.values(), []),
+              _base_columns() + ["子集"] + sum(dims.values(), []) + \
+              ["语言现象", "是否相关", "备注", "标注人", "标注日期"],
+              sum(dims.values(), []),
+              edge_csv)
+        _safe(edge_xlsx, write_edge_xlsx, by_domain_edge, dims,
+              domain_keywords, edge_xlsx)
+
+        shortfalls = []
+        for sub, st in edge_stats.items():
+            if st["achieved"] < st["target"]:
+                if st["pool_n"] >= st["target"]:
+                    shortfalls.append(
+                        f"子集 {EDGE_SUBSET_CN[sub]} 仅抽到 {st['achieved']}/{st['target']}"
+                        "（渠道配额不足，其余渠道已补齐仍不够）")
+                else:
+                    shortfalls.append(
+                        f"子集 {EDGE_SUBSET_CN[sub]} 仅抽到 {st['achieved']}/{st['target']}"
+                        f"（样本池不足，池内仅 {st['pool_n']} 条）")
+        report_edge = {
+            "targets": {"quota_per_subset": args.edge_quota,
+                        "subsets": {s: st["target"] for s, st in edge_stats.items()}},
+            "achieved": {
+                s: {"achieved": st["achieved"], "by_channel": st["by_channel"],
+                    "pool_n": st["pool_n"]}
+                for s, st in edge_stats.items()
+            },
+            "shortfalls": shortfalls,
+            "files": [str(p) for p in (
+                OUT_DIR / "annotation_edge_v1_game.csv",
+                OUT_DIR / "annotation_edge_v1_consumer.csv",
+                edge_csv, edge_xlsx)],
+        }
+        report_path = OUT_DIR / "sampling_report_edge_v1.json"
+        report_path.write_text(json.dumps(report_edge, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+        print("\n== 边界集配额达成 ==")
+        for sub, st in edge_stats.items():
+            print(f" - {EDGE_SUBSET_CN[sub]}: {st['achieved']}/{st['target']}"
+                  f"（渠道 {st['by_channel']}，池内 {st['pool_n']}）")
+        if shortfalls:
+            print("\n== 未达标说明（需定向采集补齐后再跑一次）==")
+            for line in shortfalls:
+                print(" -", line)
+        print("\n产物：")
+        for f in report_edge["files"]:
+            print(" -", f)
+        return
+
     pool_stats = {
         "posts": {"total": len(posts), "by_channel": dict(Counter(s["platform"] for s in posts)),
                   "by_domain": dict(Counter(s["domain"] for s in posts))},

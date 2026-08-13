@@ -613,6 +613,8 @@ class TaskRunner:
                                     "platform": post.platform,
                                     "url": post.url,
                                     "title": (post.title or post.content)[:80],
+                                    "keyword": post.keyword,
+                                    "query": (post.platform_specific or {}).get("query", ""),
                                     "reason": "LLM 相关性复核：不相关",
                                 }
                             )
@@ -848,6 +850,9 @@ def bundle_to_json(bundle: ReportBundle, path: str | Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "plan": bundle.plan.model_dump(mode="json"),
+        "channel_results": [
+            ch.model_dump(mode="json") for ch in bundle.channel_results
+        ],
         "summary": bundle.summary,
         "report_text": bundle.report_text,
         "warnings": bundle.warnings,

@@ -17,9 +17,11 @@ from app.output.html_report import (
     dimensions_fig,
     heatmap_fig,
     intensity_fig,
+    keyword_rows,
     overall_fig,
     platform_dim_fig,
     platform_fig,
+    query_rows,
     radar_fig,
     sentiment_sources_fig,
     trend_fig,
@@ -125,8 +127,63 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         row[4].text = str(v["negative"])
         row[5].text = str(v["neutral"])
 
+    doc.add_heading("四、关键词效果（按搜索关键词）", level=1)
+    kw_rows, unattr = keyword_rows(bundle)
+    if kw_rows:
+        ktable = doc.add_table(rows=1, cols=10)
+        ktable.style = "Table Grid"
+        hdr = ktable.rows[0].cells
+        for i, name in enumerate(
+            ["关键词", "采集", "保留", "丢弃", "有效供给率",
+             "编码文本", "正面", "负面", "中性", "负面率"]
+        ):
+            hdr[i].text = name
+        for r in kw_rows:
+            cells = ktable.add_row().cells
+            for i, key in enumerate(
+                ["keyword", "collected", "kept", "dropped", "effective_rate",
+                 "coded", "positive", "negative", "neutral", "negative_rate"]
+            ):
+                cells[i].text = str(r[key])
+        if unattr:
+            doc.add_paragraph(
+                f"另有 {unattr} 条丢弃记录未归属到关键词（旧版数据），不计入上表。"
+            )
+    else:
+        doc.add_paragraph("（本次任务无关键词级统计）")
+
+    q_rows, q_unattr = query_rows(bundle)
+    if q_rows:
+        p = doc.add_paragraph()
+        run = p.add_run("实际查询串（WebSearch）")
+        run.bold = True
+        doc.add_paragraph(
+            "说明：实际查询串是系统实际发给搜索引擎的查询词，可能在确认关键词基础上"
+            "自动追加后缀（如\"评价\"）、子渠道提示（如\"知乎\"）或策略词；"
+            "同一确认关键词可能对应多个实际查询串。"
+        )
+        qtable = doc.add_table(rows=1, cols=9)
+        qtable.style = "Table Grid"
+        hdr = qtable.rows[0].cells
+        for i, name in enumerate(
+            ["实际查询串", "渠道", "采集", "保留", "丢弃",
+             "有效供给率", "编码文本", "负面", "负面率"]
+        ):
+            hdr[i].text = name
+        for r in q_rows:
+            cells = qtable.add_row().cells
+            for i, key in enumerate(
+                ["query", "channel", "collected", "kept", "dropped",
+                 "effective_rate", "coded", "negative", "negative_rate"]
+            ):
+                cells[i].text = str(r[key])
+        if q_unattr:
+            doc.add_paragraph(
+                f"另有 {q_unattr} 条 WebSearch 丢弃记录未归属到查询串（旧版数据），不计入上表。"
+            )
+
     if s["dimensions"]:
-        doc.add_heading("四、维度分析", level=1)
+        doc.add_heading("五、维度分析", level=1)
         dtable = doc.add_table(rows=1, cols=4)
         dtable.style = "Table Grid"
         hdr = dtable.rows[0].cells
@@ -139,7 +196,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
             row[2].text = str(v["negative"])
             row[3].text = f"{v['negative_rate'] * 100:.1f}%"
 
-    doc.add_heading("五、图表与解析", level=1)
+    doc.add_heading("六、图表与解析", level=1)
     s = bundle.summary
     for cid, title, builder in CHART_BUILDERS:
         fig = builder(s)
@@ -165,7 +222,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         p = doc.add_paragraph(wc_insight)
         p.paragraph_format.first_line_indent = Pt(24)
 
-    doc.add_heading("六、深度结论与建议（按叙事框架）", level=1)
+    doc.add_heading("七、深度结论与建议（按叙事框架）", level=1)
     if bundle.conclusion:
         for line in bundle.conclusion.split("\n"):
             if line.strip():
@@ -175,13 +232,13 @@ def build_word(bundle: ReportBundle) -> BytesIO:
             p = doc.add_paragraph(line)
             p.paragraph_format.first_line_indent = Pt(24)
 
-    doc.add_heading("七、概览", level=1)
+    doc.add_heading("八、概览", level=1)
     for line in bundle.report_text.split("\n"):
         p = doc.add_paragraph(line)
         p.paragraph_format.first_line_indent = Pt(24)
 
     if bundle.warnings:
-        doc.add_heading("八、注意事项", level=1)
+        doc.add_heading("九、注意事项", level=1)
         for w in bundle.warnings:
             doc.add_paragraph(f"- {w}")
 

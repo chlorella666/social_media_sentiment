@@ -32,6 +32,8 @@ MOBILE_UA = (
 )
 REQUEST_TIMEOUT = 20
 REQUEST_INTERVAL = 0.5
+# 每关键词条数上限封顶：账号级风控最严，单关键词约 500 条封顶；加量建议加关键词
+MAX_LIMIT = 30
 # 评论请求节流：每个关键词只给前 N 个帖子拉评论
 MAX_COMMENT_POSTS_PER_KEYWORD = 10
 
@@ -227,6 +229,7 @@ class WeiboChannel(ChannelAdapter):
         for channel in plan.channels:
             if channel.channel_id == self.id:
                 limit = int(channel.params.get("limit") or limit)
+        limit = min(limit, MAX_LIMIT)
 
         for idx, keyword in enumerate(keywords):
             if cancel_event and cancel_event.is_set():

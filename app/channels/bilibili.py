@@ -30,6 +30,8 @@ USER_AGENT = (
 PAGE_SIZE = 20
 REQUEST_TIMEOUT = 20
 REQUEST_INTERVAL = 0.3  # 秒，节流防 -412
+# 每关键词条数上限封顶：公开 API 零登录最安全，但高频仍会触发 -412；加量建议加关键词
+MAX_LIMIT = 50
 # 评论请求节流：每个关键词只给前 N 个视频拉评论（一次分析约 10 次评论请求/关键词）
 MAX_COMMENT_VIDEOS_PER_KEYWORD = 10
 
@@ -199,6 +201,7 @@ class BilibiliChannel(ChannelAdapter):
         for channel in plan.channels:
             if channel.channel_id == self.id:
                 limit = int(channel.params.get("limit") or limit)
+        limit = min(limit, MAX_LIMIT)
 
         for idx, keyword in enumerate(keywords):
             if cancel_event and cancel_event.is_set():

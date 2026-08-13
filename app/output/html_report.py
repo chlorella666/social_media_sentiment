@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import re
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,7 @@ from plotly.io import to_html
 
 from app.core.models import ReportBundle
 from app.core.names import dimension_cn, platform_cn
+from app.core.keyword_effects import extract_funnel
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 SENTIMENT_COLORS = {"positive": "#16a34a", "negative": "#dc2626", "neutral": "#94a3b8"}
@@ -560,6 +562,87 @@ def _chart_date_dim(s: dict) -> str:
     return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
 
 
+def keyword_rows(bundle: ReportBundle) -> tuple[list[dict], int]:
+    """按确认关键词聚合采集漏斗与情感统计（HTML/Word 报告共用）。
+
+    采集 = 保留帖子 + 该关键词的丢弃记录；有效供给率 = 保留 / 采集。
+    丢弃记录在 2.2 埋点后才带 keyword，旧数据未归属的单独返回数量。
+    """
+    s = bundle.summary
+    kw_stats = s.get("keyword_stats") or {}
+    posts_by_kw: Counter[str] = Counter()
+    dropped_by_kw: Counter[str] = Counter()
+    unattributed = 0
+    for ch in bundle.channel_results:
+        if not ch.ok:
+            continue
+        for p in ch.posts:
+            posts_by_kw[p.keyword or ""] += 1
+        for d in ch.dropped or []:
+            kw = d.get("keyword") or ""
+            if kw:
+                dropped_by_kw[kw] += 1
+            else:
+                unattributed += 1
+    keys = sorted(set(kw_stats) | set(posts_by_kw) | set(dropped_by_kw))
+    rows: list[dict] = []
+    for kw in keys:
+        stats = kw_stats.get(kw) or {}
+        collected = posts_by_kw.get(kw, 0) + dropped_by_kw.get(kw, 0)
+        kept = posts_by_kw.get(kw, 0)
+        nr = stats.get("negative_rate")
+        rows.append({
+            "keyword": kw or "（未标记）",
+            "collected": collected,
+            "kept": kept,
+            "dropped": dropped_by_kw.get(kw, 0),
+            "effective_rate": f"{kept / collected * 100:.1f}%" if collected else "—",
+            "coded": stats.get("coded", 0),
+            "positive": stats.get("positive", 0),
+            "negative": stats.get("negative", 0),
+            "neutral": stats.get("neutral", 0),
+            "negative_rate": f"{nr * 100:.1f}%" if nr is not None else "—",
+        })
+    return rows, unattributed
+
+
+def query_rows(bundle: ReportBundle) -> tuple[list[dict], int]:
+    """实际查询串粒度漏斗（仅 WebSearch，与评测中心口径一致）。
+
+    采集/保留/丢弃按 (渠道, 关键词, 查询串) 聚合；编码与负面数按
+    (渠道, 关键词) 归因（与评测中心相同口径）；旧数据丢弃无 query 时
+    按该关键词在渠道内的唯一查询串兜底。
+    """
+    report = bundle.model_dump(mode="json")
+    rows = [
+        r for r in extract_funnel(report).get("funnel", [])
+        if str(r.get("channel", "")).startswith("websearch")
+    ]
+    display = []
+    for r in rows:
+        er = r.get("effective_rate")
+        nr = r.get("negative_rate")
+        display.append({
+            "query": r.get("query", ""),
+            "channel": r.get("channel", ""),
+            "collected": r.get("collected", 0),
+            "kept": r.get("kept", 0),
+            "dropped": r.get("dropped", 0),
+            "effective_rate": f"{er * 100:.1f}%" if er is not None else "—",
+            "coded": r.get("coded", 0),
+            "negative": r.get("negative", 0),
+            "negative_rate": f"{nr * 100:.1f}%" if nr is not None else "—",
+        })
+    unattr_ws = sum(
+        1
+        for ch in bundle.channel_results
+        if ch.ok and str(ch.channel_id).startswith("websearch")
+        for d in (ch.dropped or [])
+        if not d.get("keyword")
+    )
+    return display, unattr_ws
+
+
 def build_html(bundle: ReportBundle) -> str:
     env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=False)
     template = env.get_template("report.html.j2")
@@ -594,6 +677,8 @@ def build_html(bundle: ReportBundle) -> str:
         "completion_tokens": int(usage.get("completion_tokens") or 0),
         "estimated_cost": float(usage.get("estimated_cost") or 0),
     }
+    keyword_rows_out, unattributed_dropped = keyword_rows(bundle)
+    query_rows_out, unattributed_query_dropped = query_rows(bundle)
     narrative_rows = [
         {
             "text": it.text[:100],
@@ -638,6 +723,10 @@ def build_html(bundle: ReportBundle) -> str:
         conclusion=bundle.conclusion,
         narrative_rows=narrative_rows,
         trust=trust,
+        keyword_rows=keyword_rows_out,
+        unattributed_dropped=unattributed_dropped,
+        query_rows=query_rows_out,
+        unattributed_query_dropped=unattributed_query_dropped,
         method_counts={
             "llm": sum(1 for it in bundle.coded_items if it.method == "llm"),
             "lexicon": sum(1 for it in bundle.coded_items if it.method == "lexicon"),

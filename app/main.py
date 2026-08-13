@@ -8,9 +8,14 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import shutil
+import socket
+import subprocess
+import sys
 import time
+import webbrowser
 from collections import Counter
 from pathlib import Path
 
@@ -56,6 +61,77 @@ from app.output.html_report import (
 from app.output.word_report import build_word
 
 st.set_page_config(page_title="社交媒体情感分析器", page_icon="📊", layout="wide")
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# ---------------------------------------------------------------------------
+# 开发者模式：评测中心入口（默认对小白隐藏）
+# ---------------------------------------------------------------------------
+
+EVAL_PORT = 8502
+EVAL_URL = f"http://localhost:{EVAL_PORT}"
+
+
+def _dev_state_path() -> Path:
+    state_dir = Path(os.environ.get("SMS_STATE_DIR", str(ROOT / "data" / "state")))
+    return state_dir / "dev_mode.json"
+
+
+def _dev_mode_enabled() -> bool:
+    try:
+        p = _dev_state_path()
+        if p.exists():
+            return bool(json.loads(p.read_text(encoding="utf-8")).get("enabled"))
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def _set_dev_mode(enabled: bool) -> None:
+    try:
+        p = _dev_state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(
+                {"enabled": enabled,
+                 "updated_at": dt.datetime.now().isoformat(timespec="seconds")},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _eval_running() -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", EVAL_PORT), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _start_eval_dashboard() -> None:
+    """后台启动评测中心（无窗口），已运行则不重复启动。"""
+    if _eval_running():
+        return
+    cmd = [
+        sys.executable, "-m", "streamlit", "run",
+        str(ROOT / "app" / "eval_dashboard.py"),
+        "--server.port", str(EVAL_PORT),
+        "--server.headless", "true",
+    ]
+    kwargs = {
+        "cwd": str(ROOT),
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(cmd, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # 首次启动：《使用边界》确认门禁（未确认时只渲染确认页）
@@ -131,12 +207,37 @@ STEP_ICONS = {
 CHANNEL_LIMIT_DEFAULTS = {
     "demo": 10,
     "bilibili": 20,
-    "websearch": 10,
-    "websearch_zhihu": 10,
-    "websearch_tieba": 10,
-    "websearch_taptap": 10,
+    "websearch": 13,
+    "websearch_zhihu": 13,
+    "websearch_tieba": 13,
+    "websearch_taptap": 13,
     "weibo": 20,
     "xiaohongshu": 10,
+}
+# 各渠道每关键词条数上限：默认值 + 封顶（UI 与渠道层双重限制）。
+# 加量建议增加关键词（策略加词），而非调大上限；demo 为确定性演示数据，限额不影响产量。
+CHANNEL_LIMIT_MAX = {
+    "demo": 200,
+    "bilibili": 50,
+    "websearch": 13,
+    "websearch_zhihu": 13,
+    "websearch_tieba": 13,
+    "websearch_taptap": 13,
+    "weibo": 30,
+    "xiaohongshu": 10,
+}
+CHANNEL_LIMIT_HELP = {
+    "bilibili": "B站公开 API、零登录最安全：默认 20、上限 50；加量建议加关键词",
+    "weibo": "微博账号级风控最严：默认 20、上限 30，单关键词约 500 条封顶",
+    "xiaohongshu": "小红书反爬最严（xsec_token+签名）：默认/封顶 10，单次建议 ≤10",
+    "demo": "演示数据固定 2 条/平台/关键词，限额不影响产量",
+}
+WS_PROBE_STATUS_CN = {
+    "ok": "✅ 正常",
+    "degraded": "⚠️ 降级",
+    "risk": "❌ 风控",
+    "error": "❌ 失败",
+    "empty": "⚠️ 空结果",
 }
 COMMENT_FETCH_SECONDS = 0.3  # 每条评论抓取耗时粗估（阶段 2 按实测校准）
 
@@ -493,6 +594,9 @@ def _render_review_view(task: dict, task_id: str) -> None:
     for p in filtered[start : start + REVIEW_PAGE_SIZE]:
         _render_review_post(p, url_set, cid_set, task_id)
     if total_pages > 1:
+        st.caption(
+            f"第 {page} / {total_pages} 页 · 共 {len(filtered)} 条（每页 {REVIEW_PAGE_SIZE} 条）"
+        )
         pc1, pc2 = st.columns(2)
         if pc1.button("← 上一页", key=f"rv_prev_{task_id}", disabled=page <= 1):
             st.session_state[page_key] = max(1, page - 1)
@@ -801,6 +905,36 @@ with st.sidebar:
                         st.warning(str(exc))
         except Exception as exc:
             st.caption(f"数据管理暂不可用：{exc}")
+    with st.expander("🛠 开发者模式"):
+        dev_mode = st.toggle(
+            "启用开发者模式",
+            value=_dev_mode_enabled(),
+            help="开启后显示评测中心入口等开发者工具；小白用户无需开启",
+        )
+        if dev_mode != _dev_mode_enabled():
+            _set_dev_mode(dev_mode)
+        if dev_mode:
+            if _eval_running():
+                st.markdown(
+                    f"评测中心已在运行：[打开 {EVAL_URL}]({EVAL_URL})"
+                )
+            else:
+                if st.button(
+                    "🚀 启动并打开评测中心",
+                    key="start_eval_dashboard",
+                    width="stretch",
+                ):
+                    _start_eval_dashboard()
+                    webbrowser.open(EVAL_URL)
+                    st.info(
+                        f"正在后台启动评测中心（{EVAL_URL}），首次启动需几秒，"
+                        "浏览器会自动打开；如未打开请手动访问该地址。"
+                    )
+            st.caption(
+                "评测中心：黄金集细分跑分 / 关键词效果 / 候选确认（开发者工具）"
+            )
+        else:
+            st.caption("评测中心为开发者调优工具，小白用户无需开启。")
     st.caption(f"应用版本：v{__version__}")
 
 # ---------------------------------------------------------------------------
@@ -1088,13 +1222,22 @@ elif stage == 3:
         for i, cid in enumerate(selected):
             with lim_cols[i % 4]:
                 default = CHANNEL_LIMIT_DEFAULTS.get(cid, 10)
+                is_ws = cid.startswith("websearch")
+                help_txt = CHANNEL_LIMIT_HELP.get(
+                    cid, "每个关键词最多抓取多少条链接"
+                )
+                if is_ws:
+                    help_txt = (
+                        "单查询可获取量约 5~13 条，上限 13 为收益/反爬平衡；"
+                        "要增加采集量建议增加关键词（策略加词），而非调大上限"
+                    )
                 val = st.number_input(
                     f"{info_map.get(cid, cid)}",
                     min_value=1,
-                    max_value=200,
+                    max_value=CHANNEL_LIMIT_MAX.get(cid, 200),
                     value=default,
                     key=f"limit_{cid}",
-                    help="每个关键词最多抓取多少条链接（小红书单次建议 ≤10，风控严格）",
+                    help=help_txt,
                 )
                 st.session_state.channel_limits[cid] = int(val)
         st.divider()
@@ -1166,9 +1309,61 @@ elif stage == 3:
 
         if any(cid.startswith("websearch") for cid in selected):
             st.session_state.websearch_eval_suffix = st.toggle(
-                "WebSearch 自动追加『评价』后缀（纯品牌词易命中官网）",
+                "WebSearch 关键词优化（自动追加『评价』等后缀）",
                 value=st.session_state.get("websearch_eval_suffix", True),
+                help="纯品牌词（如『恋与深空』）容易命中官网/壳页面，自动加『评价』等后缀"
+                     "更易搜到真实用户讨论；关闭后完全按原词搜索",
             )
+            st.caption(
+                "说明：开启后实际查询串可能与确认关键词不同（如『恋与深空』→"
+                "『恋与深空 评价』）；实际查询串可在报告「实际查询串（WebSearch）」表核对。"
+            )
+            st.markdown("**WebSearch 引擎探针（一键验证当前网络是否可用）**")
+            st.caption(
+                "当前网络出口可能被搜索引擎风控（360/夸克常见验证码、bing 可能降级）；"
+                "换网络/代理后点下方按钮，实时查看三引擎状态。"
+            )
+            if st.button(
+                "🔍 一键探针 WebSearch（360 / bing / 夸克）",
+                key="ws_probe",
+            ):
+                from app.channels.websearch import probe_engines
+
+                probe_subject = (
+                    str(st.session_state.get("subject") or "").strip() or "大疆"
+                )
+                with st.spinner(
+                    f"正在探测 360 / cn.bing / 夸克（查询「{probe_subject} 评价」，"
+                    "约 10~30 秒）…"
+                ):
+                    results = probe_engines(f"{probe_subject} 评价")
+                st.table(
+                    [
+                        {
+                            "引擎": r["engine"],
+                            "状态": WS_PROBE_STATUS_CN.get(
+                                r["status"], r["status"]
+                            ),
+                            "结果数": r["items"],
+                            "说明": r["message"],
+                        }
+                        for r in results
+                    ]
+                )
+                bad = [
+                    r for r in results
+                    if r["status"] in ("risk", "error", "degraded", "empty")
+                ]
+                if bad:
+                    st.warning(
+                        "当前网络下 WebSearch 可能无法正常出数（"
+                        + "、".join(
+                            f"{r['engine']}：{r['message']}" for r in bad[:3]
+                        )
+                        + "）。建议换网络/代理后再试，或暂时不勾选 WebSearch。"
+                    )
+                else:
+                    st.success("三引擎均可用，WebSearch 可正常出数。")
             st.session_state.official_domains = st.text_input(
                 "排除的官方域名（逗号分隔，可选）",
                 placeholder="例如：dji.com,crv.com.cn",
@@ -1224,7 +1419,17 @@ elif stage == 4:
         ("关键词数", str(len(keywords))),
         ("渠道", "、".join(channel_ids)),
         ("官方域名排除", official_domains or "未配置"),
-        ("WebSearch 评价后缀", "开" if st.session_state.get("websearch_eval_suffix", True) else "关"),
+        ("WebSearch 关键词优化", "开（自动加评价等后缀）" if st.session_state.get("websearch_eval_suffix", True) else "关（按原词搜索）"),
+        *(
+            [(
+                "WebSearch 关键词总量（今日上限 24）",
+                f"{ws_total} 次查询"
+                + (f"（{len(ws_channels)} 个 WebSearch 渠道 × {len(keywords)} 关键词）")
+                + ("，超限提交将被拦截" if ws_total > 24 else ""),
+            )]
+            if (ws_channels := [c for c in channel_ids if c.startswith("websearch")])
+            else []
+        ),
         ("LLM 相关性复核", "开（费用与耗时增加）" if relevance_check_enabled else "关"),
         ("词云排除词", "、".join(st.session_state.get("exclude_words_opt", [])) or "未配置"),
         ("预计 LLM 费用", f"约 ¥{cost_est['estimated_cost']}（预估）"),
@@ -1238,6 +1443,14 @@ elif stage == 4:
         ("LLM 服务", f"{model_name} @ {base_url}" if llm_enabled else "—"),
     ]
     st.table(summary_rows)
+    ws_total = len(keywords) * len(
+        [c for c in channel_ids if c.startswith("websearch")]
+    )
+    if ws_total > 24:
+        st.warning(
+            f"WebSearch 关键词总量 {ws_total} 超今日上限 24，提交后该渠道会被拦截；"
+            "建议减少关键词或子渠道数量，分次运行。"
+        )
     with st.expander("费用预估说明"):
         st.markdown(cost_est["assumptions"])
         st.caption("预估仅供参考，实际费用以 DeepSeek 官方计费与实际 token 用量为准；单价可能随时调整。")

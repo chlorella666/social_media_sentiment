@@ -38,9 +38,15 @@ REGRESSION_VERSION = "1.0"
 
 # 单元测试白名单（显式列出，避免误收录工具脚本/递归自检）
 UNIT_TESTS = [
+    "test_cleaner.py",
     "test_contracts.py",
+    "test_edge_annotation.py",
     "test_errors.py",
+    "test_eval_dashboard.py",
+    "test_eval_store.py",
+    "test_edge_sampling.py",
     "test_job_queue.py",
+    "test_keyword_effects.py",
     "test_lifecycle.py",
     "test_llm_analyzer.py",
     "test_pipeline_progress.py",
@@ -52,11 +58,13 @@ UNIT_TESTS = [
     "test_tokenizer.py",
     "test_ui_flow.py",
     "test_usage_boundary.py",
+    "test_websearch_robust.py",
 ]
 
 BENCHMARK_SCRIPT = ROOT / "tests" / "benchmark_golden.py"
 ACCEPTANCE_SCRIPT = ROOT / "tests" / "manual_acceptance.py"
 BASELINE_FIXTURE = ROOT / "tests" / "fixtures" / "baseline_lexicon.json"
+EDGE_BENCHMARK_JSON = ROOT / "data" / "datasets" / "edge_benchmark_report.json"
 HISTORY_FILE = ROOT / "data" / "regression" / "history.jsonl"
 DEFAULT_REPORT_DIR = ROOT / "data" / "regression"
 DEFAULT_TOLERANCE_PP = 1.0
@@ -165,6 +173,35 @@ def run_benchmark(llm: bool, record: bool, report_out: Path | None) -> dict:
         "duration_s": duration,
         "accuracy": report.get("sentiment_accuracy"),
         "by_domain": report.get("by_domain"),
+        "output_tail": _tail(proc.stdout + proc.stderr),
+        "report_path": str(target),
+    }
+
+
+def run_edge_benchmark(record: bool, report_out: Path | None) -> dict:
+    """跑边界集词典评测（strict-edge A 档：只提示 + 人工验收，不设硬门槛）。"""
+    args = [sys.executable, str(BENCHMARK_SCRIPT), "--edge"]
+    if not record:
+        args.append("--no-record")
+    if report_out is not None:
+        args += ["--report-out", str(report_out)]
+    start = time.monotonic()
+    proc = _run(args, timeout=900)
+    duration = round(time.monotonic() - start, 2)
+    report = {}
+    target = report_out or EDGE_BENCHMARK_JSON
+    if proc.returncode == 0 and target.exists():
+        try:
+            report = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            report = {}
+    return {
+        "mode": "edge_lexicon",
+        "exit_code": proc.returncode,
+        "duration_s": duration,
+        "accuracy": report.get("sentiment_accuracy"),
+        "by_subset": report.get("by_subset"),
+        "calibration": report.get("calibration"),
         "output_tail": _tail(proc.stdout + proc.stderr),
         "report_path": str(target),
     }
@@ -385,6 +422,17 @@ def main() -> int:
                   else f"黄金集（混合 LLM）：评测失败（exit={hybrid.get('exit_code')}）")
             append_history({"ts": _iso(), "commit": report["commit"], "mode": "hybrid",
                             "accuracy": hacc, "action": "record"})
+        # 边界集词典评测：strict-edge A 档，只提示不设硬门槛（提示词迭代的裁判基线）
+        edge_out = report_dir / "benchmark_edge_lexicon.json"
+        edge = run_edge_benchmark(record=record, report_out=edge_out)
+        edge["gate"] = {"gate": "PROMPT",
+                        "reason": "边界集 strict-edge A 档：只提示 + 人工验收，不设硬门槛"}
+        report["benchmark_edge"] = edge
+        eacc = edge.get("accuracy")
+        if eacc is not None:
+            print(f"边界集（词典直判）：准确率 {eacc:.1%}（仅提示，不设门槛）")
+        else:
+            print(f"边界集（词典直判）：评测失败（exit={edge.get('exit_code')}）")
 
     acceptance_status = "SKIP"
     if args.acceptance and not args.ci:
