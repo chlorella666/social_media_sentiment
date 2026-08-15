@@ -23,9 +23,16 @@ DEFAULT_MODEL = "gpt-4o-mini"
 CONFIDENCE_THRESHOLD = 0.8  # 预筛置信度低于此值才调用 LLM（0.8 更保守，送 LLM 占比更高）
 BATCH_SIZE = 10  # 单请求文本数（越小单请求越快、进度越平滑）
 NARRATIVE_BATCH_SIZE = 10
-PROMPT_VERSION = 4  # 情感分析提示词版本（v2.2：主集混合 v2.1 回退 -1.71pp，根因是
-# "营销宣传→positive"与主集官方口径冲突；v2.2 官方内容一律 neutral（第三方真实评价除外）、
-# 教程/攻略即使含"神器/推荐"也 neutral。依据 docs/2.3失败模式与prompt提案.md §五/§六）
+PROMPT_VERSION = 7  # 情感分析提示词版本（v3.2：2.5 数码3C 定向迭代第二轮）
+# v2.2（PROMPT_VERSION=4）：官方内容一律 neutral、教程/攻略即使含"神器/推荐"也 neutral；
+# v3.0（2.4）：整条情感规则沿用 v2.2 原文不动，追加 dimension_sentiments 维度级情感输出
+# （只标"明确带情感"的维度；转折句逐维拆解；官方内容维度留空）。
+# v3.1（2.5 数码3C 首版裁判 68.8%，失败模式=neutral 被误判情感）：扩充 3C 语体规则——
+# 产品介绍/开箱/参数罗列/标题聚合页/提问求助/官方高管言论/活动宣发一律 neutral；
+# 竞品对比识别补充（谁更强/对比/差距/平替/参数对比）。
+# v3.2（3C 两轮 70.1/72.2% 仍 <75%，剩余错误仍是同一批 neutral→positive）：neutral
+# 升为总则（无明确个人立场一律 neutral，提到产品/参数/品牌不等于情感）+ 3C 反例 +
+# 维度"选择/支持某品牌→品牌形象"。
 
 VALID_NARRATIVES = {"conflict", "human_interest", "attribution", "economic", "morality"}
 VALID_ACTORS = {
@@ -48,8 +55,9 @@ class BaseAnalyzer:
         self,
         texts: list[str],
         on_batch_progress: "Callable[[int, int], None] | None" = None,
+        dimension_schema: dict | None = None,
     ) -> list[dict]:
-        """输入文本列表，返回 [{sentiment, score, confidence, keywords}]。"""
+        """输入文本列表，返回 [{sentiment, score, confidence, keywords, dimension_sentiments?}]。"""
         raise NotImplementedError
 
     def analyze_narrative(
@@ -81,6 +89,7 @@ class MockAnalyzer(BaseAnalyzer):
         self,
         texts: list[str],
         on_batch_progress: "Callable[[int, int], None] | None" = None,
+        dimension_schema: dict | None = None,
     ) -> list[dict]:
         results = []
         for t in texts:
@@ -91,6 +100,7 @@ class MockAnalyzer(BaseAnalyzer):
                     "score": r["score"],
                     "confidence": r["confidence"],
                     "keywords": r["keywords"],
+                    "dimension_sentiments": {},
                 }
             )
         return results
@@ -109,6 +119,48 @@ class MockAnalyzer(BaseAnalyzer):
         from app.coding.insights import template_insights
 
         return template_insights(descriptors)
+
+
+def schema_dimensions(schema) -> list[dict]:
+    """把维度 schema 归一为 [{id, name, keywords, description}]（兼容 DomainSchema/dict）。"""
+    if not schema:
+        return []
+    if hasattr(schema, "dimensions"):
+        dims = schema.dimensions
+    elif isinstance(schema, dict) and "dimensions" in schema:
+        dims = schema["dimensions"]
+    elif isinstance(schema, dict):
+        dims = [dict(v, id=k) for k, v in schema.items()]
+    elif isinstance(schema, (list, tuple)):
+        dims = schema
+    else:
+        return []
+    out = []
+    for d in dims:
+        out.append({
+            "id": d.id if hasattr(d, "id") else d.get("id", ""),
+            "name": d.name if hasattr(d, "name") else d.get("name", ""),
+            "keywords": list(d.keywords) if hasattr(d, "keywords") else list(d.get("keywords", [])),
+            "description": (d.description if hasattr(d, "description")
+                            else d.get("description", "")) or "",
+        })
+    return [d for d in out if d["id"]]
+
+
+def sanitize_dimension_sentiments(items: list[dict], valid_ids: set) -> list[dict]:
+    """清洗维度情感：只保留 schema 内维度 id 与 positive/negative 取值，非法值剔除。"""
+    for it in items:
+        raw = it.get("dimension_sentiments") or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        clean = {}
+        for k, v in raw.items():
+            k = str(k).strip()
+            v = str(v).strip().lower()
+            if k in valid_ids and v in ("positive", "negative"):
+                clean[k] = v
+        it["dimension_sentiments"] = clean
+    return items
 
 
 class OpenAICompatibleAnalyzer(BaseAnalyzer):
@@ -319,12 +371,37 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             )
             return fallback_fn(texts)
 
-    def _request_batch(self, texts: list[str]) -> list[dict]:
+    def _request_batch(self, texts: list[str], dimension_schema: dict | None = None) -> list[dict]:
+        dims = schema_dimensions(dimension_schema)
+        dim_block = ""
+        if dims:
+            dim_lines = "\n".join(
+                f"  - {d['id']}（{d['name']}）：关键词 {d['keywords']}；"
+                f"说明 {d['description'] or '—'}"
+                for d in dims
+            )
+            dim_block = (
+                "维度级情感（2.4 规则，输出 dimension_sentiments 字典）：\n"
+                "1. 只对『明确表达正面或负面』且属于下面维度清单的维度标注情感；\n"
+                "2. 转折句逐维拆解：「画面好但价格贵」→ art:positive、monetization:negative；\n"
+                "3. 只提到没有褒贬的维度不出现；同一维度正负都有且无法定主倾向的不出现；\n"
+                "4. 官方内容/宣发/公告/PV/官网介绍一律 dimension_sentiments 为空；\n"
+                "5. 键必须来自维度清单，值只允许 positive/negative；没有维度情感输出 {}。\n"
+                "6. 竞品对比识别：明确与其他品牌/产品比较（谁更强/对比/差距/平替/"
+                "参数对比/别家）→ 标「竞品对比」；参数对比文可同时标「功能效果」。\n"
+                "7. 品牌倾向识别：明确表达选择/支持某品牌（'更愿意选择影石'"
+                "'还是买大疆''支持华为'）→ 标「品牌形象」。\n"
+                "维度清单：\n"
+                f"{dim_lines}\n"
+            )
         system = (
             "你是中文社交媒体情感分析专家。对输入的每条文本输出情感判断（prompt v2.2）。"
             "注意：中文网络语境常有反讽/阴阳怪气/反话（表面褒义实为贬义，"
             "例如'真棒啊''像XX一样''厉害了我的XX''呵呵'等），"
             "务必结合语境识别真实情感，不要只看表面褒义词。"
+            "总则：没有明确个人立场或情感词的文本一律判 neutral；"
+            "仅提到产品/参数/发布/品牌/活动/评测不等于正面或负面，"
+            "宁可 neutral 也不要把无观点文本判成 positive/negative。"
             "判例规则："
             "1. 短句信号词（好厉害/太厉害了/笑死/绝了/真的会谢/谢谢您嘞/真棒）：明显夸赞"
             "语境（夸奖偶像/商品/作品且语气正面）判 positive；明显嘲讽/抱怨语境（如"
@@ -337,26 +414,48 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             "不据此判正面；新闻/报道按实际内容情感判（负面事件→negative、热销/好评→"
             "positive）；同人创作、剧情片段、争议分析中的局部情绪不算对产品的负面；"
             "不要被'氪金/付费/贵/冲突/开盒'等词直接带偏。"
-            "4. 官方内容一律判 neutral：官方公告/宣发/PV/活动/官网/公司介绍页/推广文案"
-            "（无论是否含'让顾客享受/一站购齐'等宣传词）均判 neutral；只有明确第三方"
-            "用户的真实评价/吐槽才按实际情感判断。"
+                "4. 官方内容一律判 neutral：官方公告/宣发/PV/活动/官网/公司介绍页/推广文案"
+                "（无论是否含'让顾客享受/一站购齐'等宣传词）均判 neutral；只有明确第三方"
+                "用户的真实评价/吐槽才按实际情感判断。"
             "5. emoji 不单独构成情感依据，需结合文字语境：愤怒类（😡😤🤮👊）与嘲讽类"
             "（🤣👉🤡）可强化 negative；纯 emoji/无观点短文本判 neutral。"
-            "6. 高频词表：退坑=不再玩、翻车=出事、割韭菜=圈钱、无语/好无语=无奈、"
-            "低级错误=批评、孝钱=讽刺性消费（以上多带负面）；yyds/顶/好正/好鬼正/咁正/"
-            "冇得顶/巴适/安逸/要得=非常好/满意（正面）；方言词若只出现在店名/标题且无观点"
-            "判 neutral。"
-            '输出 JSON：{"items":[{"index":0,"sentiment":"positive|negative|neutral",'
-            '"score":-1到1的浮点数,"confidence":0到1的浮点数,"keywords":[最多3个情感关键词]}]}。'
-            "items 长度必须与输入条数一致，index 从 0 开始。只输出 JSON，不要其他文字。"
+                "6. 高频词表：退坑=不再玩、翻车=出事、割韭菜=圈钱、无语/好无语=无奈、"
+                "低级错误=批评、孝钱=讽刺性消费（以上多带负面）；yyds/顶/好正/好鬼正/咁正/"
+                "冇得顶/巴适/安逸/要得=非常好/满意（正面）；方言词若只出现在店名/标题且无观点"
+                "判 neutral。"
+                "7. 3C 数码语体补充规则（数码产品/手机/相机/电脑/平板等），"
+                "以下情况一律判 neutral，不得判 positive/negative："
+                "a) 产品介绍/开箱/参数罗列/规格对比/评测开头"
+                "（例：'下面我先来简单对影石 Ace Pro 2 做个开箱…是数显屏'"
+                "'大疆 osmo 360 II 发布，售价 3299，ai 处理芯片…画质升级不少'）；"
+                "b) 疑问句/求助/'值得买吗/怎么样/怎么办' 无明确倾向"
+                "（例：'买成华硕了怎么办?'）；"
+                "c) 标题页/聚合页/问题页（例：'联想小新Air15 评价怎样-推荐星'"
+                "'如何评价影石 X3-知乎'）；"
+                "d) 官方贴吧/高管言论/公司新闻稿/品牌活动宣发"
+                "（例：'联想官方贴吧活动汇总''杨元庆回应'）；"
+                "仅当存在明确个人评价词（喜欢/吐槽/推荐/不推荐/太好/太差）才按实际情感判；"
+                "e) 明确与其他品牌/产品比较（谁更强/对比/差距/平替/参数对比/别家）"
+                "不改变整条情感判定，但维度情感需标「竞品对比」。"
+            + dim_block
+            + ('输出 JSON：{"items":[{"index":0,"sentiment":"positive|negative|neutral",'
+               '"score":-1到1的浮点数,"confidence":0到1的浮点数,"keywords":[最多3个情感关键词],'
+               '"dimension_sentiments":{"维度id":"positive|negative"}}]}。'
+               "items 长度必须与输入条数一致，index 从 0 开始。只输出 JSON，不要其他文字。"
+               if dims else
+               '输出 JSON：{"items":[{"index":0,"sentiment":"positive|negative|neutral",'
+               '"score":-1到1的浮点数,"confidence":0到1的浮点数,"keywords":[最多3个情感关键词]}]}。'
+               "items 长度必须与输入条数一致，index 从 0 开始。只输出 JSON，不要其他文字。")
         )
+        valid_dim_ids = {d["id"] for d in dims}
         return self._structured_batch(
             texts,
             system=system,
             user_fn=lambda chunk: json.dumps({"texts": chunk}, ensure_ascii=False),
-            max_tokens_fn=lambda n: min(2000, 150 + 100 * n),
+            max_tokens_fn=lambda n: min(2600, 220 + 140 * n) if dims else min(2000, 150 + 100 * n),
             parse_fn=self._parse_batch,
-            sanitize_fn=lambda items: items,
+            sanitize_fn=(lambda items: sanitize_dimension_sentiments(items, valid_dim_ids))
+            if dims else (lambda items: items),
             fallback_fn=self._lexicon_fallback,
             error_label="LLM 批量请求失败",
             error_suffix="该批次已用词典结果兜底",
@@ -451,6 +550,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
         self,
         texts: list[str],
         on_batch_progress: "Callable[[int, int], None] | None" = None,
+        dimension_schema: dict | None = None,
     ) -> list[dict]:
         """真批量请求：BATCH_SIZE 条文本一次请求，最多 max_workers 批并发。"""
         self._errors = []
@@ -469,7 +569,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                     todo_idx.append(j)
                     todo_texts.append(t)
             if todo_texts:
-                parsed = self._request_batch(todo_texts)
+                parsed = self._request_batch(todo_texts, dimension_schema)
                 for j, t, item in zip(todo_idx, todo_texts, parsed):
                     with self._lock:
                         self._cache[t] = item

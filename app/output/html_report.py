@@ -98,7 +98,8 @@ def make_subplots_dual_dim(dims: dict) -> go.Figure:
         go.Scatter(x=cnames, y=[dims[n]["negative_rate"] for n in names], name="负面率", mode="lines+markers", line=dict(color="#dc2626")),
         secondary_y=True,
     )
-    fig.update_layout(title="维度讨论量与负面率", height=380, margin=dict(l=20, r=20, t=50, b=20))
+    fig.update_layout(title="维度评价量与负面率", height=380,
+                      margin=dict(l=20, r=20, t=50, b=20))
     fig.update_yaxes(title_text="讨论量", secondary_y=False)
     fig.update_yaxes(title_text="负面率", secondary_y=True, tickformat=".0%")
     return fig
@@ -659,6 +660,12 @@ def build_html(bundle: ReportBundle) -> str:
     )
     llm_count = sum(1 for it in bundle.coded_items if it.method == "llm")
     llm_corrected = int(s.get("llm_corrected") or 0)
+    dimension_note = (
+        "⚠ 本次为词典模式：维度情感为词典轻量估算，仅供参考；"
+        "开启 LLM 精分析后维度情感更准确。"
+        if llm_count == 0
+        else ""
+    )
     usage = bundle.llm_usage or {}
     trust = {
         "collected": collected,
@@ -705,6 +712,7 @@ def build_html(bundle: ReportBundle) -> str:
         chart_platform=_chart_platform(s),
         chart_trend=_chart_trend(s),
         chart_dimensions=_chart_dimensions(s),
+        dimension_note=dimension_note,
         chart_heatmap=_chart_heatmap(s),
         chart_words=_chart_words(s),
         chart_intensity=_chart_intensity(s),

@@ -40,6 +40,8 @@ REGRESSION_VERSION = "1.0"
 UNIT_TESTS = [
     "test_cleaner.py",
     "test_contracts.py",
+    "test_dimension_aspect.py",
+    "test_domain_proposer.py",
     "test_edge_annotation.py",
     "test_errors.py",
     "test_eval_dashboard.py",
@@ -58,6 +60,7 @@ UNIT_TESTS = [
     "test_tokenizer.py",
     "test_ui_flow.py",
     "test_usage_boundary.py",
+    "test_validation_discipline.py",
     "test_websearch_robust.py",
 ]
 

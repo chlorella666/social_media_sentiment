@@ -52,7 +52,7 @@ def build_descriptors(summary: dict) -> dict:
             _trend_descriptor(trend) if trend else "时间范围内无趋势数据"
         ),
         "dimensions": (
-            "各维度讨论量与负面率："
+            "各维度评价量与负面率："
             + "；".join(
                 f"{dimension_cn(did)} 讨论 {v['count']} 条、"
                 f"负面率 {v['negative_rate'] * 100:.1f}%"
@@ -229,7 +229,7 @@ def template_insights(descriptors: dict) -> dict:
         ),
         "dimensions": (
             f"维度分布显示：{d('dimensions')}。"
-            "讨论量高且负面率高的维度是核心风险点，建议优先整改。"
+            "评价量高且负面率高的维度是核心风险点，建议优先整改。"
         ),
         "heatmap": (
             f"负面率热力显示：{d('heatmap')}。"

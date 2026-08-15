@@ -40,6 +40,8 @@ MODE_LABEL = {
     "hybrid": "混合流水线（词典+LLM）",
     "edge_lexicon": "边界集·词典直判（无 LLM）",
     "edge_hybrid": "边界集·混合流水线（词典+LLM）",
+    "domain_digital3c_lexicon": "数码3C·词典直判（无 LLM）",
+    "domain_digital3c_hybrid": "数码3C·混合流水线（词典+LLM）",
 }
 GROUP_LABEL = {
     "by_channel": "渠道",
@@ -57,7 +59,8 @@ TOOLTIPS = {
     "accuracy": "整体准确率：模型判定与人工标注一致的比例，越高越好",
     "n": "样本数：该分组的样本条数；样本太少时数字波动大",
     "lexicon_rate": "词典直判率：不花钱、直接靠内置词典判定的文本比例",
-    "dim_f1": "维度微平均 F1：判断“文本提到了哪些维度”准不准（0~1，越高越好）",
+    "dim_f1": "维度微平均 F1：判断“每条文本在哪些维度上表达了正面/负面”准不准"
+              "（2.4 维度级情感口径，0~1，越高越好）",
     "llm_tokens": "LLM tokens：本次评测消耗的大模型 token 数（词典模式为 0）",
     "golden_fp": "样本版本号：黄金集内容的指纹，防止新旧样本对比出错",
     "delta": "Δpp：和上次相比的变化（百分点），+2.0pp 表示提升 2 个百分点",
@@ -246,8 +249,8 @@ def main() -> None:
         c3.markdown(_md_label("词典直判率", "lexicon_rate"), unsafe_allow_html=True)
         c3.metric("词典直判率", _fmt_acc(routing.get("direct_rate")), label_visibility="collapsed")
         dim = latest.get("dimension") or {}
-        c4.markdown(_md_label("维度微平均 F1", "dim_f1"), unsafe_allow_html=True)
-        c4.metric("维度微平均 F1",
+        c4.markdown(_md_label("维度情感 F1（2.4 口径）", "dim_f1"), unsafe_allow_html=True)
+        c4.metric("维度情感 F1（2.4 口径）",
                   "—" if dim.get("micro_f1") is None else f"{dim['micro_f1']:.2f}",
                   label_visibility="collapsed")
         llm_usage = latest.get("llm_usage") or {}
@@ -262,6 +265,13 @@ def main() -> None:
             st.caption("本次为「该模式 + 该黄金集」的首跑，无上次可对比。")
         elif prev.get("summary_only"):
             st.caption("上次为冻结基线回填（摘要级），无细分数据可对比。")
+        if any(
+            h.get("dimension_metric") == "mention"
+            and (h.get("dimension") or {}).get("micro_f1") is not None
+            for h in history
+        ):
+            st.caption("注意：历史中 2.4 之前的维度 F1 为「提及识别」旧口径，"
+                       "与新「维度情感」口径不可直接对比（趋势仅参考整体准确率）。")
 
         st.subheader("准确率趋势（全部模式）")
         trend_rows = []

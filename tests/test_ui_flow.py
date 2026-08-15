@@ -203,7 +203,7 @@ def test_brand_mode() -> None:
     # 阶段0：品牌名 + 游戏领域
     at.radio[0].set_value("品牌名 + 领域（推荐）").run()
     at.text_input[0].set_value("恋与深空").run()
-    at.selectbox[0].set_value("游戏（game）").run()
+    at.selectbox[0].set_value("数字内容产品（如游戏）").run()
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 1
     print("✓ 品牌模式 阶段0 通过")
@@ -237,6 +237,46 @@ def test_brand_mode() -> None:
         f"✓ 品牌模式 全流程通过：帖子 {bundle.summary['total_posts']} 条，"
         f"维度统计 {len(bundle.summary['dimensions'])} 个"
     )
+
+
+def test_websearch_confirmation_page() -> None:
+    """回归（2026-08-14）：选 WebSearch 渠道后确认页不再 NameError。
+
+    commit 22454ed 把「WebSearch 关键词总量」行插入 summary_rows，
+    但 ws_total 赋值在 st.table 之后 → 选 WebSearch 渠道进入确认页必现
+    NameError: name 'ws_total' is not defined。本用例守护确认页正常渲染。
+    """
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+
+    # 手动关键词模式 → 阶段3（渠道选择）
+    at.radio[0].set_value("手动输入关键词").run()
+    at.text_area[0].set_value("华润万家 评价\n华润万家 服务").run()
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 1
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 2
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 3
+
+    # 勾选 WebSearch 渠道（multiselect 的 option 即渠道 id）
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["websearch"]).run()
+    assert at.session_state["channel_ids"] == ["websearch"]
+
+    # 进入确认页：修复前此处抛 NameError（红屏）
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 4
+    assert not at.exception, f"确认页异常: {at.exception}"
+    restore_stale_widget_states(at)
+
+    # 摘要表应包含「WebSearch 关键词总量」行（2 关键词 × 1 渠道 = 2 次查询）
+    tables = [str(t.value) for t in at.table]
+    assert any("WebSearch 关键词总量" in t for t in tables), "摘要缺少关键词总量行"
+    assert any("2 次查询" in t for t in tables), "关键词总量数值不正确"
+    print("✓ 回归：WebSearch 渠道确认页正常渲染（ws_total 不再 NameError）")
 
 
 def test_failed_task_error_view() -> None:
@@ -337,6 +377,7 @@ if __name__ == "__main__":
     try:
         main()
         test_brand_mode()
+        test_websearch_confirmation_page()
         test_failed_task_error_view()
         test_review_ui_flow()
     finally:

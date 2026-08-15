@@ -28,6 +28,7 @@ from app.output.html_report import (
     wordcloud_png_bytes,
     words_fig,
 )
+from app.core.names import dimension_cn
 
 SENTIMENT_NAMES = {"positive": "正面", "negative": "负面", "neutral": "中性"}
 
@@ -187,14 +188,19 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         dtable = doc.add_table(rows=1, cols=4)
         dtable.style = "Table Grid"
         hdr = dtable.rows[0].cells
-        for i, name in enumerate(["维度", "讨论量", "负面数", "负面率"]):
+        for i, name in enumerate(["维度", "评价量", "负面数", "负面率"]):
             hdr[i].text = name
         for did, v in s["dimensions"].items():
             row = dtable.add_row().cells
-            row[0].text = did
+            row[0].text = dimension_cn(did)
             row[1].text = str(v["count"])
             row[2].text = str(v["negative"])
             row[3].text = f"{v['negative_rate'] * 100:.1f}%"
+        if sum(1 for it in bundle.coded_items if it.method == "llm") == 0:
+            doc.add_paragraph(
+                "注：本次为词典模式，维度情感为词典轻量估算，仅供参考；"
+                "开启 LLM 精分析后维度情感更准确。"
+            )
 
     doc.add_heading("六、图表与解析", level=1)
     s = bundle.summary

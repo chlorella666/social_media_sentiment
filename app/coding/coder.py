@@ -15,6 +15,7 @@ from app.core.models import (
 )
 from app.coding import lexicon_v2 as lexicon
 from app.coding.cleaner import clean_text, desensitize_text, normalize_pub_date
+from app.coding.dimensions import match_dimension_sentiments, match_dimensions
 from app.coding.llm_analyzer import CONFIDENCE_THRESHOLD, OpenAICompatibleAnalyzer
 
 
@@ -23,13 +24,8 @@ def _intensity(score: float) -> int:
 
 
 def _match_dimensions(text: str, schema: DomainSchema | None) -> list[str]:
-    if not schema:
-        return []
-    matched: list[str] = []
-    for dim in schema.dimensions:
-        if any(kw.lower() in text.lower() for kw in dim.keywords):
-            matched.append(dim.id)
-    return matched
+    """维度提及（2.4 起复用 app/coding/dimensions.py，行为不变）。"""
+    return match_dimensions(text, schema)
 
 
 def _format_eta(elapsed: float, done: int, total: int) -> str:
@@ -90,6 +86,7 @@ class Coder:
                         keyword=post.keyword,
                         pub_date=normalize_pub_date(post.timestamp),
                         dimensions=_match_dimensions(content, self.schema),
+                        dimension_sentiments=match_dimension_sentiments(content, self.schema),
                         sentiment=SentimentLabel(pre["sentiment"]),
                         intensity=_intensity(pre["score"]),
                         sentiment_score=pre["score"],
@@ -114,6 +111,7 @@ class Coder:
                     keyword=post.keyword,
                     pub_date=normalize_pub_date(comment.time),
                     dimensions=_match_dimensions(ctext, self.schema),
+                    dimension_sentiments=match_dimension_sentiments(ctext, self.schema),
                     sentiment=SentimentLabel(pre["sentiment"]),
                     intensity=_intensity(pre["score"]),
                     sentiment_score=pre["score"],
@@ -143,6 +141,7 @@ class Coder:
                 )
             llm_results = self.analyzer.analyze_batch(
                 texts,
+                dimension_schema=self.schema,
                 on_batch_progress=(
                     (lambda done_llm, total_llm: on_progress(
                         f"LLM 精分析 {done_llm}/{total_llm}（"
@@ -167,6 +166,10 @@ class Coder:
                     items[idx].intensity = _intensity(items[idx].sentiment_score)
                 items[idx].method = "llm"
                 items[idx].keywords = res.get("keywords", items[idx].keywords)
+                # 2.4：LLM 维度级情感（校验清洗在 llm_analyzer 内完成；无则保留词典兜底）
+                llm_dims = res.get("dimension_sentiments")
+                if isinstance(llm_dims, dict) and llm_dims:
+                    items[idx].dimension_sentiments = llm_dims
 
         # 第三遍（可选）：叙事框架与归因
         if plan.narrative_enabled and llm_available:

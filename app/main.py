@@ -960,7 +960,12 @@ if stage == 0:
     if mode.startswith("品牌名"):
         subject = st.text_input("品牌 / 产品 / 事件名称", placeholder="例如：华润万家、恋与深空、iPhone")
         domains = list_domains()
-        options = ["不使用领域"] + [f"{d['name']}（{d['id']}）" for d in domains]
+        # 领域配方模型（2026-08-14）：主导对象模板优先 + 领域示例，帮助用户理解
+        template_cn = {"content": "数字内容产品", "physical": "实物产品", "service": "服务过程"}
+        options = ["不使用领域"] + [
+            f"{template_cn.get(d.get('template_id'), d['name'])}（如{d['name']}）"
+            for d in domains
+        ]
         domain_choice = st.selectbox("所属领域", options, index=0)
         st.session_state.subject = subject.strip()
         st.session_state.domain_id = "" if domain_choice.startswith("不使用") else domains[options.index(domain_choice) - 1]["id"]
@@ -1413,6 +1418,11 @@ elif stage == 4:
     cost_est = estimate_cost(
         est_items + est_comments, narrative_enabled, relevance_check_enabled
     )
+    # WebSearch 关键词总量（关键词数 × WebSearch 渠道数）：
+    # 必须在 summary_rows 构建前计算，否则确认页引用未定义变量抛 NameError
+    # （回归见 commit 22454ed：ws_total 赋值曾误放在 st.table 之后）。
+    ws_channels = [c for c in channel_ids if c.startswith("websearch")]
+    ws_total = len(keywords) * len(ws_channels)
     summary_rows = [
         ("分析对象", st.session_state.get("subject", "")),
         ("领域", st.session_state.get("domain_id") or "不使用"),
@@ -1427,7 +1437,7 @@ elif stage == 4:
                 + (f"（{len(ws_channels)} 个 WebSearch 渠道 × {len(keywords)} 关键词）")
                 + ("，超限提交将被拦截" if ws_total > 24 else ""),
             )]
-            if (ws_channels := [c for c in channel_ids if c.startswith("websearch")])
+            if ws_channels
             else []
         ),
         ("LLM 相关性复核", "开（费用与耗时增加）" if relevance_check_enabled else "关"),
@@ -1443,9 +1453,6 @@ elif stage == 4:
         ("LLM 服务", f"{model_name} @ {base_url}" if llm_enabled else "—"),
     ]
     st.table(summary_rows)
-    ws_total = len(keywords) * len(
-        [c for c in channel_ids if c.startswith("websearch")]
-    )
     if ws_total > 24:
         st.warning(
             f"WebSearch 关键词总量 {ws_total} 超今日上限 24，提交后该渠道会被拦截；"

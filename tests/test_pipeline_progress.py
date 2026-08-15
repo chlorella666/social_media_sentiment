@@ -29,10 +29,11 @@ class FakeLLM(OpenAICompatibleAnalyzer):
     def ping(self, timeout=20):
         return True, "ok"
 
-    def _request_batch(self, texts):
+    def _request_batch(self, texts, dimension_schema=None):
         time.sleep(0.02)
         return [
-            {"sentiment": "negative", "score": -0.7, "confidence": 0.9, "keywords": []}
+            {"sentiment": "negative", "score": -0.7, "confidence": 0.9,
+             "keywords": [], "dimension_sentiments": {"monetization": "negative"}}
             for _ in texts
         ]
 

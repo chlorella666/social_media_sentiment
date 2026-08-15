@@ -151,6 +151,7 @@
     <div class="section">
       <h2>维度分析</h2>
       <div class="chart">{{ chart_dimensions }}</div>
+      {% if dimension_note %}<p class="note">{{ dimension_note }}</p>{% endif %}
       <p class="insight">{{ chart_insights.get('dimensions', '') }}</p>
       <div class="chart">{{ chart_heatmap }}</div>
       <p class="insight">{{ chart_insights.get('heatmap', '') }}</p>

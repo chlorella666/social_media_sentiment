@@ -185,18 +185,31 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="边界样本专项集标注编排")
     ap.add_argument("--worksheets", action="store_true", help="生成主标/副标空白标注表")
     ap.add_argument("--compare", action="store_true", help="合并双 AI 结果并生成复核表")
+    ap.add_argument("--acceptance-review", action="store_true",
+                    help="生成模型错误人工验收表（V2 验证纪律；--blind 为盲审档）")
+    ap.add_argument("--report", type=Path, help="benchmark 报告 JSON（--acceptance-review 用）")
+    ap.add_argument("--out", type=Path, help="输出 xlsx（--acceptance-review 用）")
+    ap.add_argument("--blind", action="store_true",
+                    help="盲审：验收表省略模型判定列")
     ap.add_argument("--force", action="store_true", help="覆盖已存在的产物")
     ap.add_argument("--allow-annotated", dest="allow_annotated", action="store_true",
                     help="（危险）允许覆盖已填写的标注表")
     args = ap.parse_args()
 
-    if not (args.worksheets or args.compare):
+    if not (args.worksheets or args.compare or args.acceptance_review):
         ap.print_help()
         return 1
     if args.worksheets:
         gen_worksheets(force=args.force, allow_annotated=args.allow_annotated)
     if args.compare:
         return run_compare()
+    if args.acceptance_review:
+        if not (args.report and args.out):
+            ap.error("--acceptance-review 需要 --report 与 --out")
+        report = json.loads(args.report.read_text(encoding="utf-8"))
+        errors = report.get("errors") or []
+        ea.gen_acceptance_review_xlsx(errors, args.out, blind=args.blind)
+        return 0
     return 0
 
 

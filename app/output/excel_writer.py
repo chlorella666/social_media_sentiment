@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import re
 
 import pandas as pd
 
 from app.core.models import ReportBundle
+from app.core.names import dimension_cn
 from app.domains.loader import load_domain
 from app.output.html_report import keyword_rows, query_rows
 
@@ -165,6 +167,10 @@ def _simple_rows(bundle: ReportBundle) -> list[dict]:
                 "可信度": "高" if it.confidence >= 0.8 else "中" if it.confidence >= 0.5 else "低",
                 "提到什么": "、".join(it.keywords),
                 "维度": "、".join(dim_names.get(d, d) for d in it.dimensions),
+                "维度情感": "、".join(
+                    f"{dim_names.get(d, d)}：{SENTIMENT_CN.get(v, v)}"
+                    for d, v in it.dimension_sentiments.items()
+                ) or "无",
                 "来源渠道": PLATFORM_CN.get(it.platform, it.platform),
                 "原文链接": link,
             }
@@ -206,6 +212,10 @@ def _coded_rows(bundle: ReportBundle) -> list[dict]:
             "强度(1-5)": it.intensity,
             "分析方法": it.method,
             "维度": "、".join(dim_names.get(d, d) for d in it.dimensions),
+            "维度情感": json.dumps(
+                {dim_names.get(d, d): v for d, v in it.dimension_sentiments.items()},
+                ensure_ascii=False,
+            ) or "{}",
             "情感关键词": "、".join(it.keywords),
             "叙事框架": NARRATIVE_CN.get(it.narrative.value, it.narrative.value)
             if it.narrative
@@ -265,7 +275,8 @@ def _summary_frames(bundle: ReportBundle) -> list[tuple[str, pd.DataFrame]]:
             "字段说明",
             pd.DataFrame(
                 [
-                    {"字段": "维度", "说明": "仅对命中领域 schema 关键词的文本打标；未命中留空并在明细说明列注明"},
+                    {"字段": "维度", "说明": "命中领域 schema 关键词的维度提及；未命中留空并在明细说明列注明"},
+                    {"字段": "维度情感", "说明": "2.4 维度级情感：仅对明确带褒贬的维度标注正面/负面（转折句逐维拆解）；无明确褒贬留空；词典模式为轻量兜底"},
                     {"字段": "叙事框架/归因主体", "说明": "仅对 LLM 精分析过的文本执行（成本控制设计）"},
                     {"字段": "已采集评论数", "说明": "原始数据中的平台评论总数来自平台字段；实际采集按每帖上限抓取热门评论"},
                     {"字段": "丢弃明细", "说明": "清洗阶段被排除的帖子及原因（官方页面/样板文本/重复/不相关等）"},
@@ -401,8 +412,8 @@ def _summary_frames(bundle: ReportBundle) -> list[tuple[str, pd.DataFrame]]:
             pd.DataFrame(
                 [
                     {
-                        "维度": did,
-                        "讨论量": v["count"],
+                        "维度": dimension_cn(did),
+                        "评价量": v["count"],
                         "负面数": v["negative"],
                         "负面率": v["negative_rate"],
                     }

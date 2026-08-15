@@ -1,0 +1,154 @@
+{
+  "domain_id": "digital3c",
+  "domain_name": "数码3C",
+  "dimensions": [
+    {
+      "id": "effectiveness_performance",
+      "name": "功能效果",
+      "description": "模板 实物型",
+      "source": "",
+      "keywords": [
+        "功能",
+        "效果",
+        "性能",
+        "卡顿",
+        "系统",
+        "更新",
+        "生态",
+        "画质",
+        "影像拍摄",
+        "续航",
+        "充电",
+        "发热",
+        "掉电",
+        "快充",
+        "拍照",
+        "防抖",
+        "清晰度",
+        "流畅",
+        "AI",
+        "智能"
+      ],
+      "sub_dimensions": [],
+      "origin": "template:physical"
+    },
+    {
+      "id": "safety_compliance",
+      "name": "安全合规",
+      "description": "模板 实物型",
+      "source": "",
+      "keywords": [
+        "安全",
+        "合规",
+        "充电安全",
+        "认证",
+        "隐私"
+      ],
+      "sub_dimensions": [],
+      "origin": "template:physical"
+    },
+    {
+      "id": "price_value",
+      "name": "价格价值",
+      "description": "模板 实物型",
+      "source": "",
+      "keywords": [
+        "价格",
+        "价值",
+        "性价比",
+        "贵",
+        "便宜",
+        "促销",
+        "折扣",
+        "划算",
+        "保值"
+      ],
+      "sub_dimensions": [],
+      "origin": "template:physical"
+    },
+    {
+      "id": "channel_service",
+      "name": "渠道服务",
+      "description": "模板 实物型",
+      "source": "",
+      "keywords": [
+        "渠道",
+        "服务",
+        "物流",
+        "快递",
+        "售后",
+        "保修",
+        "维修",
+        "客服",
+        "旗舰店",
+        "门店"
+      ],
+      "sub_dimensions": [],
+      "origin": "template:physical"
+    },
+    {
+      "id": "brand_image",
+      "name": "品牌形象",
+      "description": "模板 实物型",
+      "source": "",
+      "keywords": [
+        "品牌",
+        "形象",
+        "审美",
+        "质感",
+        "种草",
+        "情怀",
+        "逼格",
+        "牌子"
+      ],
+      "sub_dimensions": [],
+      "origin": "template:physical"
+    },
+    {
+      "id": "competitor",
+      "name": "竞品对比",
+      "description": "模板 实物型",
+      "source": "",
+      "keywords": [
+        "竞品对比",
+        "竞品优势",
+        "竞品劣势",
+        "对比",
+        "更强",
+        "差距",
+        "谁强",
+        "谁更强",
+        "平替",
+        "vs",
+        "参数",
+        "规格",
+        "别家"
+      ],
+      "sub_dimensions": [],
+      "origin": "template:physical"
+    },
+    {
+      "id": "design_quality",
+      "name": "设计与做工",
+      "description": "模板 实物型",
+      "source": "",
+      "keywords": [
+        "做工质量",
+        "外观设计",
+        "防水",
+        "便携",
+        "重量",
+        "材质",
+        "续航",
+        "掉电",
+        "充电",
+        "做工",
+        "手感"
+      ],
+      "sub_dimensions": [],
+      "origin": "template:physical"
+    }
+  ],
+  "version": "1.1",
+  "template_id": "physical"
+}

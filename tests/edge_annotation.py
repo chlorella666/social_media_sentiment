@@ -24,7 +24,7 @@ import random
 import re
 from pathlib import Path
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = Path(os.environ.get("EDGE_DATASETS_DIR") or (ROOT / "data" / "datasets"))
@@ -103,7 +103,7 @@ EDGE_COLUMNS = [
     "text_id", "text", "platform", "domain", "brand", "keyword", "kind", "is_reply",
     "subset", "sentiment", "intensity", "dimension_sentiments", "language_flags",
     "relevant", "remark", "annotator", "annotated_at", "url", "time", "likes",
-    "batch", "finalize_note",
+    "batch", "finalize_note", "gold_revised_by_model",
 ]
 
 # 复核表列（一致性核对表 / 人工抽检校准表共用）
@@ -113,8 +113,18 @@ REVIEW_COLUMNS = [
     "主标维度", "副标维度", "主标相关", "副标相关",
     "主标语言现象", "副标语言现象", "分歧点",
     "人工判定情感", "人工判定强度", "人工判定维度",
-    "人工判定相关", "人工判定语言现象", "备注", "复核人", "复核日期",
+    "人工判定相关", "人工判定语言现象", "是否参考过模型判定",
+    "备注", "复核人", "复核日期",
 ]
+
+# 模型错误人工验收表（edge_2.3_acceptance_review 样式，V2 验证纪律）：
+# 「是否参考过模型判定」用于 gold 修订敏感性复算；--blind 时省略模型判定列。
+ACCEPTANCE_COLUMNS = [
+    "序号", "text_id", "原文", "平台", "领域", "子集", "gold情感",
+    "模型判定情感", "LLM修正(是/否)",
+    "人工判定情感", "是否参考过模型判定", "备注", "复核人", "复核日期",
+]
+ACCEPTANCE_MODEL_COLS = ("模型判定情感", "LLM修正(是/否)")
 
 
 def norm(v) -> str:
@@ -491,6 +501,7 @@ def review_row(seq: int, tid: str, primary: dict, secondary: dict) -> dict:
         "人工判定维度": "",
         "人工判定相关": "",
         "人工判定语言现象": "",
+        "是否参考过模型判定": "",
         "备注": "",
         "复核人": "",
         "复核日期": "",
@@ -506,6 +517,7 @@ def parse_human_row(r: dict) -> dict:
         "dims": parse_dims_dict(r.get("人工判定维度")),
         "relevant": norm_relevant(r.get("人工判定相关")),
         "flags": parse_flags(r.get("人工判定语言现象")),
+        "gold_revised_by_model": norm(r.get("是否参考过模型判定")),
         "remark": norm(r.get("备注")),
         "reviewer": norm(r.get("复核人")),
         "reviewed_at": norm(r.get("复核日期")),
@@ -605,6 +617,9 @@ def _finalize_one(
         "likes": a.get("likes", ""),
         "batch": a.get("batch", ""),
         "finalize_note": "；".join(note_parts),
+        "gold_revised_by_model": (
+            (human or {}).get("gold_revised_by_model", "")
+        ),
     }, None
 
 
@@ -675,3 +690,88 @@ def write_disputed_csv(rows: list[dict], path: Path) -> None:
         w.writeheader()
         for r in rows:
             w.writerow({c: r.get(c, "") for c in cols})
+
+
+def gen_acceptance_review_xlsx(errors: list[dict], out: Path, blind: bool = False) -> None:
+    """生成模型错误人工验收表（V2 验证纪律，edge_2.3_acceptance_review 样式）。
+
+    列含「是否参考过模型判定（是/否）」——人工修订 gold 时须披露是否看过模型判定；
+    blind=True 省略「模型判定情感/LLM修正」两列（更严格的盲审档）。
+    """
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    cols = (
+        [c for c in ACCEPTANCE_COLUMNS if c not in ACCEPTANCE_MODEL_COLS]
+        if blind else list(ACCEPTANCE_COLUMNS)
+    )
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "错误样本验收"
+    ws.append(cols)
+    for cell in ws[1]:
+        cell.fill = PatternFill("solid", fgColor="E2EFDA")
+        cell.font = Font(bold=True)
+    for i, e in enumerate(errors, 1):
+        row = {
+            "序号": i,
+            "text_id": e.get("text_id", ""),
+            "原文": e.get("text", ""),
+            "平台": e.get("platform", ""),
+            "领域": e.get("domain", ""),
+            "子集": e.get("subset", ""),
+            "gold情感": e.get("gold", ""),
+            "模型判定情感": e.get("pred", ""),
+            "LLM修正(是/否)": "是" if e.get("llm_used") else "否",
+            "人工判定情感": "",
+            "是否参考过模型判定": "",
+            "备注": "",
+            "复核人": "",
+            "复核日期": "",
+        }
+        ws.append([row.get(c, "") for c in cols])
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.freeze_panes = "A2"
+    guide = wb.create_sheet("填写说明")
+    lines = [
+        "模型错误人工验收表（V2 验证纪律）。",
+        "一、「人工判定情感」：填写你认为正确的最终情感（positive/negative/neutral）；留空 = 认可 gold。",
+        "二、「是否参考过模型判定」：修订/确认时是否看过「模型判定情感」列？看过填「是」，没看填「否」。",
+        "    - 该字段用于敏感性复算：gold 修订参考过模型的行可被",
+        "      benchmark_golden.py --exclude-gold-revised-by-model 剔除后再统计。",
+        "三、盲审更严格：生成时加 --blind 会省略模型判定列，默认应填「否」。",
+        "四、填完运行 tests/apply_edge_acceptance_revision.py --sheet <本文件> 应用到 edge_set。",
+    ]
+    for line in lines:
+        guide.append([line])
+    guide.column_dimensions["A"].width = 110
+    wb.save(out)
+    print(f"验收表已生成：{out}（{len(errors)} 条，blind={blind}）")
+
+
+def load_acceptance_xlsx(path: Path) -> list[dict]:
+    """读取模型错误人工验收表：人工判定情感 + 是否参考过模型判定。"""
+    wb = load_workbook(path, read_only=True, data_only=True)
+    out = []
+    try:
+        ws = wb.worksheets[0]
+        it = ws.iter_rows(values_only=True)
+        hdr = [str(h) if h else "" for h in next(it, [])]
+        for r in it:
+            if not r or not norm(r[0] if r else None):
+                continue
+            rec = {h: (v if v is not None else "") for h, v in zip(hdr, r)}
+            out.append({
+                "text_id": norm(rec.get("text_id")),
+                "gold": norm_sent(rec.get("gold情感")),
+                "pred": norm_sent(rec.get("模型判定情感")),
+                "human_sentiment": norm_sent(rec.get("人工判定情感")),
+                "gold_revised_by_model": norm(rec.get("是否参考过模型判定")),
+                "remark": norm(rec.get("备注")),
+                "reviewer": norm(rec.get("复核人")),
+                "reviewed_at": norm(rec.get("复核日期")),
+            })
+    finally:
+        wb.close()
+    return out

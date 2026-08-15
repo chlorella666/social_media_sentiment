@@ -49,10 +49,11 @@ class SlowLLM(OpenAICompatibleAnalyzer):
     def ping(self, timeout=20):
         return True, "ok"
 
-    def _request_batch(self, texts):
+    def _request_batch(self, texts, dimension_schema=None):
         time.sleep(0.05)
         return [
-            {"sentiment": "positive", "score": 0.8, "confidence": 0.9, "keywords": []}
+            {"sentiment": "positive", "score": 0.8, "confidence": 0.9,
+             "keywords": [], "dimension_sentiments": {}}
             for _ in texts
         ]
 

@@ -61,12 +61,35 @@ def load_golden(path: Path) -> list[dict]:
     return rows
 
 
+REVISED_BY_MODEL_TRUE = {"是", "yes", "true", "1"}
+
+
+def is_gold_revised_by_model(v) -> bool:
+    """gold 修订是否参考过模型判定（V2 敏感性复算的过滤条件）。"""
+    return (v or "").strip().lower() in REVISED_BY_MODEL_TRUE
+
+
+def filter_gold_revised(rows: list[dict], exclude: bool) -> tuple[list[dict], list[dict]]:
+    """--exclude-gold-revised-by-model：剔除「修订参考过模型」的 gold 行后复算。"""
+    if not exclude:
+        return rows, []
+    kept, dropped = [], []
+    for r in rows:
+        (dropped if is_gold_revised_by_model(r.get("gold_revised_by_model")) else kept).append(r)
+    return kept, dropped
+
+
 def load_schema(domain: str) -> dict[str, dict]:
-    path = ROOT / "app" / "domains" / f"{domain}.json"
-    schema = json.loads(path.read_text(encoding="utf-8"))
+    """领域维度 schema（2.5 起走统一加载：预置 + 缓存，缓存优先）。"""
+    from app.domains.loader import load_domain
+
+    try:
+        schema = load_domain(domain)
+    except Exception:
+        return {}
     return {
-        dim["id"]: {"name": dim["name"], "keywords": dim.get("keywords", [])}
-        for dim in schema.get("dimensions", [])
+        dim.id: {"name": dim.name, "keywords": dim.keywords}
+        for dim in schema.dimensions
     }
 
 
@@ -95,6 +118,7 @@ def get_llm_analyzer():
 def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
     from app.coding import lexicon_v2 as lexicon
     from app.coding.cleaner import clean_text, desensitize_text
+    from app.coding.dimensions import match_dimension_sentiments
     from app.coding.llm_analyzer import CONFIDENCE_THRESHOLD
 
     schemas = {d: load_schema(d) for d in {r["domain"] for r in rows}}
@@ -104,6 +128,9 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
         text = clean_text(r["text"] or "")
         pre = lexicon.score_text(text)
         direct = pre["confidence"] >= CONFIDENCE_THRESHOLD
+        schema = schemas.get(r["domain"], {})
+        # 维度情感（2.4 词典兜底口径）：gold 用维度中文名，预测同样用中文名
+        dim_sents = match_dimension_sentiments(r["text"] or "", schema, use_names=True)
         pred = {
             "sentiment": pre["sentiment"],
             "lexicon_sentiment": pre["sentiment"],
@@ -111,8 +138,8 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
             "llm_used": False,
             "confidence": pre["confidence"],
             "dims": [],
+            "dimension_sentiments": dim_sents,
         }
-        schema = schemas.get(r["domain"], {})
         pred["dims"] = [
             d["name"] for d in schema.values()
             if any(kw.lower() in (r["text"] or "").lower() for kw in d["keywords"])
@@ -123,13 +150,35 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
             llm_texts.append(desensitize_text(text))
             llm_idx.append(i)
     if llm_texts:
-        results = llm.analyze_batch(llm_texts)
+        # 2.4：LLM v3.0 输出维度情感；按领域分组调用（schema 不同，不能混批）
+        from collections import defaultdict
+
+        groups: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        for pos, i in enumerate(llm_idx):
+            groups[rows[i]["domain"]].append((pos, i))
+        results: list[dict | None] = [None] * len(llm_texts)
+        for domain, idxs in groups.items():
+            part = llm.analyze_batch(
+                [llm_texts[pos] for pos, _ in idxs],
+                dimension_schema=schemas[domain],
+            )
+            for (pos, _), res in zip(idxs, part):
+                results[pos] = res
         for i, res in zip(llm_idx, results):
             if res and res.get("sentiment") in VALID_SENTIMENTS:
                 out[i]["sentiment"] = res["sentiment"]
                 out[i]["llm_used"] = True
                 if res.get("confidence") is not None:
                     out[i]["confidence"] = float(res["confidence"])
+            llm_dims = (res or {}).get("dimension_sentiments")
+            if isinstance(llm_dims, dict) and llm_dims:
+                schema = schemas[rows[i]["domain"]]
+                name_map = {d_id: info["name"] for d_id, info in schema.items()}
+                out[i]["dimension_sentiments"] = {
+                    name_map.get(d_id, d_id): v
+                    for d_id, v in llm_dims.items()
+                    if v in ("positive", "negative")
+                }
     return out
 
 
@@ -142,10 +191,12 @@ def group_report(rows, preds, key_fn):
     groups = defaultdict(list)
     for r, p in zip(rows, preds):
         groups[key_fn(r)].append((p["sentiment"], r["sentiment"]))
-    return {
-        k: {"n": len(v), "accuracy": round(accuracy(*zip(*v)), 4)}
-        for k, v in sorted(groups.items())
-    }
+    out = {}
+    for k, v in sorted(groups.items()):
+        acc = round(accuracy(*zip(*v)), 4)
+        out[k] = {"n": len(v), "accuracy": acc,
+                  "ci_pp": eval_store.ci_half_pp(acc, len(v))}
+    return out
 
 
 def sentiment_class_metrics(pred_sents, gold_sents):
@@ -169,44 +220,102 @@ def sentiment_class_metrics(pred_sents, gold_sents):
 
 
 def dimension_report(rows, preds):
-    """维度级：精确命中率 + 每维 precision/recall（微平均）。"""
+    """维度级情感（2.4 口径）：gold/pred dimension_sentiments 逐维比对。
+
+    主指标：
+      - 微平均 P/R/F1：按 (维度, 情感) 对统计——预测值与 gold 完全一致为 TP，
+        情感标错或幻觉维度为 FP，漏标为 FN；
+      - 精确命中率：整条维度情感集合（含情感值）完全一致的比例；
+      - per_dimension：每维情感 P/R/F1（含 n_gold）；
+    mention 子报告保留旧口径（维度提及识别，2.3 及之前的指标）供诊断对比。
+    """
     exact_t, exact_n = 0, 0
     tp, fp, fn = 0, 0, 0
-    all_dims = sorted({d for r in rows for d in r["dimension_sentiments"]} | {d for p in preds for d in p["dims"]})
-    per_dim = {}
+    mention_tp, mention_fp, mention_fn = 0, 0, 0
+    all_dims = sorted(
+        {d for r in rows for d in r["dimension_sentiments"]}
+        | {d for p in preds for d in p.get("dimension_sentiments") or {}}
+        | {d for p in preds for d in (p.get("dims") or [])}
+    )
+    per_dim: dict = {}
+    mention_per: dict = {}
     for dim in all_dims:
         pt = pf = pn = 0
+        mt = mf = mn = 0
         for r, p in zip(rows, preds):
-            gold = dim in r["dimension_sentiments"]
-            pre = dim in p["dims"]
-            if pre and gold:
+            g = r["dimension_sentiments"]
+            pr = p.get("dimension_sentiments") or {}
+            gold_v = g.get(dim)
+            pred_v = pr.get(dim)
+            # 维度情感（2.4）：值一致为 TP；值不一致 = FP + FN；单侧缺失按 FN/FP
+            if pred_v and gold_v and pred_v == gold_v:
                 pt += 1
-            elif pre and not gold:
+            elif pred_v and gold_v:
                 pf += 1
-            elif not pre and gold:
                 pn += 1
+            elif pred_v:
+                pf += 1
+            elif gold_v:
+                pn += 1
+            # 提及识别（旧口径，供诊断）
+            dim_gold = dim in g
+            dim_pred = dim in pr
+            if dim_pred and dim_gold:
+                mt += 1
+            elif dim_pred and not dim_gold:
+                mf += 1
+            elif not dim_pred and dim_gold:
+                mn += 1
         precision = pt / (pt + pf) if pt + pf else 0.0
         recall = pt / (pt + pn) if pt + pn else 0.0
         f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-        per_dim[dim] = {"precision": round(precision, 4), "recall": round(recall, 4), "f1": round(f1, 4)}
+        per_dim[dim] = {
+            "n_gold": sum(1 for r in rows if dim in r["dimension_sentiments"]),
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "f1": round(f1, 4),
+        }
+        m_precision = mt / (mt + mf) if mt + mf else 0.0
+        m_recall = mt / (mt + mn) if mt + mn else 0.0
+        m_f1 = 2 * m_precision * m_recall / (m_precision + m_recall) if m_precision + m_recall else 0.0
+        mention_per[dim] = {
+            "precision": round(m_precision, 4),
+            "recall": round(m_recall, 4),
+            "f1": round(m_f1, 4),
+        }
         tp += pt
         fp += pf
         fn += pn
+        mention_tp += mt
+        mention_fp += mf
+        mention_fn += mn
     micro_p = tp / (tp + fp) if tp + fp else 0.0
     micro_r = tp / (tp + fn) if tp + fn else 0.0
     micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r) if micro_p + micro_r else 0.0
+    m_micro_p = mention_tp / (mention_tp + mention_fp) if mention_tp + mention_fp else 0.0
+    m_micro_r = mention_tp / (mention_tp + mention_fn) if mention_tp + mention_fn else 0.0
+    m_micro_f1 = 2 * m_micro_p * m_micro_r / (m_micro_p + m_micro_r) if m_micro_p + m_micro_r else 0.0
     for r, p in zip(rows, preds):
         if r["dimension_sentiments"]:
             exact_n += 1
-            if set(p["dims"]) == set(r["dimension_sentiments"]):
+            if dict(p.get("dimension_sentiments") or {}) == dict(r["dimension_sentiments"]):
                 exact_t += 1
     return {
+        "口径": "维度级情感（每维 positive/negative，2.4）",
         "exact_match_rate": round(exact_t / exact_n, 4) if exact_n else None,
         "exact_match_n": exact_n,
+        "dimension_n": exact_n,
         "micro_precision": round(micro_p, 4),
         "micro_recall": round(micro_r, 4),
         "micro_f1": round(micro_f1, 4),
         "per_dimension": per_dim,
+        "mention": {
+            "口径": "维度提及识别（旧口径，2.3 及之前）",
+            "micro_precision": round(m_micro_p, 4),
+            "micro_recall": round(m_micro_r, 4),
+            "micro_f1": round(m_micro_f1, 4),
+            "per_dimension": mention_per,
+        },
     }
 
 
@@ -291,6 +400,9 @@ def main():
     ap.add_argument("--edge", action="store_true",
                     help="边界集评测模式（默认 tests/fixtures/edge_set_v1.csv，"
                          "按子集/子集×渠道/分桶校准报告，独立 mode_key）")
+    ap.add_argument("--mode-key", type=str, default=None,
+                    help="自定义评测键（2.5 新领域用，如 domain_digital3c_lexicon；"
+                         "独立历史与基线，避免污染主集/边界集）")
     ap.add_argument("--llm", action="store_true", help="混合流水线（词典+LLM），需 API Key")
     ap.add_argument(
         "--record", dest="record", action="store_true", default=True,
@@ -308,6 +420,10 @@ def main():
         "--no-history", dest="history", action="store_false", default=True,
         help="不写评测历史与对比（临时跑分用）",
     )
+    ap.add_argument(
+        "--exclude-gold-revised-by-model", action="store_true",
+        help="V2 敏感性复算：剔除「gold 修订参考过模型判定」的行再统计",
+    )
     args = ap.parse_args()
 
     golden = args.golden
@@ -317,6 +433,10 @@ def main():
         raise SystemExit(f"数据集不存在：{golden}（主集先运行 tests/finalize_golden_set.py；"
                          f"边界集先运行 tests/apply_edge_review.py）")
     rows = load_golden(golden)
+    rows, gold_revised_dropped = filter_gold_revised(rows, args.exclude_gold_revised_by_model)
+    if gold_revised_dropped:
+        print(f"[V2] 已剔除 gold 修订参考过模型判定的行：{len(gold_revised_dropped)} 条"
+              f"（{', '.join(r['text_id'] for r in gold_revised_dropped[:10])}）")
     relevant_rows = [r for r in rows if r.get("relevant", "yes") == "yes"]
     irrelevant_rows = [r for r in rows if r.get("relevant", "yes") != "yes"]
     if not relevant_rows:
@@ -327,11 +447,15 @@ def main():
     if args.edge:
         mode_key = "edge_hybrid" if args.llm else "edge_lexicon"
         mode = "边界集-混合流水线（词典+LLM）" if args.llm else "边界集-词典直判（无 LLM）"
+    elif args.mode_key:
+        mode_key = args.mode_key
+        mode = "自定义领域评测（词典）" if not args.llm else "自定义领域评测（混合）"
     else:
         mode_key = "hybrid" if args.llm else "lexicon"
         mode = "混合流水线（词典+LLM）" if args.llm else "词典直判（无 LLM）"
 
     overall = accuracy([p["sentiment"] for p in preds], [r["sentiment"] for r in relevant_rows])
+    overall_acc = round(overall, 4)
     confusion = Counter((p["sentiment"], r["sentiment"]) for p, r in zip(preds, relevant_rows))
     dim_rep = dimension_report(relevant_rows, preds)
     pred_sents = [p["sentiment"] for p in preds]
@@ -352,6 +476,21 @@ def main():
         for r, p in zip(relevant_rows, preds)
         if p["sentiment"] != r["sentiment"]
     ]
+    # 2.4：维度错误样本下钻（gold vs pred dimension_sentiments 不一致；供失败模式分析）
+    dimension_errors = [
+        {
+            "text_id": r["text_id"],
+            "text": r["text"],
+            "gold": r["dimension_sentiments"],
+            "pred": p.get("dimension_sentiments") or {},
+            "subset": r.get("subset", ""),
+            "platform": r["platform"],
+            "domain": r["domain"],
+            "llm_used": p["llm_used"],
+        }
+        for r, p in zip(relevant_rows, preds)
+        if (r["dimension_sentiments"] or {}) != (p.get("dimension_sentiments") or {})
+    ]
     direct_n = sum(1 for p in preds if p["direct"])
     llm_n = sum(1 for p in preds if p["llm_used"])
     llm_fix = sum(1 for p in preds if p["llm_used"] and p["sentiment"] != p["lexicon_sentiment"])
@@ -371,6 +510,7 @@ def main():
         "scope": {
             "main_n": len(relevant_rows),
             "irrelevant_excluded_n": len(irrelevant_rows),
+            "gold_revised_excluded_n": len(gold_revised_dropped),
             "口径": "主评分仅统计 relevant=yes；relevant=no 单独统计，不计入情感准确率",
         },
         "irrelevant": {
@@ -379,7 +519,8 @@ def main():
             "note": "规范 §五 规则 8：不相关内容情感按 neutral 标注，单独统计",
         },
         "mode": mode,
-        "sentiment_accuracy": round(overall, 4),
+        "sentiment_accuracy": overall_acc,
+        "accuracy_ci_pp": eval_store.ci_half_pp(overall_acc, len(relevant_rows)),
         "confusion_matrix": {f"{a}->{b}": c for (a, b), c in sorted(confusion.items())},
         "by_domain": group_report(relevant_rows, preds, lambda r: r["domain"]),
         "by_channel": group_report(relevant_rows, preds, lambda r: r["platform"]),
@@ -396,6 +537,7 @@ def main():
         },
         "cleaning": cleaning_report(),
         "errors": errors,
+        "dimension_errors": dimension_errors[:300],
     }
     if args.llm and llm is not None:
         report["llm_usage"] = llm.usage
@@ -422,10 +564,23 @@ def main():
         run_info = eval_store.write_run(report, previous=prev, baseline=baseline)
         report["comparison"] = run_info["comparison"]
         comparison = run_info["comparison"]
+        if golden.name.startswith("holdout_"):
+            # V1 纪律：hold-out 每卷 ≤2 次验收（best-effort 记录，失败不阻塞跑分）
+            try:
+                from tests.coldstart_annotation import record_holdout_use
+
+                res = record_holdout_use(golden)
+                if res.get("ok"):
+                    print(f"[V1] hold-out 验收已记录：{res['uses']}/{res['max_uses']} 次")
+                else:
+                    print(f"[V1] hold-out 使用记录：{res.get('error')}")
+            except Exception as exc:
+                print(f"[V1] hold-out 使用记录失败（不阻塞）：{exc}")
 
     print(f"{'边界集' if args.edge else '黄金集'}：{len(rows)} 条"
           f"（主评分 {len(relevant_rows)}，排除 relevant=no {len(irrelevant_rows)}） | 模式：{mode}")
-    print(f"整条情感准确率：{overall:.1%}")
+    print(f"整条情感准确率：{overall:.1%}"
+          f"（95% CI ±{report['accuracy_ci_pp']}pp）")
     if args.edge:
         print("  按子集：", {k: f"{v['accuracy']:.1%}(n={v['n']})" for k, v in report["by_subset"].items()})
         print("  置信度分桶校准：", {
@@ -434,8 +589,11 @@ def main():
         })
     print("  按领域：", {k: f"{v['accuracy']:.1%}({v['n']})" for k, v in report["by_domain"].items()})
     print("  按渠道：", {k: f"{v['accuracy']:.1%}({v['n']})" for k, v in report["by_channel"].items()})
-    print(f"维度：精确命中 {dim_rep['exact_match_rate']:.1%}（n={dim_rep['exact_match_n']}），"
-          f"微平均 P/R/F1 = {dim_rep['micro_precision']:.2f}/{dim_rep['micro_recall']:.2f}/{dim_rep['micro_f1']:.2f}")
+    emr = dim_rep["exact_match_rate"]
+    emr_s = f"{emr:.1%}" if emr is not None else "无维度标注"
+    print(f"维度：精确命中 {emr_s}（n={dim_rep['exact_match_n']}），"
+          f"微平均 P/R/F1 = {dim_rep['micro_precision']:.2f}/"
+          f"{dim_rep['micro_recall']:.2f}/{dim_rep['micro_f1']:.2f}")
     print("  每维 P/R/F1：", {k: f"{v['precision']:.2f}/{v['recall']:.2f}/{v['f1']:.2f}" for k, v in dim_rep["per_dimension"].items()})
     print("路由：", report["routing"])
     print("语言现象子集准确率：", {k: f"{v['accuracy']:.1%}(n={v['n']})" for k, v in flag_acc.items()})
@@ -447,12 +605,18 @@ def main():
         if vp:
             d = vp.get("overall_delta_pp")
             if d is not None:
-                print(f"对比（vs 上次 {vp.get('prev_ts')}）：整体 {d:+.1f}pp（{vp.get('status')}）")
+                w = vp.get("overall_delta_ci_pp")
+                w_s = f"，Δ CI ±{w}pp" if w is not None else ""
+                print(f"对比（vs 上次 {vp.get('prev_ts')}）：整体 {d:+.1f}pp"
+                      f"{w_s}（{vp.get('status')}）")
             else:
                 print(f"对比（vs 上次 {vp.get('prev_ts')}）：无准确率可比")
         vb = comparison.get("vs_baseline")
         if vb and vb.get("delta_pp") is not None:
-            print(f"对比（vs 冻结基线 {vb.get('baseline')}）：整体 {vb['delta_pp']:+.1f}pp（{vb['status']}）")
+            w = vb.get("delta_ci_pp")
+            w_s = f"，Δ CI ±{w}pp" if w is not None else ""
+            print(f"对比（vs 冻结基线 {vb.get('baseline')}）：整体 {vb['delta_pp']:+.1f}pp"
+                  f"{w_s}（{vb['status']}）")
     cl = report["cleaning"]
     if cl.get("status") == "no_golden":
         print("清洗验证集：", cl["note"])
@@ -492,14 +656,21 @@ def main():
             )
         else:
             flag_line = "；".join(f"{k} {v['accuracy']:.1%}(n={v['n']})" for k, v in sorted(flag_acc.items()))
+            domain_line = ""
+            if report["by_domain"]:
+                domain_line = "（按领域：" + "；".join(
+                    f"{k} {v['accuracy']:.1%}(n={v['n']})"
+                    for k, v in sorted(report["by_domain"].items())
+                ) + "）"
             section = (
-                f"\n## {datetime.now():%Y-%m-%d} {mode}（golden_set_v1，主评分 {len(relevant_rows)} 条，"
+                f"\n## {datetime.now():%Y-%m-%d} {mode}（{golden.name}，主评分 {len(relevant_rows)} 条，"
                 f"排除 relevant=no {len(irrelevant_rows)} 条）\n\n"
-                f"- 整条情感准确率：**{overall:.1%}**（游戏 {report['by_domain'].get('game', {}).get('accuracy', 0):.1%} / "
-                f"消费品 {report['by_domain'].get('consumer', {}).get('accuracy', 0):.1%}）\n"
+                f"- 整条情感准确率：**{overall:.1%}**{domain_line}\n"
                 f"- 语言现象子集：{flag_line or '无'}\n"
-                f"- 维度：精确命中 {dim_rep['exact_match_rate']:.1%}（n={dim_rep['exact_match_n']}），"
-                f"微平均 P/R/F1 = {dim_rep['micro_precision']:.2f}/{dim_rep['micro_recall']:.2f}/{dim_rep['micro_f1']:.2f}\n"
+                f"- 维度：精确命中 "
+                + (f"{dim_rep['exact_match_rate']:.1%}" if dim_rep["exact_match_rate"] is not None else "无维度标注")
+                + f"（n={dim_rep['exact_match_n']}），"
+                  f"微平均 P/R/F1 = {dim_rep['micro_precision']:.2f}/{dim_rep['micro_recall']:.2f}/{dim_rep['micro_f1']:.2f}\n"
                 f"- 路由：词典直判 {direct_n} 条（{report['routing']['direct_rate']:.0%}）"
                 + (f"，LLM 精分析 {llm_n} 条、修正 {llm_fix} 条\n" if args.llm else "\n")
                 + (f"- 清洗验证集：{cl['n']} 条确认应丢弃（一致率 {cl['human_agreement']:.0%}），"

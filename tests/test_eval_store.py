@@ -200,7 +200,11 @@ def test_frozen_baseline_mode_mapping() -> None:
     assert eval_store.load_frozen_baseline("hybrid")["accuracy"] == 0.7829
     assert eval_store.load_frozen_baseline("edge_lexicon")["accuracy"] == 0.464
     assert eval_store.load_frozen_baseline("edge_hybrid")["accuracy"] == 0.5
-    assert eval_store.load_frozen_baseline("unknown")["accuracy"] == 0.3543
+    # 2.5 起：自定义 mode_key 不回落主集基线（独立 baseline_{key}.json，缺失=无基线）
+    assert eval_store.load_frozen_baseline("unknown") is None
+    (_TMP_FIX / "baseline_domain_x_lexicon.json").write_text(
+        '{"accuracy": 0.8, "mode": "domain_x_lexicon"}', encoding="utf-8")
+    assert eval_store.load_frozen_baseline("domain_x_lexicon")["accuracy"] == 0.8
     # by_subset 已纳入细分分组（edge 报告使用）
     assert "by_subset" in eval_store.SEGMENT_GROUPS
     print("✓ 冻结基线 mode_key 映射（含 edge）+ by_subset 分组 通过")
@@ -224,6 +228,62 @@ def test_calibration_report() -> None:
     print("✓ 置信度分桶校准（含缺失置信度）通过")
 
 
+def test_wilson_ci_math() -> None:
+    """Wilson CI：区间合法、边界正确、n<=0 返回 None。"""
+    lo, hi = eval_store.wilson_ci(0.5, 100)
+    assert lo is not None and hi is not None
+    assert 0.0 <= lo <= 0.5 <= hi <= 1.0
+    assert round(lo, 3) == 0.404 and round(hi, 3) == 0.596
+    lo0, _ = eval_store.wilson_ci(0.0, 10)
+    _, hi1 = eval_store.wilson_ci(1.0, 10)
+    assert lo0 == 0.0 and hi1 == 1.0
+    assert eval_store.wilson_ci(0.5, 0) == (None, None)
+    # Δ CI 宽度 = √(ci₁² + ci₂²)
+    assert eval_store.delta_ci_pp(3.0, 4.0) == 5.0
+    assert eval_store.delta_ci_pp(3.0, None) is None
+    print("✓ Wilson CI / Δ CI 宽度 通过")
+
+
+def test_ci_noise_judgment() -> None:
+    """V3：两侧 n≥30 且 |Δ| 未超 CI 宽度 → 「噪声内」；超宽 → 改善/回退。"""
+    def rep(ts: str, acc: float, n: int) -> dict:
+        r = make_report(ts, acc)
+        r["scope"] = {"main_n": n, "irrelevant_excluded_n": 0}
+        r["by_channel"] = {"a": {"n": n, "accuracy": acc}}
+        return r
+    cur = eval_store.build_summary(rep("2026-08-15T10:00:00", 0.80, 175))
+    prev = eval_store.build_summary(rep("2026-08-15T09:00:00", 0.76, 175))
+    rc = eval_store.compare_runs(cur, prev)
+    assert rc["overall_delta_pp"] == 4.0
+    assert rc["overall_delta_ci_pp"] is not None
+    assert rc["status"].startswith("噪声内")  # ±8.9pp 内，4pp 不算真提升
+    assert rc["segments"]["by_channel"]["a"]["delta_ci_pp"] is not None
+    # 大 Δ（n=175 下 +18pp）超出 CI → 改善
+    cur_big = eval_store.build_summary(rep("2026-08-15T10:00:00", 0.94, 175))
+    assert eval_store.compare_runs(cur_big, prev)["status"] == "改善"
+    # n<30 保持点估计口径（向后兼容，不算噪声内）
+    cur_small = eval_store.build_summary(rep("2026-08-15T10:00:00", 0.4, 3))
+    prev_small = eval_store.build_summary(rep("2026-08-15T09:00:00", 0.37, 3))
+    assert eval_store.compare_runs(cur_small, prev_small)["status"] == "改善"
+    print("✓ V3 噪声区间判定（噪声内/改善/n<30 兼容）通过")
+
+
+def test_compare_baseline_ci() -> None:
+    """V3：与冻结基线对比也带 CI；基线缺 n 时回退点估计。"""
+    cur = eval_store.build_summary(make_report("2026-08-15T10:00:00", 0.80))
+    cur["n_main"] = 220
+    base = {"accuracy": 0.8182, "n": 220,
+            "golden_fingerprint": cur["golden_fp"],
+            "_source": "tests/fixtures/baseline_edge_hybrid.json"}
+    cb = eval_store.compare_baseline(cur, base)
+    assert cb["delta_ci_pp"] is not None and cb["ci_pp"] is not None
+    assert cb["status"].startswith("噪声内")  # -1.82pp 在 Δ CI 内
+    base_no_n = {"accuracy": 0.3543, "_source": "x"}
+    cb2 = eval_store.compare_baseline(cur, base_no_n)
+    assert cb2["delta_ci_pp"] is None
+    print("✓ 基线对比带 CI（缺 n 回退点估计）通过")
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_golden_fingerprint_deterministic()
@@ -236,6 +296,9 @@ def main() -> None:
     test_sentiment_class_metrics_hand_checked()
     test_frozen_baseline_mode_mapping()
     test_calibration_report()
+    test_wilson_ci_math()
+    test_ci_noise_judgment()
+    test_compare_baseline_ci()
     print("评测数据层测试全部通过 ✅")
 
 

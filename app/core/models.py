@@ -26,6 +26,9 @@ class Dimension(BaseModel):
     source: str = ""  # 来源（学术/业界/预置）
     keywords: list[str] = Field(default_factory=list)  # 维度识别关键词
     sub_dimensions: list[SubDimension] = Field(default_factory=list)
+    origin: str = "domain"  # 维度来源（领域配方模型 v0.2，2026-08-14）：
+    # "domain" = 领域特有；"template:<id>" = 从主导对象模板选入（运行时物化，
+    # 仅元数据，不改行为；模板标准维度待 2.5 证据定稿）
 
 
 class DomainSchema(BaseModel):
@@ -34,6 +37,9 @@ class DomainSchema(BaseModel):
     domain_id: str
     domain_name: str
     dimensions: list[Dimension]
+    version: str = "1.0"  # schema 版本号：变更触发该领域评测基线重冻结（指纹守卫）
+    template_id: Optional[str] = None  # 主导对象模板：content/physical/service
+    # （缺省 None = 旧 schema 按领域推断，只读不改行为）
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +152,9 @@ class CodedItem(BaseModel):
     keyword: str = ""  # 所属关键词（关键词效果统计用）
     pub_date: str = ""
     dimensions: list[str] = Field(default_factory=list)
+    dimension_sentiments: dict[str, str] = Field(default_factory=dict)
+    # 2.4 维度级情感：{维度id: positive|negative}；仅"明确带情感"的维度，
+    # 无明确褒贬的维度不出现（对齐抽样与标注规范 §五）；词典兜底为轻量极性聚合。
     sentiment: SentimentLabel = SentimentLabel.neutral
     intensity: int = 0  # 1-5
     sentiment_score: float = 0.0  # -1 ~ +1

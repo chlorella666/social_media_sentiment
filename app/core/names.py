@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from app.domains.loader import load_domain
+from app.domains import loader
 
 PLATFORM_CN = {
     "demo": "演示数据",
@@ -26,15 +26,25 @@ _EXTRA_DIM_CN = {
 
 @lru_cache(maxsize=None)
 def _dimension_map() -> dict[str, str]:
-    """汇总预置领域 schema 的维度 id → 中文名（缓存）。"""
+    """汇总全部预置 + 缓存领域 schema 的维度 id → 中文名（缓存；2.5 新领域自动纳入）。"""
     m = dict(_EXTRA_DIM_CN)
-    for domain_id in ("game", "consumer"):
+    for path in sorted(loader.DOMAINS_DIR.glob("*.json")):
+        if path.name == "domain_templates.json":
+            continue
         try:
-            schema = load_domain(domain_id)
+            schema = loader.load_domain(path.stem)
         except Exception:
             continue
         for dim in schema.dimensions:
             m.setdefault(dim.id, dim.name)
+    if loader.CACHE_DIR.is_dir():
+        for path in sorted(loader.CACHE_DIR.glob("*.json")):
+            try:
+                schema = loader.load_domain(path.stem)
+            except Exception:
+                continue
+            for dim in schema.dimensions:
+                m[dim.id] = dim.name  # 缓存领域覆盖预置（load_domain 缓存优先，保持一致）
     return m
 
 

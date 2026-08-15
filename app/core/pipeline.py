@@ -117,16 +117,18 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         trend[date]["scores"].append(it.sentiment_score)
         if it.sentiment == SentimentLabel.negative:
             trend[date]["negative"] += 1
-        for dim in it.dimensions:
+        # 2.4 口径：维度统计按"维度级情感"计数（而非整条情感聚合到提及维度）
+        for dim, dval in it.dimension_sentiments.items():
+            dscore = 1.0 if dval == "positive" else -1.0
             dim_stats[dim]["count"] += 1
-            dim_stats[dim]["scores"].append(it.sentiment_score)
-            if it.sentiment == SentimentLabel.negative:
+            dim_stats[dim]["scores"].append(dscore)
+            if dval == "negative":
                 dim_stats[dim]["negative"] += 1
             platform_dim[it.platform][dim]["count"] += 1
-            if it.sentiment == SentimentLabel.negative:
+            if dval == "negative":
                 platform_dim[it.platform][dim]["negative"] += 1
             date_dim[it.pub_date or "未知"][dim]["count"] += 1
-            if it.sentiment == SentimentLabel.negative:
+            if dval == "negative":
                 date_dim[it.pub_date or "未知"][dim]["negative"] += 1
         intensity_counter[it.intensity] += 1
         for kw in it.keywords:
@@ -216,7 +218,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     worst_cloud: Counter[str] = Counter()
     if worst_dim:
         for it in items:
-            if worst_dim in it.dimensions and it.sentiment == SentimentLabel.negative:
+            if it.dimension_sentiments.get(worst_dim) == "negative":
                 for tok in set(segment(it.text, extra_stop)):
                     sig = signal.get(tok, 0.0)
                     if sig <= -0.25 or (
