@@ -38,6 +38,7 @@ REGRESSION_VERSION = "1.0"
 
 # 单元测试白名单（显式列出，避免误收录工具脚本/递归自检）
 UNIT_TESTS = [
+    "test_ad_rules.py",
     "test_cleaner.py",
     "test_contracts.py",
     "test_dimension_aspect.py",
@@ -46,10 +47,12 @@ UNIT_TESTS = [
     "test_errors.py",
     "test_eval_dashboard.py",
     "test_eval_store.py",
+    "test_health.py",
     "test_edge_sampling.py",
     "test_job_queue.py",
     "test_keyword_effects.py",
     "test_lifecycle.py",
+    "test_lexicon_v2.py",
     "test_llm_analyzer.py",
     "test_pipeline_progress.py",
     "test_quota.py",

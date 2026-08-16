@@ -126,6 +126,8 @@ def _connect(db_path_: Path | None = None) -> sqlite3.Connection:
     _ensure_column(conn, "tasks", "collection_path", "TEXT")
     _ensure_column(conn, "tasks", "excluded_urls", "TEXT")
     _ensure_column(conn, "tasks", "excluded_comment_ids", "TEXT")
+    _ensure_column(conn, "tasks", "ad_urls", "TEXT")
+    _ensure_column(conn, "tasks", "ad_comment_ids", "TEXT")
     _ensure_column(conn, "tasks", "files_status", "TEXT DEFAULT ''")
     return conn
 
@@ -144,7 +146,7 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     d = dict(row)
     for key in (
         "plan", "step_snapshot", "result_summary", "llm_usage", "warnings",
-        "excluded_urls", "excluded_comment_ids",
+        "excluded_urls", "excluded_comment_ids", "ad_urls", "ad_comment_ids",
     ):
         raw = d.get(key)
         if isinstance(raw, str) and raw:
@@ -494,9 +496,17 @@ def save_review(
     task_id: str,
     excluded_urls: list[str],
     excluded_comment_ids: list[str],
+    ad_urls: list[str] | None = None,
+    ad_comment_ids: list[str] | None = None,
     db_path_: Path | None = None,
 ) -> bool:
-    """保存人工筛选结果并恢复任务执行（reviewing → pending）。"""
+    """保存人工筛选结果并恢复任务执行（reviewing → pending）。
+
+    ad_urls/ad_comment_ids：广告/官方内容标记（人工复核兜底）；是否剔除由
+    plan.exclude_ad_enabled 决定（默认计入，仅情感统计剔除）。
+    """
+    ad_urls = ad_urls or []
+    ad_comment_ids = ad_comment_ids or []
     with closing(_connect(db_path_)) as conn:
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (task_id,)
@@ -505,10 +515,13 @@ def save_review(
             return False
         conn.execute(
             "UPDATE tasks SET excluded_urls = ?, excluded_comment_ids = ?, "
-            "status = ?, error = NULL, finished_at = NULL WHERE id = ?",
+            "ad_urls = ?, ad_comment_ids = ?, status = ?, error = NULL, "
+            "finished_at = NULL WHERE id = ?",
             (
                 json.dumps(list(excluded_urls), ensure_ascii=False),
                 json.dumps(list(excluded_comment_ids), ensure_ascii=False),
+                json.dumps(list(ad_urls), ensure_ascii=False),
+                json.dumps(list(ad_comment_ids), ensure_ascii=False),
                 STATUS_PENDING,
                 task_id,
             ),

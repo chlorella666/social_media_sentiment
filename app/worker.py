@@ -257,6 +257,8 @@ def _apply_exclusions(snapshot: dict, task: dict[str, Any]):
     帖子剔除（评论随帖级联）+ 单条评论剔除；丢弃记录进入丢弃明细。"""
     excluded_urls = set(task.get("excluded_urls") or [])
     excluded_cids = set(task.get("excluded_comment_ids") or [])
+    ad_urls = set(task.get("ad_urls") or [])
+    ad_cids = set(task.get("ad_comment_ids") or [])
     kept_posts: list[Post] = []
     manual_drops: list[dict] = []
     for p in snapshot.get("posts", []):
@@ -293,8 +295,13 @@ def _apply_exclusions(snapshot: dict, task: dict[str, Any]):
                 url=p["url"],
                 timestamp=p.get("timestamp", ""),
                 likes=p.get("likes", 0),
+                ad_flag=p["url"] in ad_urls,
                 comments=[
-                    Comment(**{k: v for k, v in c.items() if k != "id"})
+                    Comment(
+                        id=c.get("id", ""),
+                        ad_flag=c.get("id") in ad_cids,
+                        **{k: v for k, v in c.items() if k not in ("id",)},
+                    )
                     for c in kept_comments
                 ],
             )

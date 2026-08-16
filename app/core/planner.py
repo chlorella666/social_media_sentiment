@@ -67,6 +67,7 @@ def build_plan(
     channel_params: dict[str, dict] | None = None,
     exclude_words: list[str] | None = None,
     review_enabled: bool = False,
+    exclude_ad_enabled: bool = False,
 ) -> AnalysisPlan:
     """组装采集计划。manual_keywords 非空时以手动关键词为准。"""
     if manual_keywords:
@@ -105,6 +106,7 @@ def build_plan(
         relevance_check_enabled=relevance_check_enabled,
         exclude_words=exclude_words or [],
         review_enabled=review_enabled,
+        exclude_ad_enabled=exclude_ad_enabled,
     )
 
 

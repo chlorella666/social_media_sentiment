@@ -702,6 +702,7 @@ def build_html(bundle: ReportBundle) -> str:
         channel_count=len(bundle.channel_results),
         total_posts=s["total_posts"],
         total_items=s["total_items"],
+        ads=s.get("ads") or {},
         warnings=bundle.warnings,
         overall_sentiment=s["overall_sentiment"],
         avg_score=s["avg_score"],

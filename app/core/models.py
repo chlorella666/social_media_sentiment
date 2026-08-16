@@ -81,6 +81,7 @@ class AnalysisPlan(BaseModel):
     relevance_check_enabled: bool = False  # LLM 相关性复核（可选，按量计费）
     exclude_words: list[str] = Field(default_factory=list)  # 词云/共现排除词（角色名、地名等）
     review_enabled: bool = False  # 人工相关性筛选：采集后暂停，人工剔除不相关帖/评论
+    exclude_ad_enabled: bool = False  # 广告/官方内容：True=情感统计剔除（漏斗/关键词效果保留）
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -89,6 +90,7 @@ class AnalysisPlan(BaseModel):
 # ---------------------------------------------------------------------------
 
 class Comment(BaseModel):
+    id: str = ""
     author: str = ""
     text: str
     likes: int = 0
@@ -96,6 +98,7 @@ class Comment(BaseModel):
     is_reply: bool = False
     reply_to: str = ""
     depth: int = 0
+    ad_flag: bool = False  # 广告/官方内容标记（规则预标 + 人工复核回填）
 
 
 class Post(BaseModel):
@@ -112,6 +115,7 @@ class Post(BaseModel):
     comments_count: int = 0
     comments: list[Comment] = Field(default_factory=list)
     platform_specific: dict[str, Any] = Field(default_factory=dict)
+    ad_flag: bool = False  # 广告/官方内容标记（人工复核回填；规则预标在编码层）
 
 
 class ChannelResult(BaseModel):
@@ -164,6 +168,7 @@ class CodedItem(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     narrative: Optional[NarrativeFrame] = None
     attribution: Optional[str] = None  # 政府/企业/个人/制度/技术/社会/自然/不明确
+    ad_flag: bool = False  # 广告/官方内容：规则预标 or 人工复核；True 时按 exclude_ad_enabled 决定是否计入情感统计
 
 
 # ---------------------------------------------------------------------------

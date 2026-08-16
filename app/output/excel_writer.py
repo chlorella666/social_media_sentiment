@@ -371,6 +371,10 @@ def _summary_frames(bundle: ReportBundle) -> list[tuple[str, pd.DataFrame]]:
                     {"指标": "渠道数", "数值": len(bundle.channel_results)},
                     {"指标": "帖子数", "数值": s["total_posts"]},
                     {"指标": "编码文本数", "数值": s["total_items"]},
+                    {"指标": "广告/官方内容",
+                     "数值": (f"{s.get('ads', {}).get('count', 0)} 条"
+                              f"（占 {s.get('ads', {}).get('ratio_of_total', 0):.1%}，"
+                              f"{s.get('ads', {}).get('mode', '计入')}）")},
                     {"指标": "整体倾向", "数值": s["overall_sentiment"]},
                     {"指标": "平均情感分", "数值": s["avg_score"]},
                 ]

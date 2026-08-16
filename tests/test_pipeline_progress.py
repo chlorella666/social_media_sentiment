@@ -29,7 +29,7 @@ class FakeLLM(OpenAICompatibleAnalyzer):
     def ping(self, timeout=20):
         return True, "ok"
 
-    def _request_batch(self, texts, dimension_schema=None):
+    def _request_batch(self, texts, dimension_schema=None, subject=None):
         time.sleep(0.02)
         return [
             {"sentiment": "negative", "score": -0.7, "confidence": 0.9,

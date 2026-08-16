@@ -59,6 +59,12 @@
           <th>评论数</th><td>{{ trust.comments }}</td>
           <th>编码文本数</th><td>{{ total_items }}</td>
         </tr>
+        {% if ads.get('count') %}
+        <tr>
+          <th>广告/官方内容</th>
+          <td colspan="3">{{ ads.count }} 条（占 {{ (ads.ratio_of_total * 100) | round(1) }}%，{{ ads.mode }}）</td>
+        </tr>
+        {% endif %}
         <tr>
           <th>LLM 精分析占比</th><td>{{ trust.llm_ratio }}%（{{ trust.llm_count }} 条）</td>
           <th>LLM 修正词典判定</th><td>{{ trust.llm_corrected }} 条</td>

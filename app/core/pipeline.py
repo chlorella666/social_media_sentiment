@@ -87,7 +87,13 @@ def _subject_stopwords(plan: AnalysisPlan) -> set[str]:
 def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post]) -> dict:
     """汇总统计：整体分布、平台统计、维度统计、时间趋势、高频词。"""
     total = len(items)
-    sent_counter: Counter[str] = Counter(it.sentiment.value for it in items)
+    # 广告/官方内容（2.6）：默认计入；exclude_ad_enabled=True 时仅情感统计剔除，
+    # 采集漏斗（total/platform posts/kw coded）与关键词效果保留并注明。
+    ads_count = sum(1 for it in items if it.ad_flag)
+    exclude_ad = bool(plan.exclude_ad_enabled)
+    stat_items = [it for it in items if not (exclude_ad and it.ad_flag)]
+    stat_n = len(stat_items)
+    sent_counter: Counter[str] = Counter(it.sentiment.value for it in stat_items)
     platform_stats: dict[str, dict] = defaultdict(
         lambda: {"posts": 0, "scores": [], "positive": 0, "negative": 0, "neutral": 0}
     )
@@ -105,11 +111,18 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     all_keywords: Counter[str] = Counter()
     content_texts: list[str] = []
     kw_stats: dict[str, dict] = defaultdict(
-        lambda: {"posts": 0, "comments": 0, "coded": 0, "positive": 0, "negative": 0, "neutral": 0}
+        lambda: {"posts": 0, "comments": 0, "coded": 0, "stat": 0,
+                 "positive": 0, "negative": 0, "neutral": 0}
     )
 
     for it in items:
         platform_stats[it.platform]["posts"] += 1
+        kw_stats[it.keyword or "未分类"]["coded"] += 1
+        if exclude_ad and it.ad_flag:
+            continue
+        ks = kw_stats[it.keyword or "未分类"]
+        ks["stat"] += 1
+        ks[it.sentiment.value] += 1
         platform_stats[it.platform]["scores"].append(it.sentiment_score)
         platform_stats[it.platform][it.sentiment.value] += 1
         date = it.pub_date or "未知"
@@ -134,14 +147,11 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         for kw in it.keywords:
             all_keywords[kw] += 1
         content_texts.append(it.text)
-        ks = kw_stats[it.keyword or "未分类"]
-        ks["coded"] += 1
-        ks[it.sentiment.value] += 1
 
     # 情感词正负榜：词典极性 + |情感分| 加权
     pos_w: Counter[str] = Counter()
     neg_w: Counter[str] = Counter()
-    for it in items:
+    for it in stat_items:
         w = abs(it.sentiment_score)
         for kw in it.keywords:
             pol = lexicon_v2.word_polarity(kw)
@@ -158,7 +168,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     tok_pos: dict[str, float] = defaultdict(float)
     tok_neg: dict[str, float] = defaultdict(float)
     tok_cnt: Counter[str] = Counter()
-    for it in items:
+    for it in stat_items:
         sc = it.sentiment_score
         for tok in set(segment(it.text, extra_stop)):
             tok_cnt[tok] += 1
@@ -217,7 +227,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         )
     worst_cloud: Counter[str] = Counter()
     if worst_dim:
-        for it in items:
+        for it in stat_items:
             if it.dimension_sentiments.get(worst_dim) == "negative":
                 for tok in set(segment(it.text, extra_stop)):
                     sig = signal.get(tok, 0.0)
@@ -229,7 +239,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     # 情绪来源话题榜（数据驱动，不依赖词典）：话题词在正面/负面评论中的占比
     pos_docs: Counter[str] = Counter()
     neg_docs: Counter[str] = Counter()
-    for it in items:
+    for it in stat_items:
         toks = set(segment(it.text, extra_stop))
         if it.sentiment == SentimentLabel.positive:
             for t in toks:
@@ -264,7 +274,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     )
     node_set = {e["source"] for e in cooccurrence} | {e["target"] for e in cooccurrence}
     w_dims: dict[str, Counter] = defaultdict(Counter)
-    for it in items:
+    for it in stat_items:
         for tok in segment(it.text, extra_stop):
             if tok in node_set:
                 for dim in it.dimensions:
@@ -281,14 +291,22 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         ks["posts"] += 1
         ks["comments"] += len(post.comments)
 
-    avg = sum(it.sentiment_score for it in items) / total if total else 0.0
+    avg = sum(it.sentiment_score for it in stat_items) / stat_n if stat_n else 0.0
     summary = {
         "total_items": total,
         "total_posts": len(posts),
+        "ads": {
+            "count": ads_count,
+            "ratio_of_total": round(ads_count / total, 4) if total else 0,
+            "excluded": exclude_ad,
+            "stat_n": stat_n,
+            "mode": "已从情感统计剔除" if exclude_ad else "计入（含广告/官方内容）",
+        },
         "avg_score": round(avg, 4),
         "overall_sentiment": "正面" if avg > 0.15 else ("负面" if avg < -0.15 else "中性"),
         "sentiment_distribution": {
-            k: {"count": sent_counter[k], "ratio": round(sent_counter[k] / total, 4) if total else 0}
+            k: {"count": sent_counter[k],
+                "ratio": round(sent_counter[k] / stat_n, 4) if stat_n else 0}
             for k in ["positive", "negative", "neutral"]
         },
         "platforms": {
@@ -366,13 +384,14 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
                 "posts": v["posts"],
                 "comments": v["comments"],
                 "coded": v["coded"],
+                "stat": v["stat"],
                 "positive": v["positive"],
                 "negative": v["negative"],
                 "neutral": v["neutral"],
                 "negative_rate": round(
-                    v["negative"] / v["coded"], 4
+                    v["negative"] / (v["stat"] or v["coded"]), 4
                 )
-                if v["coded"]
+                if (v["stat"] or v["coded"])
                 else 0,
             }
             for kw, v in kw_stats.items()
@@ -386,6 +405,17 @@ def generate_report_text(plan: AnalysisPlan, summary: dict) -> str:
     lines = []
     lines.append(f"本次分析对象为「{plan.subject}」，共采集 {summary['total_posts']} 条内容，"
                  f"编码 {summary['total_items']} 条文本。")
+    ads = summary.get("ads") or {}
+    if ads.get("count"):
+        tail = (
+            f"该部分已从情感统计剔除，情感分布基于其余 {ads.get('stat_n', 0)} 条文本计算"
+            if ads.get("excluded")
+            else "该部分计入情感统计（广告也是消费者可见的市场信号）"
+        )
+        lines.append(
+            f"其中广告/官方内容 {ads['count']} 条（占总文本 {ads.get('ratio_of_total', 0):.1%}），"
+            f"{tail}。"
+        )
     dist = summary["sentiment_distribution"]
     lines.append(
         f"整体情感倾向为{summary['overall_sentiment']}（均分 {summary['avg_score']}）："

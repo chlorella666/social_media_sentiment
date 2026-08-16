@@ -14,9 +14,14 @@ from app.core.models import (
     SentimentLabel,
 )
 from app.coding import lexicon_v2 as lexicon
+from app.coding import ad_rules
 from app.coding.cleaner import clean_text, desensitize_text, normalize_pub_date
 from app.coding.dimensions import match_dimension_sentiments, match_dimensions
-from app.coding.llm_analyzer import CONFIDENCE_THRESHOLD, OpenAICompatibleAnalyzer
+from app.coding.llm_analyzer import (
+    CONFIDENCE_THRESHOLD,
+    SUBJECT_DOMAINS,
+    OpenAICompatibleAnalyzer,
+)
 
 
 def _intensity(score: float) -> int:
@@ -88,6 +93,8 @@ class Coder:
                         dimensions=_match_dimensions(content, self.schema),
                         dimension_sentiments=match_dimension_sentiments(content, self.schema),
                         sentiment=SentimentLabel(pre["sentiment"]),
+                        ad_flag=bool(getattr(post, "ad_flag", False))
+                        or ad_rules.is_ad(content, post.title or ""),
                         intensity=_intensity(pre["score"]),
                         sentiment_score=pre["score"],
                         confidence=pre["confidence"],
@@ -110,6 +117,8 @@ class Coder:
                     platform=post.platform,
                     keyword=post.keyword,
                     pub_date=normalize_pub_date(comment.time),
+                    ad_flag=bool(getattr(comment, "ad_flag", False))
+                    or ad_rules.is_ad(ctext),
                     dimensions=_match_dimensions(ctext, self.schema),
                     dimension_sentiments=match_dimension_sentiments(ctext, self.schema),
                     sentiment=SentimentLabel(pre["sentiment"]),
@@ -142,6 +151,11 @@ class Coder:
             llm_results = self.analyzer.analyze_batch(
                 texts,
                 dimension_schema=self.schema,
+                subject=(
+                    (plan.subject or "").strip()
+                    if plan.domain_id in SUBJECT_DOMAINS and (plan.subject or "").strip()
+                    else None
+                ),
                 on_batch_progress=(
                     (lambda done_llm, total_llm: on_progress(
                         f"LLM 精分析 {done_llm}/{total_llm}（"

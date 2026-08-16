@@ -12,3 +12,5 @@ data/
 !data/.gitkeep
 *.log
 .streamlit/secrets.toml
+# 标注/调试临时工作区（2026-08-16 起：一次性脚本与中间数据归档处）
+scratch/

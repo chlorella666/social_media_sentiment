@@ -372,6 +372,74 @@ def test_review_ui_flow() -> None:
     print("✓ 人工筛选 UI：审核页 → 勾选 → 续跑完成 通过")
 
 
+def test_channel_diag_panel() -> None:
+    """渠道诊断面板（体检×探针融合）：开始诊断 + WebSearch 深度探针冒烟。"""
+    from app.channels import health
+    from unittest import mock
+
+    probe_ok = {
+        "engine": "360", "status": "ok", "items": 3,
+        "message": "正常（解析 3 条，质量通过）", "risk": [], "http": 200,
+    }
+    deep = [
+        {"engine": "360", "status": "ok", "items": 3, "message": "正常",
+         "risk": [], "http": 200},
+        {"engine": "cn.bing", "status": "ok", "items": 2, "message": "正常",
+         "risk": [], "http": 200},
+        {"engine": "quark", "status": "error", "items": 0, "message": "请求失败",
+         "risk": [], "http": 0},
+    ]
+    with mock.patch.object(health, "lightweight_probe", return_value=probe_ok), \
+         mock.patch("app.channels.websearch.probe_engines", return_value=deep):
+        at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+        at.run()
+        assert not at.exception
+        confirm_usage_boundary(at)
+        at.radio[0].set_value("手动输入关键词").run()
+        at.text_area[0].set_value("大疆 评价").run()
+        click_button(at, "下一步 →")
+        click_button(at, "下一步 →")
+        click_button(at, "下一步 →")
+        assert at.session_state["stage"] == 3
+        ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+        ms.set_value(["demo", "websearch"]).run()
+        click_button(at, "开始诊断")
+        assert not at.exception, f"诊断面板异常: {at.exception}"
+        tables = [str(t.value) for t in at.table]
+        assert any("演示" in t and "可用" in t for t in tables)
+        assert any("WebSearch" in t and "可用" in t for t in tables)
+        # 深度探针：WebSearch 行内按钮 → 三引擎表
+        click_button_key(at, "diag_probe_websearch")
+        assert not at.exception, f"深度探针异常: {at.exception}"
+        tables2 = [str(t.value) for t in at.table]
+        assert any("引擎" in t and "360" in t and "quark" in t for t in tables2)
+    print("✓ 渠道诊断面板（开始诊断 + WebSearch 深度探针）冒烟 通过")
+
+
+def test_ad_wizard_smoke() -> None:
+    """广告/官方内容：向导开关（默认计入）与确认页摘要行。"""
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+    at.radio[0].set_value("手动输入关键词").run()
+    at.text_area[0].set_value("大疆 评价").run()
+    click_button(at, "下一步 →")
+    click_button(at, "下一步 →")
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 3
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["demo"]).run()
+    toggles = [t.label for t in at.toggle]
+    assert any("剔除广告/官方内容" in t for t in toggles), f"缺少广告开关: {toggles}"
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 4
+    tables = [str(t.value) for t in at.table]
+    assert any("广告/官方内容" in t and "计入" in t for t in tables)
+    assert not at.exception, f"确认页异常: {at.exception}"
+    print("✓ 广告/官方内容向导开关 + 确认页摘要 冒烟 通过")
+
+
 if __name__ == "__main__":
     _WORKER.start()
     try:
@@ -380,6 +448,8 @@ if __name__ == "__main__":
         test_websearch_confirmation_page()
         test_failed_task_error_view()
         test_review_ui_flow()
+        test_channel_diag_panel()
+        test_ad_wizard_smoke()
     finally:
         _STOP.set()
         _WORKER.join(timeout=5)

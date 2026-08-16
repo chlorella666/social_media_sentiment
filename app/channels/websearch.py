@@ -336,44 +336,57 @@ def _search_engine(
     return "", [], diag
 
 
-def probe_engines(query: str = "大疆 评价") -> list[dict]:
-    """一键探针：分别向 360 / cn.bing / 夸克 各发 1 次请求，返回每引擎状态。
+def _probe_one(session: requests.Session, name: str, query: str) -> dict:
+    """单引擎探测（probe_engines / lightweight_probe 共用）。
 
     status：ok=解析且质量通过；degraded=有结果但与查询无关（降级页）；
     risk=风控特征（验证码/安全验证等）；error=请求/解析失败；empty=无结果。
+    """
+    url, referer = _engine_request(name, query, 1)
+    try:
+        html_text, status, err = _fetch(session, url, referer)
+    except Exception as exc:
+        html_text, status, err = "", 0, str(exc)
+    items = _parse_engine(name, html_text) if html_text else []
+    risk = _risk_info(html_text + (" " + err if err else ""))
+    if _is_hard_risk(risk):
+        st = "risk"
+        msg = "风控：" + "/".join(str(x) for x in risk[:3])
+    elif items and _quality_check(query, items):
+        st = "ok"
+        msg = f"正常（解析 {len(items)} 条，质量通过）"
+    elif items:
+        st = "degraded"
+        msg = f"降级（{len(items)} 条但与查询无关/质量不过）"
+    elif err:
+        st = "error"
+        msg = f"请求失败：{str(err)[:60]}"
+    else:
+        st = "empty"
+        msg = "无结果"
+    return {
+        "engine": name, "status": st, "items": len(items),
+        "message": msg, "risk": risk, "http": status,
+    }
+
+
+def probe_engines(query: str = "大疆 评价") -> list[dict]:
+    """一键探针（深度层）：分别向 360 / cn.bing / 夸克 各发 1 次请求。
+
     用于向导"渠道/时间"步骤与换网络后的快速验证（每次 3 个请求）。
     """
     session = requests.Session()
-    out: list[dict] = []
-    for name in _ENGINE_ORDER:
-        url, referer = _engine_request(name, query, 1)
-        try:
-            html_text, status, err = _fetch(session, url, referer)
-        except Exception as exc:
-            html_text, status, err = "", 0, str(exc)
-        items = _parse_engine(name, html_text) if html_text else []
-        risk = _risk_info(html_text + (" " + err if err else ""))
-        if _is_hard_risk(risk):
-            st = "risk"
-            msg = "风控：" + "/".join(str(x) for x in risk[:3])
-        elif items and _quality_check(query, items):
-            st = "ok"
-            msg = f"正常（解析 {len(items)} 条，质量通过）"
-        elif items:
-            st = "degraded"
-            msg = f"降级（{len(items)} 条但与查询无关/质量不过）"
-        elif err:
-            st = "error"
-            msg = f"请求失败：{str(err)[:60]}"
-        else:
-            st = "empty"
-            msg = "无结果"
-        out.append({
-            "engine": name, "status": st, "items": len(items),
-            "message": msg, "risk": risk, "http": status,
-        })
-    return out
+    return [_probe_one(session, name, query) for name in _ENGINE_ORDER]
 
+
+def lightweight_probe(query: str) -> dict:
+    """轻量探测（体检层）：只打 360 主引擎 1 次请求，含风控/质量识别。
+
+    与 probe_engines 单条同构（engine/status/items/message/risk/http），
+    供渠道诊断的 WebSearch 行复用——不再以 HTTP 200 为准（验证码页/降级页
+    会被识别为 risk/degraded）。见 docs/渠道诊断融合方案.md。
+    """
+    return _probe_one(requests.Session(), "360", query)
 
 def _day_state_path() -> Path:
     state_dir = Path(os.environ.get("SMS_STATE_DIR", str(Path(__file__).resolve().parents[2] / "data" / "state")))

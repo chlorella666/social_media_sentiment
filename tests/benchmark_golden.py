@@ -119,7 +119,7 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
     from app.coding import lexicon_v2 as lexicon
     from app.coding.cleaner import clean_text, desensitize_text
     from app.coding.dimensions import match_dimension_sentiments
-    from app.coding.llm_analyzer import CONFIDENCE_THRESHOLD
+    from app.coding.llm_analyzer import CONFIDENCE_THRESHOLD, SUBJECT_DOMAINS
 
     schemas = {d: load_schema(d) for d in {r["domain"] for r in rows}}
     out = []
@@ -153,14 +153,16 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
         # 2.4：LLM v3.0 输出维度情感；按领域分组调用（schema 不同，不能混批）
         from collections import defaultdict
 
-        groups: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        groups: dict[tuple[str, str], list[tuple[int, int]]] = defaultdict(list)
         for pos, i in enumerate(llm_idx):
-            groups[rows[i]["domain"]].append((pos, i))
+            groups[(rows[i]["domain"], rows[i].get("brand") or "")].append((pos, i))
         results: list[dict | None] = [None] * len(llm_texts)
-        for domain, idxs in groups.items():
+        for (domain, brand), idxs in groups.items():
+            subject = brand if domain in SUBJECT_DOMAINS and brand else None
             part = llm.analyze_batch(
                 [llm_texts[pos] for pos, _ in idxs],
                 dimension_schema=schemas[domain],
+                subject=subject,
             )
             for (pos, _), res in zip(idxs, part):
                 results[pos] = res

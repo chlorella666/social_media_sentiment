@@ -10,7 +10,8 @@
     python tests/coldstart_annotation.py --finalize --sheet <xlsx> \
         --out data/datasets/coldstart_digital3c_golden.csv --domain digital3c
     python tests/coldstart_annotation.py --from-report data/reports/<任务目录> \
-        --domain digital3c --dims-json <提案.json> --n 120 --out <标注表.xlsx>
+        [data/reports/<任务目录2> ...] --domain digital3c --dims-json <提案.json> \
+        --n 120 --out <标注表.xlsx>
     python tests/coldstart_annotation.py --compare --primary <主标.xlsx> \
         --secondary <副标.xlsx> --domain digital3c
     python tests/coldstart_annotation.py --finalize --primary <主标.xlsx> \
@@ -214,10 +215,48 @@ def extract_report_items(report_dir: Path, domain_id: str) -> list[dict]:
     return uniq
 
 
-def from_report(report_dir: Path, domain_id: str, n: int, out: Path,
-                dims_json: Path | None = None) -> None:
-    """从真实任务报告采样生成独立标注表（情感/维度列留空，不被程序结果诱导）。"""
-    uniq = extract_report_items(report_dir, domain_id)
+def extract_report_items_many(report_dirs: list[Path], domain_id: str) -> list[dict]:
+    """跨任务聚合提取（养肥/难例回流多目录用）：按原文跨任务去重。"""
+    seen: set[str] = set()
+    pooled: list[dict] = []
+    for rd in report_dirs:
+        for s in extract_report_items(rd, domain_id):
+            text = s.get("原文") or ""
+            if text in seen:
+                continue
+            seen.add(text)
+            pooled.append(s)
+    return pooled
+
+
+def load_excluded_texts(paths: list[Path]) -> set[str]:
+    """读取 golden/hold-out CSV 的原文集合（--exclude-golden 用）。
+
+    新卷切分必须排除已入裁判集的文本，否则"新样本"混入旧样本，
+    违反 hold-out 同分布/独立原则。
+    """
+    out: set[str] = set()
+    for p in paths:
+        if not p.exists():
+            continue
+        for r in csv.DictReader(open(p, encoding='utf-8-sig')):
+            t = (r.get("text") or "").strip()
+            if t:
+                out.add(t)
+    return out
+
+
+def from_report(report_dirs: list[Path], domain_id: str, n: int, out: Path,
+                dims_json: Path | None = None,
+                exclude_golden: list[Path] | None = None) -> None:
+    """从真实任务报告（可多目录）采样生成独立标注表（情感/维度列留空）。"""
+    uniq = extract_report_items_many(report_dirs, domain_id)
+    if exclude_golden:
+        excluded = load_excluded_texts(exclude_golden)
+        before = len(uniq)
+        uniq = [s for s in uniq if (s.get("原文") or "").strip() not in excluded]
+        if len(uniq) < before:
+            print(f"[排除] 剔除与 golden/hold-out 重叠文本 {before - len(uniq)} 条")
     random.Random(42).shuffle(uniq)
     samples = uniq[:n]
     if len(samples) < n:
@@ -451,13 +490,106 @@ def compare_annotations(primary: list[dict], secondary: list[dict]) -> tuple[dic
     }, disputed
 
 
+def load_human_decisions(path: Path) -> dict[str, dict]:
+    """解析人工复核表（分歧/高歧义）：→ {sentiment, relevant}。
+
+    键：text_id 唯一时用 text_id；同帖多评论共用 text_id 时用 (text_id, 原文)
+    复合键（避免把一条评论的裁决误套到同帖其他评论）。列契约：
+    「text_id」「原文」「人工判定情感」「人工判定相关」；留空 = 不覆盖。
+    """
+    wb = load_workbook(path, read_only=True, data_only=True)
+    out: dict = {}
+    try:
+        ws = wb.worksheets[0]
+        it = ws.iter_rows(values_only=True)
+        hdr = [str(h) if h else "" for h in next(it, [])]
+        has_sent = "人工判定情感" in hdr
+        has_rel = "人工判定相关" in hdr
+        recs: list[tuple[str, str, str, str]] = []
+        from collections import Counter
+
+        tid_counts: Counter = Counter()
+        for rec in it:
+            if not rec or not str(rec[0] if rec else "").strip():
+                continue
+            tid = str(rec[hdr.index("text_id")]).strip()
+            if not tid:
+                continue
+            sent = str(rec[hdr.index("人工判定情感")] or "").strip().lower() if has_sent else ""
+            rel = str(rec[hdr.index("人工判定相关")] or "").strip().lower() if has_rel else ""
+            if sent or rel:
+                text = str(rec[hdr.index("原文")] or "").strip() if "原文" in hdr else ""
+                recs.append((tid, text, sent, rel))
+                tid_counts[tid] += 1
+        for tid, text, sent, rel in recs:
+            key = tid if tid_counts[tid] == 1 else (tid, text)
+            out[key] = {"sentiment": sent, "relevant": rel}
+    finally:
+        wb.close()
+    return out
+
+
+def gen_dispute_review(primary: list[dict], secondary: list[dict], out: Path,
+                       domain_id: str) -> int:
+    """生成分歧/高歧义人工复核表（情感/相关不一致行，主标 vs 副标对照）。
+
+    维度分歧按 2.5 决策以主标为准，不进入复核表。返回分歧行数。
+    """
+    s_map = {(r["text_id"], r["text"]): r for r in secondary}
+    rows: list[tuple[dict, dict]] = []
+    for a in primary:
+        b = s_map.get((a["text_id"], a["text"]))
+        if b and (a["sentiment"] != b["sentiment"] or a["relevant"] != b["relevant"]):
+            rows.append((a, b))
+    cols = ["序号", "text_id", "原文", "平台", "品牌/主题",
+            "主标情感", "副标情感", "主标相关", "副标相关",
+            "主标维度", "副标维度", "人工判定情感", "人工判定相关", "备注"]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "分歧复核"
+    ws.append(cols)
+    for cell in ws[1]:
+        cell.fill = PatternFill("solid", fgColor="E2EFDA")
+        cell.font = Font(bold=True)
+    for i, (a, b) in enumerate(rows, 1):
+        ws.append([
+            i, a["text_id"], a["text"], a["platform"], a["brand"],
+            a["sentiment"] or "", b["sentiment"] or "",
+            a["relevant"] or "", b["relevant"] or "",
+            ",".join(f"{k}:{v}" for k, v in a["dims"].items()),
+            ",".join(f"{k}:{v}" for k, v in b["dims"].items()),
+            "", "", "",
+        ])
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.freeze_panes = "C2"
+    for i, w in enumerate([6, 14, 55, 10, 14, 10, 10, 8, 8, 26, 26, 12, 10, 20], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    guide = wb.create_sheet("填写说明")
+    for line in [
+        f"领域 {domain_id} 分歧/高歧义人工复核表（情感/相关不一致，共 {len(rows)} 条）。",
+        "一、留空 = 认可主标（默认）；不同意主标请在「人工判定情感/相关」填最终值。",
+        "二、维度分歧按 2.5 决策以主标为准，本表不重复核对维度。",
+        "三、填完发回，或回复「全按主标」；定版：coldstart --finalize --human-review <本表>",
+    ]:
+        guide.append([line])
+    guide.column_dimensions["A"].width = 110
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out)
+    print(f"复核表已生成：{out}（{len(rows)} 条）")
+    return len(rows)
+
+
 def finalize_merged(primary_path: Path, secondary_path: Path | None, out: Path,
                     domain_id: str, report_out: Path | None = None,
                     exclude_disputed: bool = False,
-                    fixture_out: Path | None = None) -> None:
+                    fixture_out: Path | None = None,
+                    human_review: Path | None = None) -> None:
     """主标定版：主标为准 + 副标分歧记录；规范归一（relevant=no 清维度、neutral 强度=1）。"""
     primary = load_annotated(primary_path, domain_id)
     secondary = load_annotated(secondary_path, domain_id) if secondary_path else []
+    human = load_human_decisions(human_review) if human_review else {}
     s = {(r["text_id"], r["text"]): r for r in secondary}
     compare_report, _ = compare_annotations(primary, secondary) if secondary else ({}, [])
     golden, notes = [], []
@@ -467,6 +599,14 @@ def finalize_merged(primary_path: Path, secondary_path: Path | None, out: Path,
         sent, relevant = r["sentiment"], r["relevant"] or "yes"
         dims = dict(r["dims"])
         note = []
+        h = human.get((tid, r["text"])) or human.get(tid)
+        if h:
+            if h["sentiment"] and h["sentiment"] != sent:
+                note.append(f"人工复核情感:{sent or '空'}→{h['sentiment']}")
+                sent = h["sentiment"]
+            if h["relevant"] and h["relevant"] != relevant:
+                note.append(f"人工复核相关:{relevant or '空'}→{h['relevant']}")
+                relevant = h["relevant"]
         if uid in s and s[uid]["sentiment"] != sent:
             note.append(f"副标分歧:{s[uid]['sentiment'] or '空'}")
         if relevant == "no":
@@ -535,8 +675,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="2.5 冷启动裁判工具链")
     ap.add_argument("--worksheet", action="store_true")
     ap.add_argument("--demo-skeleton", action="store_true")
-    ap.add_argument("--from-report", type=Path)
+    ap.add_argument("--from-report", type=Path, nargs="+")
     ap.add_argument("--compare", action="store_true")
+    ap.add_argument("--review-sheet", action="store_true",
+                    help="生成分歧/高歧义人工复核表（--primary/--secondary/--out）")
     ap.add_argument("--primary", type=Path)
     ap.add_argument("--secondary", type=Path)
     ap.add_argument("--report", type=Path)
@@ -550,7 +692,10 @@ def main() -> int:
     ap.add_argument("--out-dir", type=Path)
     ap.add_argument("--golden", type=Path)
     ap.add_argument("--fixture-out", type=Path)
+    ap.add_argument("--human-review", type=Path, help="人工复核表 xlsx（分歧/高歧义裁决）")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--exclude-golden", type=Path, nargs="+",
+                    help="切分/采样时排除的裁判集 CSV（原文匹配，防新卷混入旧样本）")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--source", type=Path)
     ap.add_argument("--sheet", type=Path)
@@ -567,15 +712,16 @@ def main() -> int:
             ap.error("--demo-skeleton 需要 --out 与 --source")
         demo_skeleton(args.domain, args.source, args.n, args.out, dims_json=args.dims_json)
         return 0
-    if args.from_report:
-        if not args.out:
-            ap.error("--from-report 需要 --out")
-        from_report(args.from_report, args.domain, args.n, args.out, args.dims_json)
-        return 0
     if args.holdout_split:
         if not (args.from_report and args.out_dir):
             ap.error("--holdout-split 需要 --from-report 与 --out-dir")
-        items = extract_report_items(args.from_report, args.domain)
+        items = extract_report_items_many(args.from_report, args.domain)
+        if args.exclude_golden:
+            excluded = load_excluded_texts(args.exclude_golden)
+            before = len(items)
+            items = [s for s in items if (s.get("原文") or "").strip() not in excluded]
+            if len(items) < before:
+                print(f"[排除] 剔除与 golden/hold-out 重叠文本 {before - len(items)} 条")
         holdout, iteration, rep = split_holdout(items, args.n, args.seed)
         args.out_dir.mkdir(parents=True, exist_ok=True)
         gen_worksheet(args.domain, args.out_dir / f"holdout_{args.domain}_worksheet.xlsx",
@@ -596,6 +742,12 @@ def main() -> int:
         print(f"manifest：{mp}")
         print("后续：双 AI/人工标注 → --finalize 定版 holdout_<domain>.csv → "
               "--freeze-holdout 冻结 → benchmark --golden holdout_<domain>.csv")
+        return 0
+    if args.from_report:
+        if not args.out:
+            ap.error("--from-report 需要 --out")
+        from_report(args.from_report, args.domain, args.n, args.out, args.dims_json,
+                    args.exclude_golden)
         return 0
     if args.freeze_holdout:
         if not args.golden:
@@ -623,12 +775,22 @@ def main() -> int:
                   "dimension_agreement", "dimension_n", "disputed_n"):
             print(f"  {k}: {rep[k]}")
         return 0
+    if args.review_sheet:
+        if not (args.primary and args.secondary and args.out):
+            ap.error("--review-sheet 需要 --primary 与 --secondary 与 --out")
+        n = gen_dispute_review(
+            load_annotated(args.primary, args.domain),
+            load_annotated(args.secondary, args.domain),
+            args.out, args.domain)
+        print(f"分歧/高歧义 {n} 条 → 人工复核表已生成")
+        return 0
     if args.finalize:
         if not args.out:
             ap.error("--finalize 需要 --out")
         if args.primary:
             finalize_merged(args.primary, args.secondary, args.out, args.domain,
-                            args.report, args.exclude_disputed, args.fixture_out)
+                            args.report, args.exclude_disputed, args.fixture_out,
+                            args.human_review)
         else:
             finalize(args.sheet, args.out, args.domain, args.dims_json)
         return 0

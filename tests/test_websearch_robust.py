@@ -187,6 +187,39 @@ def test_probe_engines_status() -> None:
     print("✓ 一键探针三引擎状态（风控/正常/失败） 通过")
 
 
+def test_lightweight_probe_status() -> None:
+    """轻量体检探测（渠道诊断用）：只打 360 单引擎，风控/正常/降级/空识别。"""
+    orig = (ws._fetch, ws._parse_360)
+    holder: dict = {"html": "", "items": []}
+
+    def fake_fetch(session, url, referer=""):
+        holder["url"] = url
+        return holder["html"], 200, ""
+
+    ws._fetch = fake_fetch
+    ws._parse_360 = lambda html: holder["items"]
+    try:
+        holder["html"] = "<html>请输入验证码</html>"
+        holder["items"] = []
+        r = ws.lightweight_probe("大疆 评价")
+        assert r["status"] == "risk" and "验证码" in r["message"]
+        assert "so.com" in holder["url"], "轻量探测应只打 360 主引擎"
+
+        holder["html"] = "<html>results</html>"
+        holder["items"] = [{"title": "大疆 无人机", "url": "https://x", "snippet": ""}]
+        assert ws.lightweight_probe("大疆 评价")["status"] == "ok"
+
+        holder["items"] = [{"title": "无关内容", "url": "https://y", "snippet": ""}]
+        assert ws.lightweight_probe("大疆 评价")["status"] == "degraded"
+
+        holder["html"] = ""
+        holder["items"] = []
+        assert ws.lightweight_probe("大疆 评价")["status"] == "empty"
+    finally:
+        ws._fetch, ws._parse_360 = orig
+    print("✓ 轻量体检探测（360 单引擎：风控/正常/降级/空） 通过")
+
+
 def _has_risk(diag: list[dict], marker: str) -> bool:
     return any(marker in (d.get("risk") or []) for d in diag)
 
@@ -202,6 +235,7 @@ def main() -> None:
     test_parse_generic_quark_fallback()
     test_day_used_counter()
     test_probe_engines_status()
+    test_lightweight_probe_status()
     print("WebSearch 鲁棒性测试全部通过 ✅")
 
 

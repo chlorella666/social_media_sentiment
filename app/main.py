@@ -23,7 +23,7 @@ import streamlit as st
 
 from app import __version__
 from app.channels.registry import list_channel_infos
-from app.channels.health import check_channel_health
+from app.channels import health
 from app.core import jobs
 from app.core import errors
 from app.core import lifecycle
@@ -239,7 +239,74 @@ WS_PROBE_STATUS_CN = {
     "error": "❌ 失败",
     "empty": "⚠️ 空结果",
 }
+HEALTH_LEVEL_CN = {
+    "ok": "✅ 可用",
+    "warn": "⚠️ 存疑",
+    "error": "🔴 不可用",
+}
 COMMENT_FETCH_SECONDS = 0.3  # 每条评论抓取耗时粗估（阶段 2 按实测校准）
+
+
+def _diag_badge(rich: dict) -> str:
+    """渠道诊断徽标：系统侧（暂停/冷却/配额）优先，其次健康 level。"""
+    sysd = rich.get("system") or {}
+    if not sysd.get("ok"):
+        text = sysd.get("text", "")
+        if "暂停" in text:
+            return "⏸ 已暂停"
+        if "冷却" in text:
+            return "⏳ 冷却中"
+        if "配额" in text:
+            return "🔴 配额不足"
+    return HEALTH_LEVEL_CN.get(rich.get("level"), "❓ 未知")
+
+
+def render_channel_diag(results: dict, query: str, info_map: dict) -> None:
+    """渠道诊断面板：轻量层结果表 + WebSearch 深度探针（按需触发）。"""
+    rows = []
+    for cid, rich in results.items():
+        sysd = rich.get("system") or {}
+        sys_text = sysd.get("text", "")
+        if not sysd.get("ok") and sysd.get("reason"):
+            sys_text = f"{sys_text}（{sysd['reason']}）"
+        rows.append({
+            "渠道": info_map.get(cid, cid),
+            "状态": _diag_badge(rich),
+            "说明": rich.get("msg", ""),
+            "系统状态": sys_text or "—",
+        })
+    st.table(rows)
+    for cid, rich in results.items():
+        if not str(cid).startswith("websearch"):
+            continue
+        probe_key = f"diag_probe_{cid}"
+        result_key = f"diag_probe_result_{cid}"
+        if st.button("深度探针（360 / bing / 夸克）", key=probe_key):
+            from app.channels.websearch import probe_engines
+
+            with st.spinner(f"正在探测三引擎（查询「{query}」，约 10~30 秒）…"):
+                st.session_state[result_key] = (query, probe_engines(query))
+        saved = st.session_state.get(result_key)
+        if saved and saved[0] == query:
+            pr = saved[1]
+            st.table([
+                {
+                    "引擎": r["engine"],
+                    "状态": WS_PROBE_STATUS_CN.get(r["status"], r["status"]),
+                    "结果数": r["items"],
+                    "说明": r["message"],
+                }
+                for r in pr
+            ])
+            bad = [r for r in pr if r["status"] in ("risk", "error", "degraded", "empty")]
+            if bad:
+                st.warning(
+                    "当前网络下 WebSearch 可能无法正常出数（"
+                    + "、".join(f"{r['engine']}：{r['message']}" for r in bad[:3])
+                    + "）。建议换网络/代理后再试，或暂时不勾选 WebSearch。"
+                )
+            else:
+                st.success("三引擎均可用，WebSearch 可正常出数。")
 
 
 def open_task_result(task_id: str) -> tuple[ReportBundle, dict] | None:
@@ -540,12 +607,20 @@ def _render_review_view(task: dict, task_id: str) -> None:
     url_key = f"review_urls_{task_id}"
     cid_key = f"review_cids_{task_id}"
     page_key = f"review_page_{task_id}"
+    ad_url_key = f"review_ad_urls_{task_id}"
+    ad_cid_key = f"review_ad_cids_{task_id}"
     if url_key not in st.session_state:
         st.session_state[url_key] = set(task.get("excluded_urls") or [])
     if cid_key not in st.session_state:
         st.session_state[cid_key] = set(task.get("excluded_comment_ids") or [])
+    if ad_url_key not in st.session_state:
+        st.session_state[ad_url_key] = set(task.get("ad_urls") or [])
+    if ad_cid_key not in st.session_state:
+        st.session_state[ad_cid_key] = set(task.get("ad_comment_ids") or [])
     url_set: set[str] = st.session_state[url_key]
     cid_set: set[str] = st.session_state[cid_key]
+    ad_url_set: set[str] = st.session_state[ad_url_key]
+    ad_cid_set: set[str] = st.session_state[ad_cid_key]
 
     st.caption("LLM 判定仅为建议徽标，最终以人工为准；帖子标记不相关后其评论随帖剔除。")
     excluded_post_comments = sum(
@@ -608,16 +683,136 @@ def _render_review_view(task: dict, task_id: str) -> None:
     st.divider()
     b1, b2 = st.columns(2)
     if b1.button("✔ 继续分析（保留筛选结果）", type="primary", key=f"review_submit_{task_id}"):
-        if jobs.save_review(task_id, sorted(url_set), sorted(cid_set)):
-            for k in (url_key, cid_key, page_key):
+        if jobs.save_review(
+            task_id, sorted(url_set), sorted(cid_set),
+            ad_urls=sorted(ad_url_set), ad_comment_ids=sorted(ad_cid_set),
+        ):
+            for k in (url_key, cid_key, page_key, ad_url_key, ad_cid_key):
                 st.session_state.pop(k, None)
             st.rerun()
         else:
             st.error("任务状态已变化，无法保存筛选结果")
     if b2.button("✋ 取消任务", key=f"review_cancel_{task_id}"):
         jobs.request_cancel(task_id)
-        for k in (url_key, cid_key, page_key):
+        for k in (url_key, cid_key, page_key, ad_url_key, ad_cid_key):
             st.session_state.pop(k, None)
+        st.rerun()
+
+    # 广告/官方内容复核（追加区，不改变相关性页结构）
+    with st.expander("📢 广告/官方内容复核（可选，规则预标为建议）", expanded=False):
+        _render_review_ad_section(
+            posts, task_id, ad_url_set, ad_cid_set, ad_url_key, ad_cid_key
+        )
+
+
+def _render_review_ad_section(
+    posts: list[dict],
+    task_id: str,
+    ad_url_set: set,
+    ad_cid_set: set,
+    ad_url_key: str,
+    ad_cid_key: str,
+) -> None:
+    """广告/官方内容复核：规则预标为建议（🔖），人工确认/取消/补标。
+
+    标记不影响采集量/关键词效果；是否剔除由计划 exclude_ad_enabled 决定
+    （默认计入，剔除仅影响情感统计）。
+    """
+    from app.coding.ad_rules import is_ad
+
+    st.caption(
+        "规则预标为建议（🔖 标记），请人工确认：广告/官方内容默认计入情感统计；"
+        "若任务开启了「剔除广告/官方内容」，被标记项将仅从情感统计中剔除。"
+    )
+    st.info(f"已标记广告/官方：{len(ad_url_set)} 帖 · {len(ad_cid_set)} 条评论")
+
+    ac1, ac2 = st.columns([2, 2])
+    platform = ac1.selectbox(
+        "平台", ["全部"] + sorted({p["platform"] for p in posts}),
+        key=f"rv_ad_platform_{task_id}",
+    )
+    only_suggested = ac2.checkbox("只看规则预标", key=f"rv_ad_suggested_{task_id}")
+    tc1, tc2 = st.columns(2)
+    if tc1.button("全部标记广告/官方", key=f"rv_ad_all_{task_id}"):
+        for p in posts:
+            ad_url_set.add(p["url"])
+            for c in p.get("comments") or []:
+                ad_cid_set.add(c["id"])
+        st.rerun()
+    if tc2.button("重置标记", key=f"rv_ad_reset_{task_id}"):
+        st.session_state[ad_url_key] = set()
+        st.session_state[ad_cid_key] = set()
+        st.rerun()
+
+    filtered = posts
+    if platform != "全部":
+        filtered = [p for p in filtered if p["platform"] == platform]
+    if only_suggested:
+        filtered = [
+            p for p in filtered
+            if p["url"] in ad_url_set
+            or is_ad(p.get("content") or "", p.get("title") or "")
+            or any(is_ad(c.get("text") or "") for c in (p.get("comments") or []))
+        ]
+
+    for p in filtered[:50]:
+        url = p["url"]
+        marked = url in ad_url_set
+        title = (p.get("title") or p.get("content") or "（无标题）")[:60]
+        meta = (
+            f"{platform_cn(p['platform'])} · {p.get('timestamp') or '时间未知'} · "
+            f"点赞 {p.get('likes', 0)}"
+        )
+        suggested = is_ad(p.get("content") or "", p.get("title") or "")
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.markdown(f"{'📢 ' if marked else ''}**{title}**")
+            st.caption(meta)
+            if suggested:
+                st.caption(f"🔖 规则预标：{suggested}")
+        flag = c2.checkbox("广告/官方", value=marked, key=_review_key("rad", url))
+        if flag != marked:
+            (ad_url_set.add if flag else ad_url_set.discard)(url)
+            st.rerun()
+        with st.expander("查看帖子与评论", expanded=False):
+            st.markdown(p.get("content") or p.get("title") or "（无正文）")
+            for c in p.get("comments") or []:
+                cm = c["id"] in ad_cid_set
+                csug = is_ad(c.get("text") or "")
+                cc1, cc2 = st.columns([4, 1])
+                cc1.caption(
+                    f"{c.get('author') or '匿名'}：{c.get('text')}"
+                    + (f"　🔖 {csug}" if csug else "")
+                )
+                rm = cc2.checkbox("广告/官方", value=cm, key=_review_key("radc", c["id"]))
+                if rm != cm:
+                    (ad_cid_set.add if rm else ad_cid_set.discard)(c["id"])
+                    st.rerun()
+
+    if len(filtered) > 50:
+        st.caption(f"仅展示前 50 条，共 {len(filtered)} 条（建议按平台/只看规则预标筛选）")
+
+    st.divider()
+    b1, b2 = st.columns(2)
+    if b1.button("✔ 保存广告/官方标记", type="primary", key=f"review_ad_submit_{task_id}"):
+        from app.core import jobs as _jobs
+
+        url_key = f"review_urls_{task_id}"
+        cid_key = f"review_cids_{task_id}"
+        if _jobs.save_review(
+            task_id,
+            sorted(st.session_state.get(url_key, set())),
+            sorted(st.session_state.get(cid_key, set())),
+            ad_urls=sorted(ad_url_set),
+            ad_comment_ids=sorted(ad_cid_set),
+        ):
+            for k in (url_key, cid_key, ad_url_key, ad_cid_key, f"review_page_{task_id}"):
+                st.session_state.pop(k, None)
+            st.rerun()
+        else:
+            st.error("任务状态已变化，无法保存标记")
+    if b2.button("✋ 取消任务", key=f"review_ad_cancel_{task_id}"):
+        jobs.request_cancel(task_id)
         st.rerun()
 
 
@@ -815,6 +1010,15 @@ with st.sidebar:
             "⚠️ LLM 相关性复核会增加大模型调用量与费用（按文本数计费），"
             "分析耗时也会变长，请确认可接受后再开启。"
         )
+    st.session_state.exclude_ad_opt = st.toggle(
+        "剔除广告/官方内容（默认计入）",
+        value=st.session_state.get("exclude_ad_opt", False),
+        help=(
+            "广告也是消费者可见的市场信号：默认计入（按 neutral 参与统计，报告注明占比）；"
+            "开启后仅从情感统计中剔除（采集量/关键词效果保留），报告会给出剔除说明。"
+            "建议配合「人工筛选相关性」开启：审核界面可复核广告/官方标记。"
+        ),
+    )
     st.caption(
         "提示：环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 仅用于"
         "开发/评测脚本，应用内 Key 只存本机 DPAPI。"
@@ -1301,16 +1505,44 @@ elif stage == 3:
             "估算随关键词数、渠道上限与评论设置变化）"
         )
 
-        # 渠道体检：对已选渠道逐个只读探测（demo 不发起网络请求）
-        if st.button("🔍 渠道体检（只读探测）"):
+        # ── 渠道诊断（体检 × 一键探针融合，docs/渠道诊断融合方案.md）──
+        st.markdown("**🔍 渠道诊断**")
+        st.caption(
+            "轻量层并行真实探测各渠道（WebSearch = 360 单引擎出数探测，含风控/降级"
+            "识别，不再只看 HTTP 200），并合并系统侧状态（暂停/冷却/配额）；"
+            "WebSearch 行可展开三引擎深度探针。"
+        )
+        if st.button("开始诊断", key="diag_start"):
             cookie = st.session_state.get("weibo_cookie", "")
-            for cid in selected:
-                ok, msg = check_channel_health(cid, {"cookie": cookie})
-                name = info_map.get(cid, cid)
-                if ok:
-                    st.success(f"✅ {name}：{msg}")
-                else:
-                    st.warning(f"⚠️ {name}：{msg}")
+            probe_subject = (
+                str(st.session_state.get("subject") or "").strip() or "测试"
+            )
+            query = f"{probe_subject} 评价"
+            with st.spinner("正在并行诊断已选渠道（约 5~10 秒）…"):
+                st.session_state["diag_results"] = health.check_channels(
+                    selected, {"cookie": cookie, "query": query}
+                )
+            st.session_state["diag_query"] = query
+        if st.session_state.get("diag_results"):
+            cur = {
+                cid: rich
+                for cid, rich in st.session_state["diag_results"].items()
+                if cid in selected
+            }
+            if cur:
+                render_channel_diag(
+                    cur,
+                    st.session_state.get("diag_query") or "测试 评价",
+                    info_map,
+                )
+                if any(
+                    rich.get("system") and not rich["system"].get("ok")
+                    for rich in cur.values()
+                ):
+                    st.caption(
+                        "暂停/冷却/配额不足的渠道请到上方「渠道安全」区处理"
+                        "（解除冷却 / 恢复 / 调整每日上限）。"
+                    )
 
         if any(cid.startswith("websearch") for cid in selected):
             st.session_state.websearch_eval_suffix = st.toggle(
@@ -1323,52 +1555,6 @@ elif stage == 3:
                 "说明：开启后实际查询串可能与确认关键词不同（如『恋与深空』→"
                 "『恋与深空 评价』）；实际查询串可在报告「实际查询串（WebSearch）」表核对。"
             )
-            st.markdown("**WebSearch 引擎探针（一键验证当前网络是否可用）**")
-            st.caption(
-                "当前网络出口可能被搜索引擎风控（360/夸克常见验证码、bing 可能降级）；"
-                "换网络/代理后点下方按钮，实时查看三引擎状态。"
-            )
-            if st.button(
-                "🔍 一键探针 WebSearch（360 / bing / 夸克）",
-                key="ws_probe",
-            ):
-                from app.channels.websearch import probe_engines
-
-                probe_subject = (
-                    str(st.session_state.get("subject") or "").strip() or "大疆"
-                )
-                with st.spinner(
-                    f"正在探测 360 / cn.bing / 夸克（查询「{probe_subject} 评价」，"
-                    "约 10~30 秒）…"
-                ):
-                    results = probe_engines(f"{probe_subject} 评价")
-                st.table(
-                    [
-                        {
-                            "引擎": r["engine"],
-                            "状态": WS_PROBE_STATUS_CN.get(
-                                r["status"], r["status"]
-                            ),
-                            "结果数": r["items"],
-                            "说明": r["message"],
-                        }
-                        for r in results
-                    ]
-                )
-                bad = [
-                    r for r in results
-                    if r["status"] in ("risk", "error", "degraded", "empty")
-                ]
-                if bad:
-                    st.warning(
-                        "当前网络下 WebSearch 可能无法正常出数（"
-                        + "、".join(
-                            f"{r['engine']}：{r['message']}" for r in bad[:3]
-                        )
-                        + "）。建议换网络/代理后再试，或暂时不勾选 WebSearch。"
-                    )
-                else:
-                    st.success("三引擎均可用，WebSearch 可正常出数。")
             st.session_state.official_domains = st.text_input(
                 "排除的官方域名（逗号分隔，可选）",
                 placeholder="例如：dji.com,crv.com.cn",
@@ -1441,6 +1627,8 @@ elif stage == 4:
             else []
         ),
         ("LLM 相关性复核", "开（费用与耗时增加）" if relevance_check_enabled else "关"),
+        ("广告/官方内容", "计入（默认）" if not st.session_state.get("exclude_ad_opt", False)
+         else "剔除（仅情感统计）"),
         ("词云排除词", "、".join(st.session_state.get("exclude_words_opt", [])) or "未配置"),
         ("预计 LLM 费用", f"约 ¥{cost_est['estimated_cost']}（预估）"),
         (
@@ -1506,6 +1694,7 @@ elif stage == 4:
             relevance_check_enabled=relevance_check_enabled,
             channel_params=channel_params,
             review_enabled=st.session_state.get("review_enabled_opt", False),
+            exclude_ad_enabled=st.session_state.get("exclude_ad_opt", False),
         )
         # 渠道安全预检：暂停/冷却/配额不足在提交前拦截，避免任务空跑
         blocked = []

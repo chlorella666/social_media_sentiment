@@ -1,7 +1,7 @@
 text_id,原情感,修订情感,是否参考过模型判定,判定依据,状态
-run_P100,positive,neutral,是,2.3 收尾人工重判 49 条模型错误样本后修订（用户看过模型判定列）,待用户确认；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
-run_P1591,neutral,negative,是,同上,待用户确认；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
-run_P1466,positive,neutral,是,同上,待用户确认；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
-v2_C102,neutral,negative,是,同上,待用户确认；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
-run_C781,positive,negative,是,同上,待用户确认；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
-run_P942,positive,neutral,是,同上,待用户确认；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
+run_P100,positive,neutral,是,2.3 收尾人工重判 49 条模型错误样本后修订（用户看过模型判定列）,用户已确认（2026-08-15）；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
+run_P1591,neutral,negative,是,同上,用户已确认（2026-08-15）；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
+run_P1466,positive,neutral,是,同上,用户已确认（2026-08-15）；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
+v2_C102,neutral,negative,是,同上,用户已确认（2026-08-15）；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
+run_C781,positive,negative,是,同上,用户已确认（2026-08-15）；M3 随 edge_set 版本升级写入 gold_revised_by_model 列
+run_P942,positive,neutral,是,同上,用户已确认（2026-08-15）；M3 随 edge_set 版本升级写入 gold_revised_by_model 列

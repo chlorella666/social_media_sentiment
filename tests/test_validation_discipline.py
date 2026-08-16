@@ -185,6 +185,99 @@ def test_acceptance_review_sheet_roundtrip() -> None:
     print("✓ 验收表生成/读取（含 --blind 盲审）通过")
 
 
+def test_load_human_decisions() -> None:
+    """人工复核表回填解析：text_id → {sentiment, relevant}；留空不覆盖。"""
+    from openpyxl import Workbook
+
+    tmp = Path(tempfile.mkdtemp(prefix="sms_human_"))
+    p = tmp / "review.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["text_id", "原文", "人工判定情感", "人工判定相关"])
+    ws.append(["h1", "文本一", "neutral", "no"])
+    ws.append(["h2", "文本二", "", "yes"])
+    ws.append(["h3", "文本三", "positive", ""])
+    wb.save(p)
+    out = cs.load_human_decisions(p)
+    assert out["h1"] == {"sentiment": "neutral", "relevant": "no"}
+    assert out["h2"] == {"sentiment": "", "relevant": "yes"}
+    assert out["h3"] == {"sentiment": "positive", "relevant": ""}
+    assert "h4" not in out
+    print("✓ 人工复核表回填解析 通过")
+
+
+def test_load_human_decisions_shared_text_id() -> None:
+    """同帖多评论共用 text_id：用 (text_id, 原文) 复合键，避免误套。"""
+    from openpyxl import Workbook
+
+    tmp = Path(tempfile.mkdtemp(prefix="sms_human_dup_"))
+    p = tmp / "review_dup.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["text_id", "原文", "人工判定情感", "人工判定相关"])
+    ws.append(["P1:comment", "评论一", "neutral", "yes"])
+    ws.append(["P1:comment", "评论二", "positive", "no"])
+    ws.append(["P2:comment", "唯一评论", "negative", "yes"])
+    wb.save(p)
+    out = cs.load_human_decisions(p)
+    assert ("P1:comment", "评论一") in out
+    assert ("P1:comment", "评论二") in out
+    assert "P1:comment" not in out  # 共用 text_id 不再用裸 id 键
+    assert out["P2:comment"]["sentiment"] == "negative"
+    print("✓ 同帖多评论复合键回填 通过")
+
+
+def test_gen_dispute_review_roundtrip() -> None:
+    """分歧复核表：只收情感/相关分歧，维度分歧不进入；可回填解析。"""
+    tmp = Path(tempfile.mkdtemp(prefix="sms_dispute_"))
+    primary = [
+        {"text_id": "a", "text": "t1", "platform": "weibo", "brand": "大疆",
+         "sentiment": "neutral", "relevant": "yes", "dims": {"功能效果": "positive"}},
+        {"text_id": "b", "text": "t2", "platform": "bilibili", "brand": "影石",
+         "sentiment": "negative", "relevant": "yes", "dims": {}},
+        {"text_id": "c", "text": "t3", "platform": "weibo", "brand": "大疆",
+         "sentiment": "positive", "relevant": "no", "dims": {}},
+    ]
+    secondary = [
+        {"text_id": "a", "text": "t1", "platform": "weibo", "brand": "大疆",
+         "sentiment": "positive", "relevant": "yes", "dims": {"功能效果": "positive"}},
+        {"text_id": "b", "text": "t2", "platform": "bilibili", "brand": "影石",
+         "sentiment": "negative", "relevant": "no", "dims": {"价格价值": "negative"}},
+        {"text_id": "c", "text": "t3", "platform": "weibo", "brand": "大疆",
+         "sentiment": "positive", "relevant": "no", "dims": {"价格价值": "negative"}},
+    ]
+    out = tmp / "review.xlsx"
+    n = cs.gen_dispute_review(primary, secondary, out, "digital3c")
+    assert n == 2  # a: 情感分歧；b: 相关分歧；c: 仅维度分歧，不进入
+    # 模拟人工填写判定列后再回填解析
+    from openpyxl import load_workbook
+
+    wb = load_workbook(out)
+    ws = wb.worksheets[0]
+    hdr = [str(c.value) for c in ws[1]]
+    col_sent = hdr.index("人工判定情感") + 1
+    col_rel = hdr.index("人工判定相关") + 1
+    for r in range(2, ws.max_row + 1):
+        ws.cell(row=r, column=col_sent).value = "neutral"
+        ws.cell(row=r, column=col_rel).value = "yes"
+    wb.save(out)
+    dec = cs.load_human_decisions(out)
+    assert set(dec) == {"a", "b"}
+    print("✓ 分歧复核表生成/回填（仅情感/相关分歧）通过")
+
+
+def test_load_excluded_texts() -> None:
+    """--exclude-golden：读取裁判集原文集合，供新卷切分排除旧样本。"""
+    tmp = Path(tempfile.mkdtemp(prefix="sms_excl_"))
+    p = tmp / "golden.csv"
+    p.write_text("text_id,text,sentiment\nh1,重复文本一,positive\nh2,重复文本二,neutral\n",
+                 encoding="utf-8-sig")
+    ex = cs.load_excluded_texts([p])
+    assert ex == {"重复文本一", "重复文本二"}
+    assert cs.load_excluded_texts([tmp / "missing.csv"]) == set()
+    print("✓ --exclude-golden 排除文本集合 通过")
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_holdout_split_quotas_and_time_window()
@@ -193,6 +286,10 @@ def main() -> None:
     test_holdout_freeze_and_use_guard()
     test_gold_revised_filter()
     test_acceptance_review_sheet_roundtrip()
+    test_load_human_decisions()
+    test_load_human_decisions_shared_text_id()
+    test_gen_dispute_review_roundtrip()
+    test_load_excluded_texts()
     print("验证纪律工程测试全部通过 ✅")
 
 

@@ -49,7 +49,7 @@ class SlowLLM(OpenAICompatibleAnalyzer):
     def ping(self, timeout=20):
         return True, "ok"
 
-    def _request_batch(self, texts, dimension_schema=None):
+    def _request_batch(self, texts, dimension_schema=None, subject=None):
         time.sleep(0.05)
         return [
             {"sentiment": "positive", "score": 0.8, "confidence": 0.9,
@@ -221,6 +221,75 @@ def test_small_batch_fallback_on_truncation() -> None:
     print("✓ 小批截断走兜底并上报错误")
 
 
+def test_subject_anchor_instruction_and_cache() -> None:
+    """subject（跟本品牌口径）：system 注入锚定品牌指令、user 带 subject；
+    缓存按 subject 区分（同文本不同品牌不串结果）。"""
+    from app.coding.llm_analyzer import SUBJECT_DOMAINS
+
+    assert "digital3c" in SUBJECT_DOMAINS
+    cfg = LLMConfig(api_key="sk-test", base_url="http://127.0.0.1:1", model="deepseek-chat")
+    analyzer = OpenAICompatibleAnalyzer(cfg)
+    calls: list[tuple[str, str]] = []
+
+    def fake_post(system, user, **kwargs):
+        calls.append((system, user))
+        body = json.dumps({
+            "items": [{"index": 0, "sentiment": "negative", "score": -0.6,
+                       "confidence": 0.9, "keywords": []}],
+        }, ensure_ascii=False)
+        return body, ""  # _post_chat 返回 (content, finish_reason)
+
+    with mock.patch.object(analyzer, "_post_chat", side_effect=fake_post):
+        r1 = analyzer.analyze_batch(["夸竞品贬本品牌"], subject="影石")
+        r2 = analyzer.analyze_batch(["夸竞品贬本品牌"], subject=None)
+    assert len(calls) == 2, "同文本不同 subject 不应命中同一缓存"
+    sys_with, user_with = calls[0]
+    assert "锚定品牌口径" in sys_with and "影石" in sys_with
+    assert json.loads(user_with)["subject"] == "影石"
+    sys_wo, user_wo = calls[1]
+    assert "锚定品牌口径" not in sys_wo
+    assert "subject" not in json.loads(user_wo)
+    assert r1[0]["sentiment"] == "negative" and r2[0]["sentiment"] == "negative"
+    print("✓ subject 锚定品牌指令 + 缓存隔离 通过")
+
+
+def test_v34_rule_gating() -> None:
+    """SMS_V34_RULES 规则开关：置空回到 v3.3+B，子集只含对应规则。"""
+    from app.coding import llm_analyzer as la
+
+    cfg = LLMConfig(api_key="sk-test", base_url="http://127.0.0.1:1", model="deepseek-chat")
+    analyzer = OpenAICompatibleAnalyzer(cfg)
+    captured: dict[str, str] = {}
+
+    def fake_post(system, user, **kwargs):
+        captured["system"] = system
+        body = json.dumps({"items": [{"index": 0, "sentiment": "neutral",
+                                      "score": 0.0, "confidence": 0.5,
+                                      "keywords": []}]}, ensure_ascii=False)
+        return body, ""
+
+    def run(rules: str) -> str:
+        a2 = OpenAICompatibleAnalyzer(cfg)
+        with mock.patch.dict("os.environ", {"SMS_V34_RULES": rules}, clear=False), \
+             mock.patch.object(a2, "_post_chat", side_effect=fake_post):
+            a2.analyze_batch(["测试文本"])
+        return captured["system"]
+
+    sys_off = run("")
+    assert "报道/资讯体（v3.4）" not in sys_off
+    assert "行动信号与平淡情绪（v3.4）" not in sys_off
+    assert "锚定品牌口径" not in sys_off  # 无 subject
+    sys_11 = run("11")
+    assert "报道/资讯体（v3.4）" in sys_11
+    assert "行动信号与平淡情绪（v3.4）" not in sys_11
+    sys_all = run(la._V34_RULES_DEFAULT)
+    assert la._V34_RULES_DEFAULT == "12,13,14"
+    assert "报道/资讯体（v3.4）" not in sys_all  # v11 消融后默认关闭
+    assert "行动信号与平淡情绪（v3.4）" in sys_all
+    assert "subject 口径强化（v3.4）" in sys_all
+    print("✓ v3.4 规则开关（SMS_V34_RULES 消融） 通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_ping_unreachable()
@@ -233,4 +302,6 @@ if __name__ == "__main__":
     test_narrative_sanitizes_invalid_values()
     test_truncation_split_retry()
     test_small_batch_fallback_on_truncation()
+    test_subject_anchor_instruction_and_cache()
+    test_v34_rule_gating()
     print("LLM 分析器测试全部通过 ✅")

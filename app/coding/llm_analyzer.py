@@ -23,7 +23,20 @@ DEFAULT_MODEL = "gpt-4o-mini"
 CONFIDENCE_THRESHOLD = 0.8  # 预筛置信度低于此值才调用 LLM（0.8 更保守，送 LLM 占比更高）
 BATCH_SIZE = 10  # 单请求文本数（越小单请求越快、进度越平滑）
 NARRATIVE_BATCH_SIZE = 10
-PROMPT_VERSION = 7  # 情感分析提示词版本（v3.2：2.5 数码3C 定向迭代第二轮）
+PROMPT_VERSION = 10  # 情感分析提示词版本（v3.4b：消融后保留 12/13/14，去掉 11）
+# 采用"整条情感跟锚定品牌"口径的领域（抽样规范 §十四：品牌口碑场景）。
+# 主集/边界集沿用"文本自身情感"口径，不在此列；评测与生产链路据此决定是否传 subject。
+SUBJECT_DOMAINS = frozenset({"digital3c"})
+
+# v3.4 规则开关（拆分归因用）：SMS_V34_RULES 覆盖默认集；
+# 置空 = 回到 v3.3+B；单独指定子集 = 单规则消融。
+# 2026-08-16 消融结论：v14 主力（+2.3pp）、v12/v13 各 +1.4pp、v11（报道/资讯）
+# 净零且过度中性化（pos→neu +4/neg→neu +2，r2 回退 -5.7pp 最可能元凶）→ 默认去掉 11。
+_V34_RULES_DEFAULT = "12,13,14"
+
+
+def _v34_enabled(rule: str) -> bool:
+    return rule in os.environ.get("SMS_V34_RULES", _V34_RULES_DEFAULT).split(",")
 # v2.2（PROMPT_VERSION=4）：官方内容一律 neutral、教程/攻略即使含"神器/推荐"也 neutral；
 # v3.0（2.4）：整条情感规则沿用 v2.2 原文不动，追加 dimension_sentiments 维度级情感输出
 # （只标"明确带情感"的维度；转折句逐维拆解；官方内容维度留空）。
@@ -33,6 +46,15 @@ PROMPT_VERSION = 7  # 情感分析提示词版本（v3.2：2.5 数码3C 定向�
 # v3.2（3C 两轮 70.1/72.2% 仍 <75%，剩余错误仍是同一批 neutral→positive）：neutral
 # 升为总则（无明确个人立场一律 neutral，提到产品/参数/品牌不等于情感）+ 3C 反例 +
 # 维度"选择/支持某品牌→品牌形象"。
+# v3.3（3C golden v2 取证 166 错：语体类 72 条占 43%，含标题问句/参数盘点/犹豫权衡/
+# 无立场短评）：① 含蓄表达三分（先判有没有立场再判方向）；② 无立场语体补强
+# （标题型问句/系列型号介绍/犹豫权衡 → neutral）；③ 多品牌比较无锚定 → 整条 neutral +
+# 竞品对比维度按内容标方向；④ 竞品对比维度信号词扩充。
+# v3.4（A+B 后残余 154 错取证）：① 报道/资讯/电商页/百科/活动打卡语体 → neutral
+# （即使含"点名表扬/遥遥领先/大场面"）；② 行动信号=正面（买了/入手/下单/到店安排），
+# 问题未解决/被劝退/吐槽体验=负面（平淡语气也算）；③ 调侃反讽与方向不明（"天壤之别"
+# 类）→ neutral，反讽对象为产品 → negative；④ subject 口径强化：夸赞/推荐非锚定品牌
+# 时整条不得判 positive（对本品牌 negative 或 neutral）。
 
 VALID_NARRATIVES = {"conflict", "human_interest", "attribution", "economic", "morality"}
 VALID_ACTORS = {
@@ -371,7 +393,12 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             )
             return fallback_fn(texts)
 
-    def _request_batch(self, texts: list[str], dimension_schema: dict | None = None) -> list[dict]:
+    def _request_batch(
+        self,
+        texts: list[str],
+        dimension_schema: dict | None = None,
+        subject: str | None = None,
+    ) -> list[dict]:
         dims = schema_dimensions(dimension_schema)
         dim_block = ""
         if dims:
@@ -388,12 +415,38 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "4. 官方内容/宣发/公告/PV/官网介绍一律 dimension_sentiments 为空；\n"
                 "5. 键必须来自维度清单，值只允许 positive/negative；没有维度情感输出 {}。\n"
                 "6. 竞品对比识别：明确与其他品牌/产品比较（谁更强/对比/差距/平替/"
-                "参数对比/别家）→ 标「竞品对比」；参数对比文可同时标「功能效果」。\n"
+                "参数对比/别家/更稳/便宜/配件通用/市占率）→ 标「竞品对比」；参数对比文可"
+                "同时标「功能效果」。\n"
                 "7. 品牌倾向识别：明确表达选择/支持某品牌（'更愿意选择影石'"
                 "'还是买大疆''支持华为'）→ 标「品牌形象」。\n"
                 "维度清单：\n"
                 f"{dim_lines}\n"
             )
+        v34_blocks: list[str] = []
+        if _v34_enabled("11"):
+            v34_blocks.append(
+                "11. 报道/资讯体（v3.4）一律 neutral：新闻/财报/工信部通报/媒体曝光/电商"
+                "产品页（'¥499 | 京东自营旗舰店'）/百科知识（'联想笔记本是指…'）/线下"
+                "活动打卡（'痛楼/集中打卡时间'）——即使含'点名表扬/遥遥领先/大场面/惊喜'"
+                "等词，仍是报道事实而非个人评价。")
+        if _v34_enabled("12"):
+            v34_blocks.append(
+                "12. 行动信号与平淡情绪（v3.4）：明确购买/入手/下单/到店/安排体验"
+                "（'已经买了''入手了4''我下单了''给自己安排骑行套装了'）→ positive；"
+                "问题未解决/被劝退/吐槽体验（'都试过了,微信打印就正常''搜到差评就买了"
+                "别的'）平淡语气也算 negative。")
+        if _v34_enabled("13"):
+            v34_blocks.append(
+                "13. 调侃反讽与方向不明（v3.4）：娱乐性调侃短评（'笑死我了,i7都来了'"
+                "'呵呵,天选你就买吧'）无明确产品贬损 → neutral；'天壤之别'类方向不明"
+                "比较 → neutral；反讽对象为产品/品牌（'当你不需要一台电脑时,你就很适合"
+                "购买华为电脑'）→ negative。")
+        if _v34_enabled("14"):
+            v34_blocks.append(
+                "14. subject 口径强化（v3.4）：锚定品牌受益才判 positive——文本夸赞/"
+                "推荐的是非锚定品牌（'还是选大疆的比较好''大疆这边能续上能省一笔'，"
+                "锚定=影石时）→ 整条判 negative（若贬本品牌）或 neutral（仅夸竞品），"
+                "竞品对比维度按内容标方向；不得因夸竞品判 positive。")
         system = (
             "你是中文社交媒体情感分析专家。对输入的每条文本输出情感判断（prompt v2.2）。"
             "注意：中文网络语境常有反讽/阴阳怪气/反话（表面褒义实为贬义，"
@@ -437,7 +490,35 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "仅当存在明确个人评价词（喜欢/吐槽/推荐/不推荐/太好/太差）才按实际情感判；"
                 "e) 明确与其他品牌/产品比较（谁更强/对比/差距/平替/参数对比/别家）"
                 "不改变整条情感判定，但维度情感需标「竞品对比」。"
+                "8. 含蓄表达三分（v3.3，先判『有没有立场』再判方向）："
+                "a) 明确夸赞（'影石 Luna 系列很猛''Pocket 4P 到底谁更牛'的安利语气）→ positive；"
+                "b) 明确不满/吐槽（'除非影石更新，不然大疆明年不会出5p''这价格还要啥自行车'"
+                "抱怨语境）→ negative；"
+                "c) 无立场/权衡中（'犹豫好久/去线下试了再说''两家棋逢对手，都搭载…'"
+                "'我舍不得买'）→ neutral。"
+                "9. 无立场语体补强（v3.3）：标题型问句/求助（'还能吗/怎么选/值吗/怎么样/"
+                "怎么办'）、系列/型号介绍（'大疆无人机分为御/Mavic 系列…'）、购买决策中的"
+                "犹豫权衡（'犹豫/纠结/去线下试试/对比对比'）→ neutral（除非明确站队某产品）。"
+                "10. 多品牌比较且无锚定品牌时：整条按对比文判 neutral（不站队），"
+                "竞品对比维度按文本内容标方向（夸某品牌=竞品对比 positive、贬=negative）。"
+            + "".join(v34_blocks)
             + dim_block
+            + (
+                (
+                    f"锚定品牌口径（subject 已提供「{subject}」，品牌口碑场景适用）："
+                    "整条情感跟锚定品牌判——夸本品牌=positive；贬本品牌=negative；"
+                    "夸竞品贬本品牌=negative；夸本品牌贬竞品=positive；"
+                    "夸赞/推荐的是非锚定品牌 → 对本品牌 negative 或 neutral（见规则 14）；"
+                    "文本未涉及本品牌或无明确立场 → neutral。"
+                    if _v34_enabled("14")
+                    else
+                    f"锚定品牌口径（subject 已提供「{subject}」，品牌口碑场景适用）："
+                    "整条情感跟锚定品牌判——夸本品牌=positive；贬本品牌=negative；"
+                    "夸竞品贬本品牌=negative；夸本品牌贬竞品=positive；"
+                    "文本未涉及本品牌或无明确立场 → neutral。"
+                )
+                if subject else ""
+            )
             + ('输出 JSON：{"items":[{"index":0,"sentiment":"positive|negative|neutral",'
                '"score":-1到1的浮点数,"confidence":0到1的浮点数,"keywords":[最多3个情感关键词],'
                '"dimension_sentiments":{"维度id":"positive|negative"}}]}。'
@@ -451,7 +532,11 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
         return self._structured_batch(
             texts,
             system=system,
-            user_fn=lambda chunk: json.dumps({"texts": chunk}, ensure_ascii=False),
+            user_fn=lambda chunk: json.dumps(
+                {"subject": subject, "texts": chunk} if subject
+                else {"texts": chunk},
+                ensure_ascii=False,
+            ),
             max_tokens_fn=lambda n: min(2600, 220 + 140 * n) if dims else min(2000, 150 + 100 * n),
             parse_fn=self._parse_batch,
             sanitize_fn=(lambda items: sanitize_dimension_sentiments(items, valid_dim_ids))
@@ -551,6 +636,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
         texts: list[str],
         on_batch_progress: "Callable[[int, int], None] | None" = None,
         dimension_schema: dict | None = None,
+        subject: str | None = None,
     ) -> list[dict]:
         """真批量请求：BATCH_SIZE 条文本一次请求，最多 max_workers 批并发。"""
         self._errors = []
@@ -562,17 +648,17 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             out: list[dict] = [None] * len(batch)  # type: ignore[list-item]
             for j, t in enumerate(batch):
                 with self._lock:
-                    hit = self._cache.get(t)
+                    hit = self._cache.get(f"{subject or ''}|{t}")
                 if hit is not None:
                     out[j] = hit
                 else:
                     todo_idx.append(j)
                     todo_texts.append(t)
             if todo_texts:
-                parsed = self._request_batch(todo_texts, dimension_schema)
+                parsed = self._request_batch(todo_texts, dimension_schema, subject)
                 for j, t, item in zip(todo_idx, todo_texts, parsed):
                     with self._lock:
-                        self._cache[t] = item
+                        self._cache[f"{subject or ''}|{t}"] = item
                     out[j] = item
             return out
 

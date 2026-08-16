@@ -154,12 +154,50 @@ def test_review_cancel_and_guard() -> None:
     print("✓ 筛选中取消 + save_review 守卫 通过")
 
 
+def test_worker_ad_flags_roundtrip() -> None:
+    """广告/官方标记：人工复核 ad_urls/ad_comment_ids → 编码后 CodedItem.ad_flag。"""
+    fresh_db()
+    _reports_root()
+    tid = jobs.submit_task(_plan(review=True))
+    t = _run_to_reviewing(tid)
+    snapshot = json.loads(Path(t["collection_path"]).read_text(encoding="utf-8"))
+    posts = snapshot["posts"]
+    target = posts[0]
+    cid = target["comments"][0]["id"] if target["comments"] else None
+    assert jobs.save_review(
+        tid,
+        [],
+        [],
+        ad_urls=[target["url"]],
+        ad_comment_ids=[cid] if cid else [],
+    )
+    task = jobs.claim_next_task("review-worker")
+    worker.run_task(task, "review-worker")
+    done = jobs.get_task(tid)
+    assert done["status"] == jobs.STATUS_COMPLETED, done.get("error")
+    data = json.loads(
+        (Path(done["output_dir"]) / "result.json").read_text(encoding="utf-8")
+    )
+    items = data["coded_items"]
+    post_item = next(it for it in items if it["text_id"] == f"{target['url']}:post")
+    assert post_item["ad_flag"] is True
+    if cid:
+        # 评论 text_id 以 url 开头；该帖下应有 ad_flag 评论
+        assert any(
+            it["text_id"].startswith(f"{target['url']}:comment") and it["ad_flag"]
+            for it in items
+        )
+    assert (data["summary"].get("ads") or {}).get("count", 0) >= 1
+    print("✓ 广告标记人工复核 → CodedItem.ad_flag + summary.ads 通过")
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_pipeline_split_equivalence()
     test_worker_review_pause_and_resume()
     test_review_cascade()
     test_review_cancel_and_guard()
+    test_worker_ad_flags_roundtrip()
     print("人工相关性筛选测试全部通过 ✅")
 
 
