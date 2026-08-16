@@ -221,6 +221,114 @@ def test_small_batch_fallback_on_truncation() -> None:
     print("✓ 小批截断走兜底并上报错误")
 
 
+def test_missing_index_completion_recovers() -> None:
+    """小批缺失 index（纯格式失败）→ 一次定向补全请求恢复，不降级。"""
+    cfg = LLMConfig(api_key="sk-test", base_url="https://api.deepseek.com", model="deepseek-chat")
+    analyzer = OpenAICompatibleAnalyzer(cfg)
+    calls = {"n": 0}
+
+    def fake_post(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # 缺 index 1（只返回了 index 0）
+            return FakeResponse(
+                json.dumps(
+                    {
+                        "items": [
+                            {"index": 0, "narrative": "conflict", "attribution": "enterprise"}
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        body = kwargs["json"]["messages"][1]["content"]
+        assert "缺少以下 index：1" in body, "补全请求应指明缺失的 index"
+        assert '"index": 1' in body, "补全请求应携带缺失条目的原文"
+        return FakeResponse(
+            json.dumps(
+                {
+                    "items": [
+                        {"index": 1, "narrative": "human_interest", "attribution": "individual"}
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    with mock.patch("app.coding.llm_analyzer.requests.post", side_effect=fake_post):
+        results = analyzer._request_narrative_batch(["a", "b"])
+    assert len(results) == 2
+    assert results[0]["narrative"] == "conflict"
+    assert results[1]["narrative"] == "human_interest"
+    assert results[1]["attribution"] == "individual"
+    assert calls["n"] == 2
+    assert not any("批量请求失败" in e for e in analyzer.errors)
+    print("✓ 缺失 index 小批经定向补全恢复（无降级、无错误上报）")
+
+
+def test_missing_index_completion_fails_falls_back() -> None:
+    """补全请求仍失败时，回退兜底并上报错误（不中断主流程）。"""
+    cfg = LLMConfig(api_key="sk-test", base_url="https://api.deepseek.com", model="deepseek-chat")
+    analyzer = OpenAICompatibleAnalyzer(cfg)
+
+    def fake_post(url, **kwargs):
+        # 首轮缺 index 1；补全轮返回空 items → 补全失败
+        return FakeResponse('{"items":[]}')
+
+    with mock.patch(
+        "app.coding.llm_analyzer.requests.post", side_effect=fake_post
+    ):
+        results = analyzer._request_narrative_batch(["a", "b"])
+    assert results == [
+        {"narrative": None, "attribution": None},
+        {"narrative": None, "attribution": None},
+    ]
+    assert any("批量请求失败" in e for e in analyzer.errors)
+    print("✓ 补全失败回退兜底并上报错误")
+
+
+def test_sentiment_missing_index_completion_recovers() -> None:
+    """情感层同样启用缺失 index 定向补全（词典兜底前先尝试恢复）。"""
+    cfg = LLMConfig(api_key="sk-test", base_url="https://api.deepseek.com", model="deepseek-chat")
+    analyzer = OpenAICompatibleAnalyzer(cfg)
+    calls = {"n": 0}
+
+    def fake_post(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse(
+                json.dumps(
+                    {
+                        "items": [
+                            {"index": 0, "sentiment": "positive", "score": 0.8,
+                             "confidence": 0.9, "keywords": []}
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        body = kwargs["json"]["messages"][1]["content"]
+        assert "缺少以下 index：1" in body, "补全请求应指明缺失的 index"
+        return FakeResponse(
+            json.dumps(
+                {
+                    "items": [
+                        {"index": 1, "sentiment": "negative", "score": -0.6,
+                         "confidence": 0.8, "keywords": []}
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    with mock.patch("app.coding.llm_analyzer.requests.post", side_effect=fake_post):
+        results = analyzer._request_batch(["a", "b"])
+    assert results[0]["sentiment"] == "positive"
+    assert results[1]["sentiment"] == "negative"
+    assert not any("批量请求失败" in e for e in analyzer.errors)
+    print("✓ 情感层缺失 index 定向补全恢复（未走词典兜底）")
+
+
 def test_subject_anchor_instruction_and_cache() -> None:
     """subject（跟本品牌口径）：system 注入锚定品牌指令、user 带 subject；
     缓存按 subject 区分（同文本不同品牌不串结果）。"""
@@ -268,14 +376,17 @@ def test_v34_rule_gating() -> None:
                                       "keywords": []}]}, ensure_ascii=False)
         return body, ""
 
-    def run(rules: str) -> str:
+    def run(v34: str, v35: str | None = None) -> str:
         a2 = OpenAICompatibleAnalyzer(cfg)
-        with mock.patch.dict("os.environ", {"SMS_V34_RULES": rules}, clear=False), \
+        env = {"SMS_V34_RULES": v34}
+        if v35 is not None:
+            env["SMS_V35_RULES"] = v35
+        with mock.patch.dict("os.environ", env, clear=False), \
              mock.patch.object(a2, "_post_chat", side_effect=fake_post):
             a2.analyze_batch(["测试文本"])
         return captured["system"]
 
-    sys_off = run("")
+    sys_off = run("", "")
     assert "报道/资讯体（v3.4）" not in sys_off
     assert "行动信号与平淡情绪（v3.4）" not in sys_off
     assert "锚定品牌口径" not in sys_off  # 无 subject
@@ -287,7 +398,14 @@ def test_v34_rule_gating() -> None:
     assert "报道/资讯体（v3.4）" not in sys_all  # v11 消融后默认关闭
     assert "行动信号与平淡情绪（v3.4）" in sys_all
     assert "subject 口径强化（v3.4）" in sys_all
-    print("✓ v3.4 规则开关（SMS_V34_RULES 消融） 通过")
+    sys_v35 = run(la._V34_RULES_DEFAULT, la._V35_RULES_DEFAULT)
+    assert la._V35_RULES_DEFAULT == "15,16,17"
+    assert "问句二分（v3.5）" in sys_v35
+    assert "报道细分（v3.5）" in sys_v35
+    assert "功能/能力陈述的评价色彩（v3.5）" in sys_v35
+    sys_v35_off = run(la._V34_RULES_DEFAULT, "")
+    assert "问句二分（v3.5）" not in sys_v35_off
+    print("✓ v3.4/v3.5 规则开关（SMS_V34_RULES / SMS_V35_RULES 消融） 通过")
 
 
 if __name__ == "__main__":
@@ -302,6 +420,9 @@ if __name__ == "__main__":
     test_narrative_sanitizes_invalid_values()
     test_truncation_split_retry()
     test_small_batch_fallback_on_truncation()
+    test_missing_index_completion_recovers()
+    test_missing_index_completion_fails_falls_back()
+    test_sentiment_missing_index_completion_recovers()
     test_subject_anchor_instruction_and_cache()
     test_v34_rule_gating()
     print("LLM 分析器测试全部通过 ✅")

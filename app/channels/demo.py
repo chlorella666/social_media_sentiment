@@ -77,7 +77,9 @@ class DemoChannel(ChannelAdapter):
         plan: AnalysisPlan,
         on_progress: ProgressCallback | None = None,
         cancel_event: Event | None = None,
+        skip_urls: set[str] | None = None,
     ) -> ChannelResult:
+        del skip_urls  # 演示数据确定性生成，无重复抓取问题
         random.seed(42)
         posts: list[Post] = []
         start = plan.date_start or datetime.now().date() - timedelta(days=30)

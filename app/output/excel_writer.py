@@ -10,6 +10,7 @@ import pandas as pd
 
 from app.core.models import ReportBundle
 from app.core.names import dimension_cn
+from app.coding.coder import display_confidence, display_confidence_tier
 from app.domains.loader import load_domain
 from app.output.html_report import keyword_rows, query_rows
 
@@ -164,7 +165,7 @@ def _simple_rows(bundle: ReportBundle) -> list[dict]:
                 "日期": it.pub_date,
                 "大家怎么说": sentiment,
                 "判定依据": reason,
-                "可信度": "高" if it.confidence >= 0.8 else "中" if it.confidence >= 0.5 else "低",
+                "可信度": display_confidence_tier(it.confidence, it.method),
                 "提到什么": "、".join(it.keywords),
                 "维度": "、".join(dim_names.get(d, d) for d in it.dimensions),
                 "维度情感": "、".join(
@@ -187,8 +188,10 @@ def _coded_rows(bundle: ReportBundle) -> list[dict]:
         except FileNotFoundError:
             pass
 
-    def _note(it) -> str:
-        notes = []
+def _note(it) -> str:
+    notes = []
+    if it.need_review:
+        notes.append(f"需复核：{it.need_review_reason}")
         if not it.dimensions:
             notes.append("维度：未命中领域词表")
         if not bundle.plan.narrative_enabled:
@@ -208,9 +211,9 @@ def _coded_rows(bundle: ReportBundle) -> list[dict]:
             "发布日期": it.pub_date,
             "情感": it.sentiment.value,
             "情感评分": it.sentiment_score,
-            "置信度": it.confidence,
+            "置信度": display_confidence(it.confidence, it.method),
             "强度(1-5)": it.intensity,
-            "分析方法": it.method,
+            "分析方法": "词典直判" if it.method == "lexicon" else "LLM 精分析",
             "维度": "、".join(dim_names.get(d, d) for d in it.dimensions),
             "维度情感": json.dumps(
                 {dim_names.get(d, d): v for d, v in it.dimension_sentiments.items()},
@@ -221,6 +224,7 @@ def _coded_rows(bundle: ReportBundle) -> list[dict]:
             if it.narrative
             else "",
             "归因主体": ATTRIBUTION_CN.get(it.attribution, it.attribution) if it.attribution else "",
+            "需复核": "是" if it.need_review else "",
             "说明": _note(it),
         }
         for it in bundle.coded_items

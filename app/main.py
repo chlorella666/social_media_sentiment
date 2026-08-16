@@ -41,6 +41,7 @@ from app.core.secrets import (
     save_cookie,
 )
 from app.coding.llm_analyzer import create_analyzer
+from app.coding.coder import display_confidence
 from app.domains.loader import load_domain, list_domains
 from app.core.names import platform_cn
 from app.output.html_report import (
@@ -244,6 +245,17 @@ HEALTH_LEVEL_CN = {
     "warn": "⚠️ 存疑",
     "error": "🔴 不可用",
 }
+# 广告/官方与人工复核：三选一（方案 A，2026-08-16）
+AD_REVIEW_MODES = [
+    "自动（广告/官方计入统计）",
+    "自动（按规则剔除广告/官方）",
+    "人工复核（采集后暂停，相关性+广告/官方一起审，标记的广告/官方剔除统计）",
+]
+AD_REVIEW_SHORT = {
+    AD_REVIEW_MODES[0]: "自动（广告计入统计）",
+    AD_REVIEW_MODES[1]: "自动（规则剔除广告）",
+    AD_REVIEW_MODES[2]: "人工复核（相关性+广告/官方，标记剔除）",
+}
 COMMENT_FETCH_SECONDS = 0.3  # 每条评论抓取耗时粗估（阶段 2 按实测校准）
 
 
@@ -276,11 +288,11 @@ def render_channel_diag(results: dict, query: str, info_map: dict) -> None:
             "系统状态": sys_text or "—",
         })
     st.table(rows)
-    for cid, rich in results.items():
-        if not str(cid).startswith("websearch"):
-            continue
-        probe_key = f"diag_probe_{cid}"
-        result_key = f"diag_probe_result_{cid}"
+    # 深度探针按 WebSearch 组只显示一个：三引擎探测只与网络出口有关，
+    # 与子渠道（zhihu/tieba/taptap 等）无关，避免每行一个冗余按钮。
+    if any(str(cid).startswith("websearch") for cid in results):
+        probe_key = "diag_probe_websearch"
+        result_key = "diag_probe_result_websearch"
         if st.button("深度探针（360 / bing / 夸克）", key=probe_key):
             from app.channels.websearch import probe_engines
 
@@ -331,6 +343,31 @@ def open_task_result(task_id: str) -> tuple[ReportBundle, dict] | None:
         if (out_dir / "report.html").exists() else "",
     }
     return bundle, files
+
+
+def apply_need_review_feedback(task_id: str, text_id: str, sentiment: str) -> bool:
+    """2.11：结果页「需复核样本」人工确认回填——更新 result.json 对应条目。"""
+    task = jobs.get_task(task_id)
+    if not task or not task.get("output_dir"):
+        return False
+    rp = Path(task["output_dir"]) / "result.json"
+    if not rp.exists():
+        return False
+    try:
+        data = json.loads(rp.read_text(encoding="utf-8"))
+        for it in data.get("coded_items", []):
+            if it.get("text_id") == text_id:
+                it["sentiment"] = sentiment
+                it["need_review"] = False
+                it["need_review_reason"] = ""
+                it["reviewed_by"] = "用户复核"
+                break
+        else:
+            return False
+        rp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def render_task_center() -> None:
@@ -592,8 +629,11 @@ def _review_key(prefix: str, value: str) -> str:
 
 
 def _render_review_view(task: dict, task_id: str) -> None:
-    """人工相关性筛选：二级结构（帖子→评论），帖子级联 + 单条评论剔除。"""
-    st.subheader("👀 人工相关性筛选")
+    """人工筛选 × 广告/官方复核 统一面板：同一条内容一次看完、两个判断一次勾完。
+
+    相关性（不相关=剔除）与广告/官方（默认计入、剔除仅影响情感统计）判断的是
+    同一批内容，合并到同一行避免重复阅读。"""
+    st.subheader("👀 人工筛选 × 广告/官方复核")
     path = task.get("collection_path")
     if not path or not Path(path).exists():
         st.error("筛选数据缺失，无法继续")
@@ -622,7 +662,11 @@ def _render_review_view(task: dict, task_id: str) -> None:
     ad_url_set: set[str] = st.session_state[ad_url_key]
     ad_cid_set: set[str] = st.session_state[ad_cid_key]
 
-    st.caption("LLM 判定仅为建议徽标，最终以人工为准；帖子标记不相关后其评论随帖剔除。")
+    st.caption(
+        "同一行两个判断：**不相关** = 剔除（帖子随帖评论级联）；"
+        "**广告/官方** = 默认计入，开启「剔除广告/官方内容」时仅从情感统计剔除"
+        "（🔖 规则预标为建议，人工最终决定）。"
+    )
     excluded_post_comments = sum(
         len(p.get("comments") or []) for p in posts if p["url"] in url_set
     )
@@ -634,40 +678,62 @@ def _render_review_view(task: dict, task_id: str) -> None:
     )
     st.info(
         f"已剔除 {len(url_set)} 帖（含随帖评论 {excluded_post_comments} 条）· "
-        f"手动剔除评论 {len(cid_set)} 条；筛选后剩余 {remaining_posts} 帖 / "
+        f"手动剔除评论 {len(cid_set)} 条；已标广告/官方 {len(ad_url_set)} 帖 · "
+        f"{len(ad_cid_set)} 条评论；筛选后剩余 {remaining_posts} 帖 / "
         f"{remaining_comments} 条评论"
     )
 
-    c1, c2, c3 = st.columns([2, 2, 2])
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
     platform = c1.selectbox(
         "平台", ["全部"] + sorted({p["platform"] for p in posts}),
         key=f"rv_platform_{task_id}",
     )
-    only_unreviewed = c2.checkbox("只看未筛", key=f"rv_unreviewed_{task_id}")
+    only_pending = c2.checkbox("只看未判定", key=f"rv_pending_{task_id}",
+                               help="相关性与广告/官方都尚未处理")
     only_llm = c3.checkbox("只看 LLM 建议不相关", key=f"rv_llm_{task_id}")
-    tc1, tc2 = st.columns(2)
+    only_ad_suggested = c4.checkbox("只看广告预标", key=f"rv_ad_suggested_{task_id}")
+    tc1, tc2, tc3 = st.columns(3)
     if tc1.button("全部标记不相关", key=f"rv_all_{task_id}"):
         for p in posts:
             url_set.add(p["url"])
         st.rerun()
-    if tc2.button("重置筛选", key=f"rv_reset_{task_id}"):
+    if tc2.button("全部标记广告/官方", key=f"rv_ad_all_{task_id}"):
+        for p in posts:
+            ad_url_set.add(p["url"])
+            for c in p.get("comments") or []:
+                ad_cid_set.add(c["id"])
+        st.rerun()
+    if tc3.button("重置筛选（相关+广告）", key=f"rv_reset_{task_id}"):
         st.session_state[url_key] = set()
         st.session_state[cid_key] = set()
+        st.session_state[ad_url_key] = set()
+        st.session_state[ad_cid_key] = set()
         st.rerun()
 
     filtered = posts
     if platform != "全部":
         filtered = [p for p in filtered if p["platform"] == platform]
-    if only_unreviewed:
-        filtered = [p for p in filtered if p["url"] not in url_set]
+    if only_pending:
+        filtered = [
+            p for p in filtered
+            if p["url"] not in url_set and p["url"] not in ad_url_set
+        ]
     if only_llm:
         filtered = [p for p in filtered if p.get("llm_relevant") is False]
+    if only_ad_suggested:
+        from app.coding.ad_rules import is_ad
+
+        filtered = [
+            p for p in filtered
+            if is_ad(p.get("content") or "", p.get("title") or "")
+            or any(is_ad(c.get("text") or "") for c in (p.get("comments") or []))
+        ]
 
     total_pages = max(1, (len(filtered) + REVIEW_PAGE_SIZE - 1) // REVIEW_PAGE_SIZE)
     page = min(int(st.session_state.get(page_key, 1) or 1), total_pages)
     start = (page - 1) * REVIEW_PAGE_SIZE
     for p in filtered[start : start + REVIEW_PAGE_SIZE]:
-        _render_review_post(p, url_set, cid_set, task_id)
+        _render_review_post(p, url_set, cid_set, ad_url_set, ad_cid_set, task_id)
     if total_pages > 1:
         st.caption(
             f"第 {page} / {total_pages} 页 · 共 {len(filtered)} 条（每页 {REVIEW_PAGE_SIZE} 条）"
@@ -698,145 +764,41 @@ def _render_review_view(task: dict, task_id: str) -> None:
             st.session_state.pop(k, None)
         st.rerun()
 
-    # 广告/官方内容复核（追加区，不改变相关性页结构）
-    with st.expander("📢 广告/官方内容复核（可选，规则预标为建议）", expanded=False):
-        _render_review_ad_section(
-            posts, task_id, ad_url_set, ad_cid_set, ad_url_key, ad_cid_key
-        )
-
-
-def _render_review_ad_section(
-    posts: list[dict],
-    task_id: str,
+def _render_review_post(
+    p: dict,
+    url_set: set,
+    cid_set: set,
     ad_url_set: set,
     ad_cid_set: set,
-    ad_url_key: str,
-    ad_cid_key: str,
+    task_id: str,
 ) -> None:
-    """广告/官方内容复核：规则预标为建议（🔖），人工确认/取消/补标。
-
-    标记不影响采集量/关键词效果；是否剔除由计划 exclude_ad_enabled 决定
-    （默认计入，剔除仅影响情感统计）。
-    """
+    """单条帖子：不相关 + 广告/官方 两个判断同行完成；评论同贴逐条处理。"""
     from app.coding.ad_rules import is_ad
 
-    st.caption(
-        "规则预标为建议（🔖 标记），请人工确认：广告/官方内容默认计入情感统计；"
-        "若任务开启了「剔除广告/官方内容」，被标记项将仅从情感统计中剔除。"
-    )
-    st.info(f"已标记广告/官方：{len(ad_url_set)} 帖 · {len(ad_cid_set)} 条评论")
-
-    ac1, ac2 = st.columns([2, 2])
-    platform = ac1.selectbox(
-        "平台", ["全部"] + sorted({p["platform"] for p in posts}),
-        key=f"rv_ad_platform_{task_id}",
-    )
-    only_suggested = ac2.checkbox("只看规则预标", key=f"rv_ad_suggested_{task_id}")
-    tc1, tc2 = st.columns(2)
-    if tc1.button("全部标记广告/官方", key=f"rv_ad_all_{task_id}"):
-        for p in posts:
-            ad_url_set.add(p["url"])
-            for c in p.get("comments") or []:
-                ad_cid_set.add(c["id"])
-        st.rerun()
-    if tc2.button("重置标记", key=f"rv_ad_reset_{task_id}"):
-        st.session_state[ad_url_key] = set()
-        st.session_state[ad_cid_key] = set()
-        st.rerun()
-
-    filtered = posts
-    if platform != "全部":
-        filtered = [p for p in filtered if p["platform"] == platform]
-    if only_suggested:
-        filtered = [
-            p for p in filtered
-            if p["url"] in ad_url_set
-            or is_ad(p.get("content") or "", p.get("title") or "")
-            or any(is_ad(c.get("text") or "") for c in (p.get("comments") or []))
-        ]
-
-    for p in filtered[:50]:
-        url = p["url"]
-        marked = url in ad_url_set
-        title = (p.get("title") or p.get("content") or "（无标题）")[:60]
-        meta = (
-            f"{platform_cn(p['platform'])} · {p.get('timestamp') or '时间未知'} · "
-            f"点赞 {p.get('likes', 0)}"
-        )
-        suggested = is_ad(p.get("content") or "", p.get("title") or "")
-        c1, c2 = st.columns([4, 1])
-        with c1:
-            st.markdown(f"{'📢 ' if marked else ''}**{title}**")
-            st.caption(meta)
-            if suggested:
-                st.caption(f"🔖 规则预标：{suggested}")
-        flag = c2.checkbox("广告/官方", value=marked, key=_review_key("rad", url))
-        if flag != marked:
-            (ad_url_set.add if flag else ad_url_set.discard)(url)
-            st.rerun()
-        with st.expander("查看帖子与评论", expanded=False):
-            st.markdown(p.get("content") or p.get("title") or "（无正文）")
-            for c in p.get("comments") or []:
-                cm = c["id"] in ad_cid_set
-                csug = is_ad(c.get("text") or "")
-                cc1, cc2 = st.columns([4, 1])
-                cc1.caption(
-                    f"{c.get('author') or '匿名'}：{c.get('text')}"
-                    + (f"　🔖 {csug}" if csug else "")
-                )
-                rm = cc2.checkbox("广告/官方", value=cm, key=_review_key("radc", c["id"]))
-                if rm != cm:
-                    (ad_cid_set.add if rm else ad_cid_set.discard)(c["id"])
-                    st.rerun()
-
-    if len(filtered) > 50:
-        st.caption(f"仅展示前 50 条，共 {len(filtered)} 条（建议按平台/只看规则预标筛选）")
-
-    st.divider()
-    b1, b2 = st.columns(2)
-    if b1.button("✔ 保存广告/官方标记", type="primary", key=f"review_ad_submit_{task_id}"):
-        from app.core import jobs as _jobs
-
-        url_key = f"review_urls_{task_id}"
-        cid_key = f"review_cids_{task_id}"
-        if _jobs.save_review(
-            task_id,
-            sorted(st.session_state.get(url_key, set())),
-            sorted(st.session_state.get(cid_key, set())),
-            ad_urls=sorted(ad_url_set),
-            ad_comment_ids=sorted(ad_cid_set),
-        ):
-            for k in (url_key, cid_key, ad_url_key, ad_cid_key, f"review_page_{task_id}"):
-                st.session_state.pop(k, None)
-            st.rerun()
-        else:
-            st.error("任务状态已变化，无法保存标记")
-    if b2.button("✋ 取消任务", key=f"review_ad_cancel_{task_id}"):
-        jobs.request_cancel(task_id)
-        st.rerun()
-
-
-def _render_review_post(p: dict, url_set: set, cid_set: set, task_id: str) -> None:
-    """单条帖子：相关/不相关切换 + 展开评论逐条剔除。"""
     url = p["url"]
     excluded = url in url_set
+    ad_marked = url in ad_url_set
     title = (p.get("title") or p.get("content") or "（无标题）")[:60]
     meta = (
         f"{platform_cn(p['platform'])} · {p.get('timestamp') or '时间未知'} · "
         f"点赞 {p.get('likes', 0)} · 关键词 {p.get('keyword') or '-'}"
     )
-    c1, c2 = st.columns([4, 1])
+    suggested = is_ad(p.get("content") or "", p.get("title") or "")
+    c1, c2, c3 = st.columns([4, 1, 1])
     with c1:
-        st.markdown(f"{'🚫 ' if excluded else ''}**{title}**")
+        st.markdown(f"{'🚫 ' if excluded else ''}{'📢 ' if ad_marked else ''}**{title}**")
         st.caption(meta)
         if p.get("llm_relevant") is False:
             st.caption("🔖 LLM 建议不相关（人工最终决定）")
+        if suggested:
+            st.caption(f"🔖 广告规则预标：{suggested}")
     mark = c2.checkbox("不相关", value=excluded, key=_review_key("rv", url))
     if mark != excluded:
-        if mark:
-            url_set.add(url)
-        else:
-            url_set.discard(url)
+        (url_set.add if mark else url_set.discard)(url)
+        st.rerun()
+    aflag = c3.checkbox("广告/官方", value=ad_marked, key=_review_key("rad", url))
+    if aflag != ad_marked:
+        (ad_url_set.add if aflag else ad_url_set.discard)(url)
         st.rerun()
     with st.expander("查看帖子与评论", expanded=False):
         st.markdown(p.get("content") or p.get("title") or "（无正文）")
@@ -847,14 +809,20 @@ def _render_review_post(p: dict, url_set: set, cid_set: set, task_id: str) -> No
             st.markdown("**评论**")
             for c in comments:
                 marked = c["id"] in cid_set
-                cc1, cc2 = st.columns([4, 1])
-                cc1.caption(f"{c.get('author') or '匿名'}：{c.get('text')}")
+                cm = c["id"] in ad_cid_set
+                csug = is_ad(c.get("text") or "")
+                cc1, cc2, cc3 = st.columns([4, 1, 1])
+                cc1.caption(
+                    f"{c.get('author') or '匿名'}：{c.get('text')}"
+                    + (f"　🔖 {csug}" if csug else "")
+                )
                 rm = cc2.checkbox("剔除", value=marked, key=_review_key("rc", c["id"]))
                 if rm != marked:
-                    if rm:
-                        cid_set.add(c["id"])
-                    else:
-                        cid_set.discard(c["id"])
+                    (cid_set.add if rm else cid_set.discard)(c["id"])
+                    st.rerun()
+                rm2 = cc3.checkbox("广告/官方", value=cm, key=_review_key("radc", c["id"]))
+                if rm2 != cm:
+                    (ad_cid_set.add if rm2 else ad_cid_set.discard)(c["id"])
                     st.rerun()
         else:
             st.caption("（该帖无评论）")
@@ -1010,15 +978,6 @@ with st.sidebar:
             "⚠️ LLM 相关性复核会增加大模型调用量与费用（按文本数计费），"
             "分析耗时也会变长，请确认可接受后再开启。"
         )
-    st.session_state.exclude_ad_opt = st.toggle(
-        "剔除广告/官方内容（默认计入）",
-        value=st.session_state.get("exclude_ad_opt", False),
-        help=(
-            "广告也是消费者可见的市场信号：默认计入（按 neutral 参与统计，报告注明占比）；"
-            "开启后仅从情感统计中剔除（采集量/关键词效果保留），报告会给出剔除说明。"
-            "建议配合「人工筛选相关性」开启：审核界面可复核广告/官方标记。"
-        ),
-    )
     st.caption(
         "提示：环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 仅用于"
         "开发/评测脚本，应用内 Key 只存本机 DPAPI。"
@@ -1414,14 +1373,25 @@ elif stage == 3:
             for t in re.split(r"[,，、\s]+", st.session_state.get("exclude_words", ""))
             if t.strip()
         ]
-        st.session_state.review_enabled_opt = st.toggle(
-            "人工筛选相关性（采集后暂停）",
-            value=st.session_state.get("review_enabled_opt", False),
-            key="review_enabled",
+        # 广告/官方与人工复核（方案 A：单三选控件取代两个开关，2026-08-16）
+        _review_on = bool(st.session_state.get("review_enabled_opt", False))
+        _exclude_on = bool(st.session_state.get("exclude_ad_opt", False))
+        _mode_default = 3 if _review_on else (2 if _exclude_on else 1)
+        _mode = st.radio(
+            "广告/官方与人工复核",
+            AD_REVIEW_MODES,
+            index=_mode_default - 1,
+            key="ad_review_mode",
             help=(
-                "采集并清洗后暂停任务，进入人工筛选：剔除与品牌相关性不高的帖子和评论，"
-                "再继续情感分析。默认关闭。"
+                "广告/官方默认计入（消费者可见的市场信号）；规则剔除仅为建议；"
+                "人工复核时标记的广告/官方将从情感统计剔除（不标记的照常计入）。"
             ),
+        )
+        st.session_state.review_enabled_opt = _mode.startswith("人工复核")
+        st.session_state.exclude_ad_opt = _mode != AD_REVIEW_MODES[0]
+        st.caption(
+            "「人工复核」= 采集并清洗后暂停，进入审核页把相关性剔除与广告/官方标记一次做完，"
+            "再继续情感分析；标记的广告/官方仅从情感统计剔除（采集量/关键词效果保留）。"
         )
         st.divider()
         st.markdown("**每关键词采集条数上限（按渠道）**")
@@ -1627,8 +1597,9 @@ elif stage == 4:
             else []
         ),
         ("LLM 相关性复核", "开（费用与耗时增加）" if relevance_check_enabled else "关"),
-        ("广告/官方内容", "计入（默认）" if not st.session_state.get("exclude_ad_opt", False)
-         else "剔除（仅情感统计）"),
+        ("广告/官方与人工复核", AD_REVIEW_SHORT.get(
+            st.session_state.get("ad_review_mode", ""),
+            AD_REVIEW_SHORT[AD_REVIEW_MODES[0]])),
         ("词云排除词", "、".join(st.session_state.get("exclude_words_opt", [])) or "未配置"),
         ("预计 LLM 费用", f"约 ¥{cost_est['estimated_cost']}（预估）"),
         (
@@ -1776,6 +1747,17 @@ elif stage == 5:
             if st_data.get("detail"):
                 text += f"：{st_data['detail']}"
             st.caption(text)
+            if sid == "collect":
+                channels = (snapshot.get("channels") or {}) if isinstance(snapshot, dict) else {}
+                if channels:
+                    for cname, cd in channels.items():
+                        cdetail = (cd or {}).get("detail") or ""
+                        try:
+                            cfrac = float((cd or {}).get("frac") or 0)
+                        except (TypeError, ValueError):
+                            cfrac = 0.0
+                        suffix = f"（{cfrac * 100:.0f}%）" if cfrac > 0 else ""
+                        st.caption(f"　　{cname}：{cdetail}{suffix}")
         if status in jobs.ACTIVE_STATUSES and not task.get("cancel_requested"):
             if st.button("✋ 取消任务", key="stage5_cancel"):
                 jobs.request_cancel(task_id)
@@ -1884,6 +1866,86 @@ elif stage == 6:
                 f"输出 {bundle.llm_usage['completion_tokens']} token，"
                 f"约 ¥{bundle.llm_usage['estimated_cost']}（以 DeepSeek 官方计费为准）"
             )
+
+    # 2.11：需复核样本（词典直判/低置信/反讽/黑话/问句/短句等难例）人工确认闭环
+    nr_items = [it for it in bundle.coded_items if it.need_review]
+    if nr_items:
+        task_id = st.session_state.get("task_id")
+        with st.expander(
+            f"🔍 需复核样本（{len(nr_items)} 条：词典直判/低置信/反讽/黑话/问句/短句等难例）",
+            expanded=len(nr_items) <= 20,
+        ):
+            st.caption(
+                "人工确认后回填情感并标记已复核；结果写回 result.json，"
+                "Excel 明细含「需复核」标记、HTML 报告注明复核数。"
+            )
+            csv_rows = [{
+                "text_id": it.text_id, "原文": it.text, "平台": it.platform,
+                "情感": it.sentiment.value,
+                "置信度": round(display_confidence(it.confidence, it.method), 3),
+                "需复核原因": it.need_review_reason, "已复核": it.reviewed_by,
+            } for it in nr_items]
+            csv_text = "\ufeff" + "\n".join(
+                [",".join(csv_rows[0].keys())]
+                + [",".join(str(r[k]).replace(",", "，").replace("\n", " ") for k in r)
+                   for r in csv_rows]
+            )
+            st.download_button(
+                "导出需复核清单 CSV", data=csv_text.encode("utf-8"),
+                file_name=f"need_review_{task_id or 'task'}.csv", mime="text/csv",
+                key=f"nr_export_{task_id}",
+            )
+            show_all = bool(st.session_state.get(f"nr_all_{task_id}"))
+            if st.button(
+                "显示：全部" if not show_all else "显示：仅未确认",
+                key=f"nr_toggle_{task_id}",
+            ):
+                st.session_state[f"nr_all_{task_id}"] = not show_all
+                st.rerun()
+            shown = nr_items if show_all == "全部" else [it for it in nr_items if not it.reviewed_by]
+            if len(shown) > 50:
+                st.caption(f"仅展示前 50 条（共 {len(shown)}），其余请用「导出需复核清单 CSV」处理。")
+                shown = shown[:50]
+            for i, it in enumerate(shown):
+                c1, c2, c3, c4, c5 = st.columns([0.3, 3, 1.3, 1.4, 1.2])
+                c1.caption(str(i + 1))
+                c2.write(f"{it.text}")
+                c3.write(
+                    f"{it.sentiment.value}"
+                    f"（conf {display_confidence(it.confidence, it.method):.2f}）"
+                )
+                c4.write(it.need_review_reason)
+                if it.reviewed_by:
+                    c5.caption(f"✅ {it.reviewed_by}")
+                else:
+                    b1, b2, b3 = c5.columns(3)
+                    if b1.button("正", key=f"nr_pos_{task_id}_{i}"):
+                        if task_id and apply_need_review_feedback(task_id, it.text_id, "positive"):
+                            res = open_task_result(task_id)
+                            if res:
+                                st.session_state.bundle, st.session_state.output_files = res
+                            st.success(f"已回填 {it.text_id} → positive")
+                            st.rerun()
+                        else:
+                            st.error("回填失败：找不到任务结果文件")
+                    if b2.button("负", key=f"nr_neg_{task_id}_{i}"):
+                        if task_id and apply_need_review_feedback(task_id, it.text_id, "negative"):
+                            res = open_task_result(task_id)
+                            if res:
+                                st.session_state.bundle, st.session_state.output_files = res
+                            st.success(f"已回填 {it.text_id} → negative")
+                            st.rerun()
+                        else:
+                            st.error("回填失败：找不到任务结果文件")
+                    if b3.button("中", key=f"nr_neu_{task_id}_{i}"):
+                        if task_id and apply_need_review_feedback(task_id, it.text_id, "neutral"):
+                            res = open_task_result(task_id)
+                            if res:
+                                st.session_state.bundle, st.session_state.output_files = res
+                            st.success(f"已回填 {it.text_id} → neutral")
+                            st.rerun()
+                        else:
+                            st.error("回填失败：找不到任务结果文件")
 
     col1, col2 = st.columns(2)
     with col1:

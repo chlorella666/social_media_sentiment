@@ -44,6 +44,12 @@ from app.domains.loader import load_domain
 
 ProgressCallback = Callable[[TaskStatus, str, float, dict], None]
 
+# 补采收敛与收益门控（2026-08-16 调整，降无谓请求与风控暴露）
+TOPUP_MAX_ROUNDS = 2          # 补采轮数上限（原 3）
+TOPUP_LIMIT_MULTIPLIER = 2    # 补采数量上限乘数（原 4）
+TOPUP_MIN_YIELD = 3           # 每轮补采最少净新增保留条数
+TOPUP_YIELD_RATIO = 0.2       # 净新增阈值占比（对 target）
+
 SENTIMENT_NAMES = {
     "positive": "正面",
     "negative": "负面",
@@ -65,6 +71,45 @@ def _quality_gate_warnings(total: int) -> list[str]:
     elif total < 100:
         warnings.append("样本量一般（<100 条），建议扩大关键词或时间段")
     return warnings
+
+
+def _reconcile_channel_posts(
+    channel_results: list[ChannelResult],
+    plan: AnalysisPlan,
+    warnings: list[str],
+) -> list[Post]:
+    """补采一致性收尾（2026-08-16 修复）。
+
+    补采会把 ch.posts 直接替换成原始未清洗帖子，而返回给统计/编码的 posts
+    是上一轮清洗结果——最后一轮补采帖若被再次丢弃，会出现"报告 0 帖但漏斗有数"
+    的矛盾（安克任务实证）。本函数做最终一次清洗并统一写回，保证返回 posts
+    与 channel_results 同源：补采帖经最终清洗后真正相关的才进入报告。
+    """
+    pooled = [p for ch in channel_results for p in ch.posts]
+    kept, dropped = clean_posts(pooled, subject=plan.subject, keywords=plan.keywords)
+    kept_urls = {p.url for p in kept}
+    by_channel = {ch.channel_id: ch for ch in channel_results}
+    for ch in channel_results:
+        ch.posts = [p for p in ch.posts if p.url in kept_urls]
+    if dropped:
+        existing = {
+            d["url"]
+            for ch in channel_results
+            for d in (ch.dropped or [])
+        }
+        extra = [d for d in dropped if d["url"] not in existing]
+        if extra:
+            for d in extra:
+                d["reason"] = f"补采一致性清洗:{d['reason']}"
+                target = by_channel.get(d["platform"])
+                if target is None and channel_results:
+                    target = channel_results[0]
+                if target is not None:
+                    target.dropped = list(target.dropped or []) + [d]
+            warnings.append(
+                f"补采一致性清洗：{len(extra)} 条补采帖经最终清洗判定丢弃"
+            )
+    return kept
 
 
 def _subject_stopwords(plan: AnalysisPlan) -> set[str]:
@@ -466,7 +511,10 @@ class TaskRunner:
         self.cancel_event.set()
 
     def _progress(self, status: TaskStatus, message: str, phase_progress: float) -> None:
-        self.tracker.overall = min(max(phase_progress, 0.0), 1.0)
+        phase_progress = min(max(phase_progress, 0.0), 1.0)
+        # 单调兜底：进度条永不倒退（即使未来某段区间算错，也只卡住不乱跳）
+        phase_progress = max(phase_progress, self.tracker.overall)
+        self.tracker.overall = phase_progress
         self.tracker.message = message
         if self.on_progress:
             self.on_progress(status, message, phase_progress, self.tracker.snapshot())
@@ -523,17 +571,23 @@ class TaskRunner:
 
             def _thread_progress(msg, p, c=channel):
                 with lock:
-                    self.tracker.step(
-                        "collect", state="running", detail=f"{c.name}：{msg}"
-                    )
                     frac = min(max(float(p or 0.0), 0.0), 1.0)
                     channel_fracs[idx] = max(channel_fracs[idx], frac)
+                    done = sum(1 for f in channel_fracs if f >= 1.0)
+                    mean_frac = sum(channel_fracs) / max(len(channel_configs), 1)
                     overall = collect_start + collect_span * (
-                        sum(channel_fracs) / max(len(channel_configs), 1)
+                        mean_frac
+                    )
+                    self.tracker.channel_state(c.name, msg, frac)
+                    self.tracker.step(
+                        "collect",
+                        state="running",
+                        detail=f"采集中：{done}/{len(channel_configs)} 渠道完成",
+                        frac=mean_frac,
                     )
                     self._progress(
                         TaskStatus.collecting,
-                        f"{c.name}：{msg}",
+                        f"采集中：{done}/{len(channel_configs)} 渠道完成",
                         overall,
                     )
 
@@ -556,7 +610,10 @@ class TaskRunner:
                     result = degraded_result(channel.id, f"采集异常: {exc}")
                 results[i] = result
                 completed += 1
-                channel_fracs[i] = 1.0
+                with lock:
+                    channel_fracs[i] = 1.0
+                    mean_frac = sum(channel_fracs) / max(len(channel_configs), 1)
+                    overall = collect_start + collect_span * mean_frac
                 if result.ok:
                     posts.extend(result.posts)
                 else:
@@ -572,9 +629,8 @@ class TaskRunner:
                     warnings.append("关键提示：请更新认证信息后重试该渠道")
                 self._progress(
                     TaskStatus.collecting,
-                    f"渠道 {completed}/{len(channel_configs)} 处理完成",
-                    collect_start
-                    + collect_span * completed / max(len(channel_configs), 1),
+                    f"采集中：{completed}/{len(channel_configs)} 渠道完成",
+                    overall,
                 )
         channel_results = [r for r in results if r is not None]
         self.tracker.step(
@@ -664,11 +720,12 @@ class TaskRunner:
                 )
                 ch.dropped = merged_dropped
 
-            # 丢弃率 >15% 且保留不足 → 补采（最多 3 轮）
+            # 丢弃率 >15% 且保留不足 → 补采（最多 TOPUP_MAX_ROUNDS 轮）
             need_topup = False
             no_progress = False
+            low_yield_stop = False
             for ch in channel_results:
-                if not ch.ok:
+                if not ch.ok or getattr(ch, "risk", False):
                     continue
                 collected = len(ch.posts) + len(ch.dropped)
                 if collected <= 0:
@@ -685,25 +742,78 @@ class TaskRunner:
                     and len(ch.posts) < target
                 ):
                     need_topup = True
-                    new_limit = min(math.ceil(target / 0.85), limit * 4)
+                    new_limit = min(
+                        math.ceil(target / 0.85), limit * TOPUP_LIMIT_MULTIPLIER
+                    )
                     prev_posts = len(ch.posts)
                     new_plan = plan.model_copy(deep=True)
                     for cfg in new_plan.channels:
                         if cfg.channel_id == ch.channel_id:
                             cfg.params["limit"] = new_limit
                     channel = get_channel(ch.channel_id)
+                    # D：冷却/暂停/超配额渠道跳过补采；小红书高风险先提示
+                    if ch.channel_id == "xiaohongshu":
+                        warnings.append(
+                            "小红书触发补采：将追加搜索请求（高风险渠道），"
+                            "如遇风控将自动停止"
+                        )
+                    try:
+                        from app.core import jobs
+
+                        extra_ok, extra_reason = jobs.check_channel_allowed(
+                            ch.channel_id, 0
+                        )
+                    except Exception:
+                        extra_ok, extra_reason = True, ""
+                    if not extra_ok:
+                        warnings.append(f"{channel.name} 跳过补采：{extra_reason}")
+                        break
+                    # A：跳过本任务已采集内容，避免同关键词重复拉取
+                    if getattr(channel, "skip_key", "url") == "id":
+                        skip_keys = {p.id for p in ch.posts if p.id}
+                    else:
+                        skip_keys = {p.url for p in ch.posts if p.url} | {
+                            d.get("url", "") for d in (ch.dropped or []) if d.get("url")
+                        }
                     try:
                         result = channel.collect(
                             new_plan,
-                            on_progress=lambda msg, p, c=channel: self._collect_progress(
-                                c.name, msg, p, 0.0, 0.1
+                            on_progress=lambda msg, p, c=channel, r=round_i: (
+                                self._topup_progress(c.name, msg, p, r)
                             ),
                             cancel_event=self.cancel_event,
+                            skip_urls=skip_keys,
                         )
                     except Exception as exc:
                         result = degraded_result(channel.id, f"补采异常: {exc}")
-                    ch.posts = list(result.posts)
-                    ch.dropped = list(result.dropped or [])
+                    # B：每轮补采立即清洗，按净新增保留数判定收益
+                    cleaned_topup, topup_dropped = clean_posts(
+                        result.posts, subject=plan.subject, keywords=plan.keywords
+                    )
+                    existing_keys = {p.url for p in ch.posts if p.url} | {
+                        d.get("url", "") for d in (ch.dropped or []) if d.get("url")
+                    }
+                    net_new = [p for p in cleaned_topup if p.url not in existing_keys]
+                    yield_threshold = max(
+                        TOPUP_MIN_YIELD, math.ceil(target * TOPUP_YIELD_RATIO)
+                    )
+                    if len(net_new) < yield_threshold:
+                        low_yield_stop = True
+                        no_progress = True
+                        warnings.append(
+                            f"{channel.name} 补采收益低（净新增 {len(net_new)} 条 "
+                            f"< {yield_threshold}），已停止补采"
+                        )
+                        ch.dropped = list(ch.dropped or []) + topup_dropped
+                        self.tracker.step(
+                            "clean",
+                            detail=f"{channel.name} 补采收益低，已停止",
+                            frac=0.5 + 0.5 * (round_i + 1) / TOPUP_MAX_ROUNDS,
+                        )
+                        break
+                    # 合并而非替换：skip 后补采结果不含第一轮已保留帖
+                    ch.posts = list(ch.posts) + list(result.posts)
+                    ch.dropped = list(ch.dropped or []) + list(result.dropped or [])
                     ch.ok = result.ok
                     if len(ch.posts) <= prev_posts:
                         no_progress = True
@@ -713,21 +823,26 @@ class TaskRunner:
                             f"{channel.name} 丢弃率 {drop_rate:.0%} >15%，"
                             f"补采至 {new_limit}/关键词（第 {round_i + 1} 轮）"
                         ),
-                        frac=0.3,
+                        frac=0.5 + 0.5 * (round_i + 1) / TOPUP_MAX_ROUNDS,
                     )
                     break
             if no_progress:
-                warnings.append(
-                    "部分渠道补采未新增有效内容，已停止补采（数据源可获取量有限）"
-                )
+                if not low_yield_stop:
+                    warnings.append(
+                        "部分渠道补采未新增有效内容，已停止补采（数据源可获取量有限）"
+                    )
                 break
             if not need_topup:
                 break
         else:
             warnings.append(
-                "部分渠道丢弃率补采 3 轮后仍高于 15%，已在丢弃明细标注原因；"
+                f"部分渠道丢弃率补采 {TOPUP_MAX_ROUNDS} 轮后仍高于 15%，"
+                "已在丢弃明细标注原因；"
                 "该渠道结果可能不完整，其余渠道不受影响"
             )
+        # 补采一致性收尾：最终清洗并统一写回，保证 posts 与 channel_results 同源
+        # （修复补采原始帖残留导致"报告 0 帖但漏斗有数"）
+        posts = _reconcile_channel_posts(channel_results, plan, warnings)
         self.tracker.step(
             "collect", state="done", detail=f"完成 {len(plan.channels)} 个渠道", frac=1.0
         )
@@ -852,19 +967,26 @@ class TaskRunner:
             warnings=warnings,
         )
 
-    def _collect_progress(
-        self, channel_name: str, msg: str, p: float, start: float, span: float
+    def _topup_progress(
+        self, channel_name: str, msg: str, p: float, round_i: int
     ) -> None:
+        """补采进度映射到清洗段后半（55%~60%），多轮单调推进，不回到采集段。"""
+        clean_start, clean_end = self._phase_weights["cleaning"]
+        clean_span = clean_end - clean_start
+        frac = min(max(float(p or 0.0), 0.0), 1.0)
+        sub = 0.5 + 0.5 * (
+            min(round_i, TOPUP_MAX_ROUNDS - 1) + frac
+        ) / TOPUP_MAX_ROUNDS
         self.tracker.step(
-            "collect",
+            "clean",
             state="running",
-            detail=f"{channel_name}：{msg}",
-            frac=p,
+            detail=f"补采中（{channel_name}）：{msg}",
+            frac=sub,
         )
         self._progress(
-            TaskStatus.collecting,
-            f"[{channel_name}] {msg}",
-            start + span * p,
+            TaskStatus.cleaning,
+            f"补采中（{channel_name}）：{msg}",
+            clean_start + clean_span * sub,
         )
 
     def _coder_progress(self, message: str, frac: float, step_id: str, step_frac: float) -> None:

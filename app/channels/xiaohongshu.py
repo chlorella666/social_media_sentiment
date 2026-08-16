@@ -20,7 +20,13 @@ from datetime import datetime
 from pathlib import Path
 from threading import Event
 
-from app.channels.base import ChannelAdapter, ProgressCallback, degraded_result
+from app.channels.base import (
+    ChannelAdapter,
+    ProgressCallback,
+    degraded_result,
+    jittered_sleep,
+)
+from app.core.errors import is_ratelimit
 from app.coding.cleaner import normalize_datetime
 from app.core.models import AnalysisPlan, ChannelResult, Comment, Post
 
@@ -34,7 +40,7 @@ OPENCLI_MAIN = (
     / "src"
     / "main.js"
 )
-OPERATION_INTERVAL = 2.5  # 小红书防验证码：每次操作间隔
+OPERATION_INTERVAL = 2.5  # 小红书防验证码：每次操作间隔均值（±30% 抖动）
 OPENCLI_TIMEOUT = 180
 # 笔记详情与评论请求较慢（每次约 10~15s），设置每个关键词的上限
 MAX_NOTE_DETAILS_PER_KEYWORD = 10
@@ -187,6 +193,7 @@ class XiaohongshuChannel(ChannelAdapter):
         plan: AnalysisPlan,
         on_progress: ProgressCallback | None = None,
         cancel_event: Event | None = None,
+        skip_urls: set[str] | None = None,
     ) -> ChannelResult:
         try:
             _opencli_base()
@@ -194,7 +201,7 @@ class XiaohongshuChannel(ChannelAdapter):
             return degraded_result(self.id, str(exc))
 
         posts: list[Post] = []
-        seen_urls: set[str] = set()
+        seen_urls: set[str] = set(skip_urls or ())
         first_error = ""
         keywords = plan.keywords or [plan.subject]
         limit = plan.per_keyword_limit
@@ -210,6 +217,12 @@ class XiaohongshuChannel(ChannelAdapter):
             try:
                 items = _search_notes(keyword)
             except (subprocess.TimeoutExpired, RuntimeError) as exc:
+                if is_ratelimit(str(exc)):
+                    # 风控即停：立即终止本渠道（保留已采部分），不再请求后续关键词
+                    return ChannelResult(
+                        channel_id=self.id, ok=False, posts=posts,
+                        error=f"风控停止：{exc}", degraded=True, risk=True,
+                    )
                 first_error = first_error or f"关键词「{keyword}」搜索失败：{exc}"
                 if on_progress:
                     on_progress(
@@ -247,7 +260,7 @@ class XiaohongshuChannel(ChannelAdapter):
                 )
                 if len(keyword_posts) >= min(limit, MAX_NOTE_DETAILS_PER_KEYWORD):
                     break
-            time.sleep(OPERATION_INTERVAL)
+            jittered_sleep(OPERATION_INTERVAL, 0.3)
 
             # 详情（正文 + 互动数据）只对前 N 条拉取
             for post in keyword_posts:
@@ -256,6 +269,11 @@ class XiaohongshuChannel(ChannelAdapter):
                 try:
                     detail = _note_detail(post.url)
                 except (subprocess.TimeoutExpired, RuntimeError):
+                    if is_ratelimit(str(exc)):
+                        return ChannelResult(
+                            channel_id=self.id, ok=False, posts=posts,
+                            error=f"风控停止：{exc}", degraded=True, risk=True,
+                        )
                     continue
                 if detail.get("content"):
                     post.content = str(detail["content"])
@@ -269,7 +287,7 @@ class XiaohongshuChannel(ChannelAdapter):
                 post.comments_count = _parse_likes(detail.get("comments"))
                 if detail.get("tags"):
                     post.platform_specific["tags"] = str(detail["tags"])
-                time.sleep(OPERATION_INTERVAL)
+                jittered_sleep(OPERATION_INTERVAL, 0.3)
 
             # 评论只对热度最高的 N 条拉取（按点赞降序，优先最热讨论）
             if plan.comments_enabled:
@@ -286,8 +304,13 @@ class XiaohongshuChannel(ChannelAdapter):
                             post.url, plan.comments_per_post
                         )
                     except (subprocess.TimeoutExpired, RuntimeError):
+                        if is_ratelimit(str(exc)):
+                            return ChannelResult(
+                                channel_id=self.id, ok=False, posts=posts,
+                                error=f"风控停止：{exc}", degraded=True, risk=True,
+                            )
                         pass
-                    time.sleep(OPERATION_INTERVAL)
+                    jittered_sleep(OPERATION_INTERVAL, 0.3)
 
             posts.extend(keyword_posts)
             if on_progress:

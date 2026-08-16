@@ -119,7 +119,11 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
     from app.coding import lexicon_v2 as lexicon
     from app.coding.cleaner import clean_text, desensitize_text
     from app.coding.dimensions import match_dimension_sentiments
-    from app.coding.llm_analyzer import CONFIDENCE_THRESHOLD, SUBJECT_DOMAINS
+    from app.coding.llm_analyzer import (
+        ALWAYS_LLM_DOMAINS,
+        CONFIDENCE_THRESHOLD,
+        SUBJECT_DOMAINS,
+    )
 
     schemas = {d: load_schema(d) for d in {r["domain"] for r in rows}}
     out = []
@@ -127,7 +131,8 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
     for i, r in enumerate(rows):
         text = clean_text(r["text"] or "")
         pre = lexicon.score_text(text)
-        direct = pre["confidence"] >= CONFIDENCE_THRESHOLD
+        force_llm = r["domain"] in ALWAYS_LLM_DOMAINS
+        direct = (not force_llm) and pre["confidence"] >= CONFIDENCE_THRESHOLD
         schema = schemas.get(r["domain"], {})
         # 维度情感（2.4 词典兜底口径）：gold 用维度中文名，预测同样用中文名
         dim_sents = match_dimension_sentiments(r["text"] or "", schema, use_names=True)

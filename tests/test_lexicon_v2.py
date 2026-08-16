@@ -98,6 +98,20 @@ def test_positive_miss_rows_not_direct_negative() -> None:
     print("✓ 主集正面漏检 4 条不再词典直判负面 通过")
 
 
+def test_3c_lexicon_round2() -> None:
+    """词典第二轮（3C 语体）：正面词表 + 参数/系列语体压置信送 LLM。"""
+    assert _sent("画面清晰细腻") == "positive"
+    assert _sent("续航好还省电") == "positive"
+    assert _sent("颜值高又轻薄") == "positive"
+    assert _sent("用起来跟手丝滑") == "positive"
+    # 参数/系列/配置语体：仅正面信号时压置信送 LLM（防词典直判正面）
+    for text in ("OPPO X 系列参数配置一览，很流畅",
+                 "新品发布 参数规格 型号 报价"):
+        r = lx.score_text(text)
+        assert r["confidence"] < CONFIDENCE_THRESHOLD, text
+    print("✓ 词典第二轮（3C 正面词 + 语体压置信）通过")
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_fan_blackwords_positive()
@@ -106,6 +120,7 @@ def main() -> None:
     test_context_word_yiyang()
     test_official_intro_lean_not_direct_positive()
     test_positive_miss_rows_not_direct_negative()
+    test_3c_lexicon_round2()
     print("词典 V2 单测全部通过 ✅")
 
 

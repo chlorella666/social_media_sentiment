@@ -54,6 +54,7 @@ UNIT_TESTS = [
     "test_lifecycle.py",
     "test_lexicon_v2.py",
     "test_llm_analyzer.py",
+    "test_need_review.py",
     "test_pipeline_progress.py",
     "test_quota.py",
     "test_regression_runner.py",

@@ -730,6 +730,7 @@ def build_html(bundle: ReportBundle) -> str:
         report_text=bundle.report_text,
         chart_insights=bundle.chart_insights,
         conclusion=bundle.conclusion,
+        need_review_n=sum(1 for it in bundle.coded_items if it.need_review),
         narrative_rows=narrative_rows,
         trust=trust,
         keyword_rows=keyword_rows_out,

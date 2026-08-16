@@ -18,7 +18,13 @@ from threading import Event
 
 import requests
 
-from app.channels.base import ChannelAdapter, ProgressCallback, degraded_result
+from app.channels.base import (
+    ChannelAdapter,
+    ProgressCallback,
+    degraded_result,
+    jittered_sleep,
+)
+from app.core.errors import is_ratelimit
 from app.coding.cleaner import normalize_datetime
 from app.core.models import AnalysisPlan, ChannelResult, Comment, Post
 
@@ -31,7 +37,7 @@ MOBILE_UA = (
     "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
 )
 REQUEST_TIMEOUT = 20
-REQUEST_INTERVAL = 0.5
+REQUEST_INTERVAL = 0.5  # 秒，节流均值（±40% 抖动防固定节奏）
 # 每关键词条数上限封顶：账号级风控最严，单关键词约 500 条封顶；加量建议加关键词
 MAX_LIMIT = 30
 # 评论请求节流：每个关键词只给前 N 个帖子拉评论
@@ -202,6 +208,7 @@ class WeiboChannel(ChannelAdapter):
     id = "weibo"
     name = "微博"
     auth_required = True
+    skip_key = "id"  # 帖子身份键 = bid
     applicability = "品牌舆情主战场，全品类适用（需 Cookie）"
     description = "微博搜索 + 正文 + 评论采集（m.weibo.cn API）"
 
@@ -210,6 +217,7 @@ class WeiboChannel(ChannelAdapter):
         plan: AnalysisPlan,
         on_progress: ProgressCallback | None = None,
         cancel_event: Event | None = None,
+        skip_urls: set[str] | None = None,
     ) -> ChannelResult:
         cookie = None
         for channel in plan.channels:
@@ -222,7 +230,7 @@ class WeiboChannel(ChannelAdapter):
         session = requests.Session()
         headers = _build_headers(cookie)
         posts: list[Post] = []
-        seen_ids: set[str] = set()
+        seen_ids: set[str] = set(skip_urls or ())
         first_error = ""
         keywords = plan.keywords or [plan.subject]
         limit = plan.per_keyword_limit
@@ -262,6 +270,12 @@ class WeiboChannel(ChannelAdapter):
                             raise RuntimeError("微博 Cookie 无效或已过期，请重新粘贴")
                         raise RuntimeError(f"微博搜索失败：{msg}")
                 except (requests.RequestException, RuntimeError) as exc:
+                    if is_ratelimit(str(exc)):
+                        # 风控即停：立即终止本渠道（保留已采部分），不再请求后续关键词/页
+                        return ChannelResult(
+                            channel_id=self.id, ok=False, posts=posts,
+                            error=f"风控停止：{exc}", degraded=True, risk=True,
+                        )
                     first_error = first_error or f"关键词「{keyword}」失败：{exc}"
                     break
                 cards = (data.get("data") or {}).get("cards") or []
@@ -287,7 +301,7 @@ class WeiboChannel(ChannelAdapter):
                     keyword_posts.append(post)
                     if len(keyword_posts) >= limit:
                         break
-                time.sleep(REQUEST_INTERVAL)
+                jittered_sleep(REQUEST_INTERVAL, 0.4)
                 if len(keyword_posts) >= limit:
                     break
 
@@ -295,10 +309,17 @@ class WeiboChannel(ChannelAdapter):
                 for post in keyword_posts[:MAX_COMMENT_POSTS_PER_KEYWORD]:
                     if cancel_event and cancel_event.is_set():
                         break
-                    post.comments = _fetch_comments(
-                        session, headers, post.id, plan.comments_per_post
-                    )
-                    time.sleep(REQUEST_INTERVAL)
+                    try:
+                        post.comments = _fetch_comments(
+                            session, headers, post.id, plan.comments_per_post
+                        )
+                    except (requests.RequestException, RuntimeError) as exc:
+                        if is_ratelimit(str(exc)):
+                            return ChannelResult(
+                                channel_id=self.id, ok=False, posts=posts,
+                                error=f"风控停止：{exc}", degraded=True, risk=True,
+                            )
+                    jittered_sleep(REQUEST_INTERVAL, 0.4)
 
             posts.extend(keyword_posts)
             if on_progress:

@@ -26,7 +26,12 @@ from threading import Event
 
 import requests
 
-from app.channels.base import ChannelAdapter, ProgressCallback, degraded_result
+from app.channels.base import (
+    ChannelAdapter,
+    ProgressCallback,
+    degraded_result,
+    jittered_sleep,
+)
 from app.core.keyword_effects import load_keyword_strategy
 from app.core.models import AnalysisPlan, ChannelResult, Post
 
@@ -46,7 +51,7 @@ REQUEST_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 REQUEST_TIMEOUT = 25
-REQUEST_INTERVAL = 4.5  # 节流（2026-08-13 由 1.5→2.5→4.5s 逐级降频），降低被反爬的概率
+REQUEST_INTERVAL = 4.5  # 节流均值（±25% 抖动防固定节奏；2026-08-13 由 1.5→2.5→4.5s 逐级降频）
 MAX_PAGES = 2
 MAX_RETRIES = 2
 # 单查询可获取量实测约 5~13 条；产出封顶，平衡收益与反爬风险（加量靠策略加词）
@@ -225,7 +230,7 @@ def _fetch(
             return resp.text, resp.status_code, ""
         except requests.RequestException as exc:
             last_error = str(exc)
-        time.sleep(2.0 * (attempt + 1))
+        jittered_sleep(2.0 * (attempt + 1), 0.3)
     return "", 0, last_error or "搜索请求失败"
 
 
@@ -435,6 +440,7 @@ class WebSearchChannel(ChannelAdapter):
         plan: AnalysisPlan,
         on_progress: ProgressCallback | None = None,
         cancel_event: Event | None = None,
+        skip_urls: set[str] | None = None,
     ) -> ChannelResult:
         strategy = load_keyword_strategy()
         subject = plan.subject or ""
@@ -445,7 +451,7 @@ class WebSearchChannel(ChannelAdapter):
         session.headers["User-Agent"] = random.choice(USER_AGENTS)
         posts: list[Post] = []
         dropped: list[dict] = []
-        seen_urls: set[str] = set()
+        seen_urls: set[str] = set(skip_urls or ())
         first_error = ""
         keywords = plan.keywords or [plan.subject]
         limit = plan.per_keyword_limit
@@ -554,7 +560,7 @@ class WebSearchChannel(ChannelAdapter):
                         )
                         if len(keyword_posts) >= limit:
                             break
-                    time.sleep(REQUEST_INTERVAL)
+                    jittered_sleep(REQUEST_INTERVAL, 0.25)
                     if len(keyword_posts) >= limit:
                         break
                 if keyword_posts or attempt == EMPTY_RETRY_TIMES or hard_stop:

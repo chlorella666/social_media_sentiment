@@ -89,6 +89,7 @@ def restore_stale_widget_states(at: AppTest) -> None:
         ("comments_enabled", True),
         ("comments_per_post", 20),
         ("exclude_words", ""),
+        ("ad_review_mode", "自动（广告/官方计入统计）"),
         ("websearch_eval_suffix", True),
         ("official_domains", ""),
     ):
@@ -99,7 +100,11 @@ def restore_stale_widget_states(at: AppTest) -> None:
 def wait_completed(at: AppTest, max_seconds: int = 180) -> None:
     deadline = time.time() + max_seconds
     while time.time() < deadline:
-        at.run(timeout=60)
+        restore_stale_widget_states(at)
+        try:
+            at.run(timeout=60)
+        except (KeyError, TypeError):
+            continue
         if ss(at, "stage") == 6 and "bundle" in at.session_state:
             return
         time.sleep(0.3)
@@ -174,7 +179,8 @@ def main() -> None:
     )
 
     # 阶段6：结果页
-    assert len(at.get("download_button")) == 3, "缺少即时下载按钮（Excel/HTML/JSON）"
+    # 2.11 起结果页可能多出「导出需复核清单」按钮 → 改为 ≥3
+    assert len(at.get("download_button")) >= 3, "缺少即时下载按钮（Excel/HTML/JSON）"
     assert any("Word" in b.label for b in at.button), "缺少 Word 按需生成按钮"
     assert len(at.metric) == 5
     print("✓ 阶段6（结果与下载）通过：Excel / HTML / JSON 即时下载 + Word 按需生成")
@@ -354,12 +360,39 @@ def test_review_ui_flow() -> None:
     confirm_usage_boundary(at)
     click_button_key(at, f"task_view_{tid}")
     subs = [s.value for s in at.subheader]
-    assert any("人工相关性筛选" in s for s in subs), "审核页未渲染"
+    assert any("人工筛选" in s for s in subs), "审核页未渲染"
 
     key = "rv_" + hashlib.md5(target["url"].encode("utf-8")).hexdigest()[:12]
     cb = next(c for c in at.checkbox if c.key == key)
+    # 统一面板：同一条帖子应同时有「不相关」与「广告/官方」两个判断
+    ad_key = "rad_" + hashlib.md5(target["url"].encode("utf-8")).hexdigest()[:12]
+    ad_cb = next(c for c in at.checkbox if c.key == ad_key)
+    assert ad_cb.label == "广告/官方"
     cb.set_value(True).run()
     click_button_key(at, f"review_submit_{tid}")
+
+    # 离开审核页后旧控件状态被 Streamlit 清理（AppTest 过期帧）：
+    # 预置审核页全部显式 key，防止轮询 run() 读取旧节点时 KeyError。
+    for k, v in {
+        f"rv_platform_{tid}": "全部",
+        f"rv_pending_{tid}": False,
+        f"rv_llm_{tid}": False,
+        f"rv_ad_suggested_{tid}": False,
+    }.items():
+        if k not in at.session_state:
+            at.session_state[k] = v
+    for p in snapshot["posts"]:
+        for prefix in ("rv_", "rad_"):
+            key = prefix + hashlib.md5(p["url"].encode()).hexdigest()[:12]
+            if key not in at.session_state:
+                at.session_state[key] = False
+        for c in p.get("comments") or []:
+            cid = str(c.get("id") or "")
+            if cid:
+                for prefix in ("rc_", "radc_"):
+                    key = prefix + hashlib.md5(cid.encode()).hexdigest()[:12]
+                    if key not in at.session_state:
+                        at.session_state[key] = False
 
     t2 = jobs.get_task(tid)
     assert t2["status"] in (
@@ -402,13 +435,23 @@ def test_channel_diag_panel() -> None:
         click_button(at, "下一步 →")
         assert at.session_state["stage"] == 3
         ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
-        ms.set_value(["demo", "websearch"]).run()
+        ms.set_value([
+            "demo", "websearch", "websearch_zhihu",
+            "websearch_tieba", "websearch_taptap",
+        ]).run()
+        restore_stale_widget_states(at)
+        # 方案 A：步骤④「广告/官方与人工复核」三选控件
+        mode_radio = next(r for r in at.radio if r.key == "ad_review_mode")
+        assert len(mode_radio.options) == 3, "三选控件应有 3 个档位"
+        assert mode_radio.options[0] == "自动（广告/官方计入统计）"
         click_button(at, "开始诊断")
         assert not at.exception, f"诊断面板异常: {at.exception}"
         tables = [str(t.value) for t in at.table]
         assert any("演示" in t and "可用" in t for t in tables)
         assert any("WebSearch" in t and "可用" in t for t in tables)
-        # 深度探针：WebSearch 行内按钮 → 三引擎表
+        # 深度探针：WebSearch 组只显示 1 个按钮（多子渠道不重复）→ 三引擎表
+        probe_btns = [b for b in at.button if "深度探针" in b.label]
+        assert len(probe_btns) == 1, f"深度探针按钮应只有 1 个，实际 {len(probe_btns)}"
         click_button_key(at, "diag_probe_websearch")
         assert not at.exception, f"深度探针异常: {at.exception}"
         tables2 = [str(t.value) for t in at.table]
@@ -430,12 +473,12 @@ def test_ad_wizard_smoke() -> None:
     assert at.session_state["stage"] == 3
     ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
     ms.set_value(["demo"]).run()
-    toggles = [t.label for t in at.toggle]
-    assert any("剔除广告/官方内容" in t for t in toggles), f"缺少广告开关: {toggles}"
+    mode_radio = next(r for r in at.radio if r.key == "ad_review_mode")
+    assert len(mode_radio.options) == 3, "缺少广告/官方与人工复核三选控件"
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 4
     tables = [str(t.value) for t in at.table]
-    assert any("广告/官方内容" in t and "计入" in t for t in tables)
+    assert any("广告/官方与人工复核" in t and "自动（广告计入统计）" in t for t in tables)
     assert not at.exception, f"确认页异常: {at.exception}"
     print("✓ 广告/官方内容向导开关 + 确认页摘要 冒烟 通过")
 

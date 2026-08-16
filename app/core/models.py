@@ -127,6 +127,7 @@ class ChannelResult(BaseModel):
     dropped: list[dict] = Field(default_factory=list)  # 清洗丢弃记录（含原因）
     error: str = ""
     degraded: bool = False  # 自动降级标记
+    risk: bool = False  # 2026-08-16：风控即停标记（保留已采部分，跳过补采，触发冷却）
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +170,11 @@ class CodedItem(BaseModel):
     narrative: Optional[NarrativeFrame] = None
     attribution: Optional[str] = None  # 政府/企业/个人/制度/技术/社会/自然/不明确
     ad_flag: bool = False  # 广告/官方内容：规则预标 or 人工复核；True 时按 exclude_ad_enabled 决定是否计入情感统计
+    # 2.11 需复核闭环：低置信（<0.5）或疑似反讽/方向不明 → need_review=True；
+    # 结果页人工确认后回填（need_review=False + reviewed_by），报告注明复核数。
+    need_review: bool = False
+    need_review_reason: str = ""
+    reviewed_by: str = ""
 
 
 # ---------------------------------------------------------------------------

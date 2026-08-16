@@ -17,7 +17,12 @@ from typing import Any
 
 import requests
 
-from app.channels.base import ChannelAdapter, ProgressCallback, degraded_result
+from app.channels.base import (
+    ChannelAdapter,
+    ProgressCallback,
+    degraded_result,
+    jittered_sleep,
+)
 from app.core.models import AnalysisPlan, ChannelResult, Comment, Post
 
 SEARCH_URL = "https://api.bilibili.com/x/web-interface/search/type"
@@ -29,7 +34,7 @@ USER_AGENT = (
 )
 PAGE_SIZE = 20
 REQUEST_TIMEOUT = 20
-REQUEST_INTERVAL = 0.3  # 秒，节流防 -412
+REQUEST_INTERVAL = 0.3  # 秒，节流均值（±40% 抖动防固定节奏），防 -412
 # 每关键词条数上限封顶：公开 API 零登录最安全，但高频仍会触发 -412；加量建议加关键词
 MAX_LIMIT = 50
 # 评论请求节流：每个关键词只给前 N 个视频拉评论（一次分析约 10 次评论请求/关键词）
@@ -183,6 +188,7 @@ class BilibiliChannel(ChannelAdapter):
     id = "bilibili"
     name = "B站"
     auth_required = False
+    skip_key = "id"  # 帖子身份键 = bvid
     applicability = "游戏、科技、年轻化品牌（公开 API 零登录）"
     description = "B站搜索 + 视频信息 + 评论采集（公开 API）"
 
@@ -191,10 +197,11 @@ class BilibiliChannel(ChannelAdapter):
         plan: AnalysisPlan,
         on_progress: ProgressCallback | None = None,
         cancel_event: Event | None = None,
+        skip_urls: set[str] | None = None,
     ) -> ChannelResult:
         session = _get_session()
         posts: list[Post] = []
-        seen_ids: set[str] = set()
+        seen_ids: set[str] = set(skip_urls or ())
         first_error = ""
         keywords = plan.keywords or [plan.subject]
         limit = plan.per_keyword_limit
@@ -229,7 +236,7 @@ class BilibiliChannel(ChannelAdapter):
                     keyword_posts.append(post)
                     if len(keyword_posts) >= limit:
                         break
-                time.sleep(REQUEST_INTERVAL)
+                jittered_sleep(REQUEST_INTERVAL, 0.4)
                 if len(keyword_posts) >= limit:
                     break
 
@@ -249,7 +256,7 @@ class BilibiliChannel(ChannelAdapter):
                         )
                     except (requests.RequestException, RuntimeError):
                         pass  # 评论失败不影响主数据
-                    time.sleep(REQUEST_INTERVAL)
+                    jittered_sleep(REQUEST_INTERVAL, 0.4)
 
             posts.extend(keyword_posts)
             if on_progress:

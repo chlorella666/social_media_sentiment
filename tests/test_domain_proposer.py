@@ -109,9 +109,9 @@ def test_custom_mode_key_baseline_fallback(tmp_path=None):
     with mock.patch("app.core.eval_store.FIXTURES_DIR", ROOT / "tests" / "fixtures"):
         assert eval_store.load_frozen_baseline("domain_nonexistent_lexicon") is None
     # 已知主集 key 仍正常（旧格式文件只有 mode，无 mode_key）
-    # 2026-08-15：主集词典基线随 2.6 词典第一刀收口版显式更新为 0.5086
+    # 2026-08-16：主集词典基线随 golden v1.3（主集维度治理）重测更新为 0.509
     b = eval_store.load_frozen_baseline("lexicon")
-    assert b is not None and b.get("accuracy") == 0.5086
+    assert b is not None and b.get("accuracy") == 0.509
 
 
 def test_coldstart_compare_annotations(tmp_path):

@@ -22,17 +22,31 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
 CONFIDENCE_THRESHOLD = 0.8  # 预筛置信度低于此值才调用 LLM（0.8 更保守，送 LLM 占比更高）
 BATCH_SIZE = 10  # 单请求文本数（越小单请求越快、进度越平滑）
-NARRATIVE_BATCH_SIZE = 10
-PROMPT_VERSION = 10  # 情感分析提示词版本（v3.4b：消融后保留 12/13/14，去掉 11）
+NARRATIVE_BATCH_SIZE = 6  # 叙事/归因批大小（2026-08-16 由 10 调小：输出体量更小，降低截断与 index 漂移概率）
+PROMPT_VERSION = 11  # 情感分析提示词版本（v3.5：问句二分 + 报道细分 + 功能陈述评价色彩）
 # 采用"整条情感跟锚定品牌"口径的领域（抽样规范 §十四：品牌口碑场景）。
 # 主集/边界集沿用"文本自身情感"口径，不在此列；评测与生产链路据此决定是否传 subject。
 SUBJECT_DOMAINS = frozenset({"digital3c"})
+# 校准 spike（2026-08-17）结论：3C 词典直判置信度不可信（conf≥0.8 直判 49% 错误率，
+# 贡献 29% 错误；LLM 同桶仅 6% 错）→ 这些领域全量送 LLM（词典只做预筛），
+# 费用仍受控（约 +15% LLM 调用）。评测与生产链路同口径。
+ALWAYS_LLM_DOMAINS = frozenset({"digital3c"})
 
 # v3.4 规则开关（拆分归因用）：SMS_V34_RULES 覆盖默认集；
 # 置空 = 回到 v3.3+B；单独指定子集 = 单规则消融。
 # 2026-08-16 消融结论：v14 主力（+2.3pp）、v12/v13 各 +1.4pp、v11（报道/资讯）
 # 净零且过度中性化（pos→neu +4/neg→neu +2，r2 回退 -5.7pp 最可能元凶）→ 默认去掉 11。
 _V34_RULES_DEFAULT = "12,13,14"
+
+# v3.5 规则开关（同 v3.4 模式）：SMS_V35_RULES 覆盖默认集；置空 = 回到 v3.4b。
+# 2026-08-16 第四轮取证（v3.4b 残余 144 错）：
+#   neutral→positive 43（报道/功能陈述/求知问句）、positive→neutral 35（隐晦夸赞/
+#   正面报道）、negative→neutral 28（困扰问句被当 neutral）。
+_V35_RULES_DEFAULT = "15,16,17"
+
+
+def _v35_enabled(rule: str) -> bool:
+    return rule in os.environ.get("SMS_V35_RULES", _V35_RULES_DEFAULT).split(",")
 
 
 def _v34_enabled(rule: str) -> bool:
@@ -185,6 +199,15 @@ def sanitize_dimension_sentiments(items: list[dict], valid_ids: set) -> list[dic
     return items
 
 
+class IncompleteBatchError(ValueError):
+    """批量结果缺失部分 index：携带已返回条目与缺失列表，供定向补全恢复。"""
+
+    def __init__(self, missing: list[int], partial: dict[int, dict]):
+        self.missing = sorted(missing)
+        self.partial = dict(partial)
+        super().__init__(f"模型返回条目不完整（缺失 index {self.missing}）")
+
+
 class OpenAICompatibleAnalyzer(BaseAnalyzer):
     """OpenAI 兼容接口分析器（requests 直连）。"""
 
@@ -312,10 +335,10 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             raise ValueError("模型返回为空")
         if isinstance(items[0], dict) and "index" in items[0]:
             by_index = {int(it["index"]): it for it in items}
-            result = [by_index.get(i) for i in range(n)]
-            if any(r is None for r in result):
-                raise ValueError("模型返回条目不完整")
-            return result  # type: ignore[return-value]
+            missing = [i for i in range(n) if i not in by_index]
+            if missing:
+                raise IncompleteBatchError(missing, by_index)
+            return [by_index[i] for i in range(n)]  # type: ignore[return-value]
         return list(items)[:n]
 
     def _lexicon_fallback(self, texts: list[str]) -> list[dict]:
@@ -345,11 +368,14 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
         error_label: str,
         error_suffix: str,
         min_split: int = 3,
+        complete_missing: bool = False,
     ) -> list[dict]:
         """单批结构化 LLM 请求的统一处理：截断检测 + 拆小批重试 + 兜底。
 
         - finish_reason=="length"（输出被 max_tokens 截断）→ 抛"条目不完整"；
         - 截断且批次 > min_split → 对半拆分递归重试，分批后更易完整返回；
+        - 缺失 index（纯格式失败）且 complete_missing=True 时，小批先做一次
+          "只补全缺失条目"的定向二次请求，合并成功则不降级；
         - 小批仍失败 → 记录错误并返回 fallback（不中断主流程）。
         返回与 texts 等长、按 index 对齐的结果列表。
         """
@@ -362,6 +388,49 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             if finish == "length":
                 raise ValueError("模型返回条目不完整（输出被截断）")
             return sanitize_fn(parse_fn(content, len(texts)))
+        except IncompleteBatchError as exc:
+            if len(texts) > min_split:
+                mid = len(texts) // 2
+                return self._structured_batch(
+                    texts[:mid],
+                    system=system,
+                    user_fn=user_fn,
+                    max_tokens_fn=max_tokens_fn,
+                    parse_fn=parse_fn,
+                    sanitize_fn=sanitize_fn,
+                    fallback_fn=fallback_fn,
+                    error_label=error_label,
+                    error_suffix=error_suffix,
+                    min_split=min_split,
+                    complete_missing=complete_missing,
+                ) + self._structured_batch(
+                    texts[mid:],
+                    system=system,
+                    user_fn=user_fn,
+                    max_tokens_fn=max_tokens_fn,
+                    parse_fn=parse_fn,
+                    sanitize_fn=sanitize_fn,
+                    fallback_fn=fallback_fn,
+                    error_label=error_label,
+                    error_suffix=error_suffix,
+                    min_split=min_split,
+                    complete_missing=complete_missing,
+                )
+            if complete_missing:
+                merged = self._complete_missing_indexes(
+                    texts,
+                    exc,
+                    system=system,
+                    user_fn=user_fn,
+                    max_tokens_fn=max_tokens_fn,
+                    sanitize_fn=sanitize_fn,
+                )
+                if merged is not None:
+                    return merged
+            self._errors.append(
+                f"{error_label}（{len(texts)} 条）：{self._friendly_error(exc)}，{error_suffix}"
+            )
+            return fallback_fn(texts)
         except Exception as exc:
             if len(texts) > min_split and "条目不完整" in str(exc):
                 mid = len(texts) // 2
@@ -376,6 +445,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                     error_label=error_label,
                     error_suffix=error_suffix,
                     min_split=min_split,
+                    complete_missing=complete_missing,
                 ) + self._structured_batch(
                     texts[mid:],
                     system=system,
@@ -387,11 +457,59 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                     error_label=error_label,
                     error_suffix=error_suffix,
                     min_split=min_split,
+                    complete_missing=complete_missing,
                 )
             self._errors.append(
                 f"{error_label}（{len(texts)} 条）：{self._friendly_error(exc)}，{error_suffix}"
             )
             return fallback_fn(texts)
+
+    def _complete_missing_indexes(
+        self,
+        texts: list[str],
+        exc: "IncompleteBatchError",
+        *,
+        system: str,
+        user_fn: "Callable[[list[str]], str]",
+        max_tokens_fn: "Callable[[int], int]",
+        sanitize_fn: "Callable[[list[dict]], list[dict]]",
+    ) -> list[dict] | None:
+        """缺失 index 的一次性定向补全：只要求模型补全缺失条目，成功后合并。"""
+        missing = exc.missing
+        try:
+            missing_payload = {
+                "items": [{"index": i, "text": texts[i]} for i in missing]
+            }
+            user_msg = (
+                "你上一轮输出的 JSON 缺少以下 index："
+                + ", ".join(str(i) for i in missing)
+                + "。请只补全这些条目，输出格式与 system 指令完全一致，"
+                "index 必须使用原值。只输出 JSON，不要其他文字。缺失条目："
+                + json.dumps(missing_payload, ensure_ascii=False)
+            )
+            content, finish = self._post_chat(
+                system, user_msg, max_tokens=max_tokens_fn(len(missing))
+            )
+            if finish == "length":
+                return None
+            data = json.loads(content)
+            items = data.get("items", data if isinstance(data, list) else [])
+            completed: dict[int, dict] = {}
+            for it in items:
+                if isinstance(it, dict) and "index" in it:
+                    try:
+                        completed[int(it["index"])] = it
+                    except (TypeError, ValueError):
+                        continue
+            out: list[dict | None] = [exc.partial.get(i) for i in range(len(texts))]
+            for i in missing:
+                if out[i] is None and i in completed:
+                    out[i] = completed[i]
+            if any(r is None for r in out):
+                return None
+            return sanitize_fn(out)  # type: ignore[return-value]
+        except Exception:
+            return None
 
     def _request_batch(
         self,
@@ -447,6 +565,22 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "推荐的是非锚定品牌（'还是选大疆的比较好''大疆这边能续上能省一笔'，"
                 "锚定=影石时）→ 整条判 negative（若贬本品牌）或 neutral（仅夸竞品），"
                 "竞品对比维度按内容标方向；不得因夸竞品判 positive。")
+        v35_blocks: list[str] = []
+        if _v35_enabled("15"):
+            v35_blocks.append(
+                "15. 问句二分（v3.5）：求知/信息咨询（'还能吗/会不会/怎么用/支持吗'）"
+                "→ neutral；**困扰/后悔/选择困难/不满（'怎么办''买哪个''要不要留''"
+                "太纠结了'）→ negative**（情绪性问句按负面口径，如'买成华硕了怎么办?'）。")
+        if _v35_enabled("16"):
+            v35_blocks.append(
+                "16. 报道细分（v3.5）：纯事实陈述/参数罗列/规格盘点/官方发布稿/电商页/"
+                "百科/活动打卡 → neutral；**含明确褒贬色彩的报道或事实（'断崖式遥遥领先'"
+                "'荣登前两名''估值几千亿''世界级产品'）→ 按褒贬判**，不可一律 neutral。")
+        if _v35_enabled("17"):
+            v35_blocks.append(
+                "17. 功能/能力陈述的评价色彩（v3.5）：明确夸赞产品能力（'机身自带AI剪辑'"
+                "'AI自动剪辑很舒服''可玩性更高''100多G内存还没涨价,那选什么一目了然'）"
+                "→ positive；纯规格说明（'支持8K''1英寸传感器''10小时续航'）→ neutral。")
         system = (
             "你是中文社交媒体情感分析专家。对输入的每条文本输出情感判断（prompt v2.2）。"
             "注意：中文网络语境常有反讽/阴阳怪气/反话（表面褒义实为贬义，"
@@ -502,6 +636,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "10. 多品牌比较且无锚定品牌时：整条按对比文判 neutral（不站队），"
                 "竞品对比维度按文本内容标方向（夸某品牌=竞品对比 positive、贬=negative）。"
             + "".join(v34_blocks)
+            + "".join(v35_blocks)
             + dim_block
             + (
                 (
@@ -544,6 +679,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             fallback_fn=self._lexicon_fallback,
             error_label="LLM 批量请求失败",
             error_suffix="该批次已用词典结果兜底",
+            complete_missing=True,
         )
 
     def _request_narrative_batch(self, texts: list[str]) -> list[dict]:
@@ -569,6 +705,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             ],
             error_label="叙事/归因批量请求失败",
             error_suffix="已自动跳过叙事/归因层，不影响情感编码结果",
+            complete_missing=True,
         )
 
     def _sanitize_narrative_items(self, items: list[dict]) -> list[dict]:

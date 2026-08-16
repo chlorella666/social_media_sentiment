@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import time
 from typing import Callable
 
@@ -18,10 +20,108 @@ from app.coding import ad_rules
 from app.coding.cleaner import clean_text, desensitize_text, normalize_pub_date
 from app.coding.dimensions import match_dimension_sentiments, match_dimensions
 from app.coding.llm_analyzer import (
+    ALWAYS_LLM_DOMAINS,
     CONFIDENCE_THRESHOLD,
     SUBJECT_DOMAINS,
     OpenAICompatibleAnalyzer,
 )
+
+# 2.11 需复核：最终置信度低于该值（或命中反讽/黑话/问句/短句等难例候选）→ 结果页人工复核
+# v1（旧）：置信 <0.5 或疑似反讽标记（2026-08-16 回测：主集命中 0%、3C 2.3%，实际无效）。
+# v3（默认，2026-08-17 校准 spike 定版）：词典直判全领域必标 + 文本信号按领域分权
+#   ——3C（digital3c）保留问句/短句/黑话/反讽/低置信 + 直判（召回 50.9%、标记 39.9%）；
+#   其他领域仅低置信/反讽/黑话 + 直判（主集召回 25.8%、标记 ~15%）。
+#   旧规则回退：SMS_NEED_REVIEW_RULE=v1（0.5+反讽）/v2（0.7+全领域文本信号）。
+NEED_REVIEW_CONFIDENCE_V1 = 0.5
+NEED_REVIEW_CONFIDENCE_V2 = 0.7
+NEED_REVIEW_RULE = os.environ.get("SMS_NEED_REVIEW_RULE", "v3")
+
+# 文本信号（问句/短句）生效的领域：校准 spike 显示这些信号只在 3C 有正收益，
+# 在主集/边界集只增负担不加召回。
+TEXT_SIGNAL_DOMAINS = frozenset({"digital3c"})
+
+# 黑话/圈内语标记（回测扩展候选用；与词典正负词表解耦，避免改动词典影响提准结论）
+SLANG_MARKERS = [
+    "挤牙膏", "吃灰", "超模", "水军", "绿厂", "果粉", "智商税", "割韭菜",
+    "真香", "翻车", "退坑", "孝钱", "直呼内行", "焊死", "带节奏", "顶配",
+]
+_SLANG_RE = re.compile("|".join(SLANG_MARKERS))
+# 问句/求助候选（严格版，2026-08-16 调参定版）：求知/咨询/选择困难类提问；
+# 宽版（任何"吗/呢/啥"）回测标记率 38% 过噪，仅保留语义明确的问句形态
+_QUESTION_RE = re.compile(
+    r"值得买吗|怎么办|怎么选|怎么样|如何|推荐|买哪个|选哪个|哪个好|"
+    r"要不要|能不能|会不会|好吗|咋样|咋选|啥好|有什么推荐|[？?]$|吗$|呢$|啥$"
+)
+SHORT_TEXT_LEN = 5  # 短句无上下文（如"依旧/哦豁/我出/举手"），单独判断易歧义
+
+
+def need_review_reason_v1(text: str, confidence: float) -> str:
+    if confidence < NEED_REVIEW_CONFIDENCE_V1:
+        return f"低置信(conf={confidence:.2f})"
+    if lexicon.has_irony_marker(text):
+        return "疑似反讽/方向不明"
+    return ""
+
+
+def need_review_reason_v2(text: str, confidence: float) -> str:
+    reasons: list[str] = []
+    if confidence < NEED_REVIEW_CONFIDENCE_V2:
+        reasons.append(f"低置信(conf={confidence:.2f})")
+    if lexicon.has_irony_marker(text):
+        reasons.append("疑似反讽/方向不明")
+    if _SLANG_RE.search(text or ""):
+        reasons.append("疑似黑话/圈内语")
+    if _QUESTION_RE.search(text or ""):
+        reasons.append("问句/求助")
+    if len((text or "").strip()) < SHORT_TEXT_LEN:
+        reasons.append("短句无上下文")
+    return "；".join(reasons)
+
+
+def need_review_reason_v3(text: str, confidence: float, direct: bool = False,
+                          domain: str = "") -> str:
+    reasons: list[str] = []
+    if direct:
+        reasons.append("词典直判(未送LLM)")
+    if confidence < NEED_REVIEW_CONFIDENCE_V2:
+        reasons.append(f"低置信(conf={confidence:.2f})")
+    if lexicon.has_irony_marker(text):
+        reasons.append("疑似反讽/方向不明")
+    if _SLANG_RE.search(text or ""):
+        reasons.append("疑似黑话/圈内语")
+    if domain in TEXT_SIGNAL_DOMAINS:
+        if _QUESTION_RE.search(text or ""):
+            reasons.append("问句/求助")
+        if len((text or "").strip()) < SHORT_TEXT_LEN:
+            reasons.append("短句无上下文")
+    return "；".join(reasons)
+
+
+def need_review_reason(text: str, confidence: float, direct: bool = False,
+                       domain: str = "") -> str:
+    if NEED_REVIEW_RULE == "v3":
+        return need_review_reason_v3(text, confidence, direct=direct, domain=domain)
+    if NEED_REVIEW_RULE == "v2":
+        return need_review_reason_v2(text, confidence)
+    return need_review_reason_v1(text, confidence)
+
+
+# 校准 spike（2026-08-17）：词典直判置信度不可信（3C 直判 conf≥0.8 实际准确率 ~51%、
+# 主集 ~67%，却显示 0.98 类高置信）→ 报告侧展示按校准口径封顶 0.6（可信度"中"），
+# 不再误导；LLM 置信度相对可信（0.9+ 桶 88~94%），原样展示。result.json 原始值不变。
+LEXICON_DISPLAY_CONFIDENCE_CAP = 0.6
+
+
+def display_confidence(confidence: float, method: str) -> float:
+    """报告展示用置信度：词典直判按校准口径封顶，LLM 原样。"""
+    if method == "lexicon":
+        return min(float(confidence), LEXICON_DISPLAY_CONFIDENCE_CAP)
+    return float(confidence)
+
+
+def display_confidence_tier(confidence: float, method: str) -> str:
+    c = display_confidence(confidence, method)
+    return "高" if c >= 0.8 else "中" if c >= 0.5 else "低"
 
 
 def _intensity(score: float) -> int:
@@ -49,6 +149,8 @@ class Coder:
     def __init__(self, analyzer: BaseAnalyzer, schema: DomainSchema | None = None):
         self.analyzer = analyzer
         self.schema = schema
+        self.domain_id = getattr(schema, "domain_id", "") if schema else ""
+        self._force_llm = self.domain_id in ALWAYS_LLM_DOMAINS
 
     def code_posts(
         self,
@@ -81,7 +183,9 @@ class Coder:
             content = clean_text(post.content)
             if content:
                 pre = lexicon.score_text(content)
-                need_llm = llm_available and pre["confidence"] < CONFIDENCE_THRESHOLD
+                need_llm = llm_available and (
+                    self._force_llm or pre["confidence"] < CONFIDENCE_THRESHOLD
+                )
                 llm_indices.append((len(items), content))
                 items.append(
                     CodedItem(
@@ -130,7 +234,9 @@ class Coder:
                     keywords=pre["keywords"],
                 )
                 items.append(item)
-                if llm_available and pre["confidence"] < CONFIDENCE_THRESHOLD:
+                if llm_available and (
+                    self._force_llm or pre["confidence"] < CONFIDENCE_THRESHOLD
+                ):
                     llm_indices.append((len(items) - 1, ctext))
                 _tick()
 
@@ -223,4 +329,13 @@ class Coder:
                             it.attribution = attr
                     except Exception:
                         continue
+        # 2.11：低置信/疑似反讽方向不明 → 需复核标记
+        for it in items:
+            reason = need_review_reason(
+                it.text, it.confidence,
+                direct=(it.method == "lexicon"), domain=self.domain_id,
+            )
+            if reason:
+                it.need_review = True
+                it.need_review_reason = reason
         return items

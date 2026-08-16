@@ -59,7 +59,7 @@
           <th>评论数</th><td>{{ trust.comments }}</td>
           <th>编码文本数</th><td>{{ total_items }}</td>
         </tr>
-        {% if ads.get('count') %}
+        {% if ads is defined and ads.get('count') %}
         <tr>
           <th>广告/官方内容</th>
           <td colspan="3">{{ ads.count }} 条（占 {{ (ads.ratio_of_total * 100) | round(1) }}%，{{ ads.mode }}）</td>
@@ -75,6 +75,7 @@
         </tr>
       </table>
       <p style="color:#6b7280;font-size:12px">说明：样本量、丢弃率与 LLM 处理占比影响结论可信度；样本越少、丢弃率越高、词典直判占比越高，结论越应谨慎参考。</p>
+      {% if need_review_n > 0 %}<p style="color:#d97706;font-size:12px">🔍 需复核：{{ need_review_n }} 条低置信/疑似反讽样本，建议在应用结果页「需复核样本」区人工确认后再下结论。</p>{% endif %}
     </div>
 
     {% if keyword_rows %}
