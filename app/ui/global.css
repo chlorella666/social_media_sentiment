@@ -1,0 +1,254 @@
+/* ============================================================
+   Streamlit 全局 CSS 注入草案（命题 A 落地件）
+   对应任务：UI视觉升级方案 P0-2 / P1-1 / P1-6
+   使用方式：app/main.py 顶部 st.markdown 注入（style 标签包裹，见 theme.py）
+   设计令牌与 design_entries/ui-designer/ 三个 HTML 原型完全同源。
+   注意：类名依赖 Streamlit 当前版本 DOM（v1.x）；版本升级后需按方案 §七-H 走查。
+   ============================================================ */
+
+:root {
+  /* —— 基础令牌（方案 §5.5，不变） —— */
+  --c-page:#F8F9FA; --c-card:#FFFFFF; --c-text:#1A1D23; --c-border:#DEE2E6;
+  --c-brand:#2B7BD6; --c-brand-hover:#1F5F9E;
+  --c-pos:#2E9A6E; --c-neu:#8C8C8C; --c-neg:#D94A4A;
+  /* —— 扩展 · 中性灰阶（等色温，与 #1A1D23 同源） —— */
+  --g-50:#F8F9FA; --g-100:#F1F3F5; --g-200:#E9ECEF; --g-300:#DEE2E6; --g-400:#CED4DA;
+  --g-500:#ADB5BD; --g-600:#8C8C8C; --g-700:#5C6370; --g-800:#3B414D; --g-900:#1A1D23;
+  /* —— 扩展 · 语义色（仅状态条/图标/边框，不上按钮背景） —— */
+  --s-success:#2E9A6E; --s-info:#2B7BD6; --s-warning:#B45309; --s-danger:#D94A4A;
+  --s-danger-text:#B93434; --s-warning-text:#8A4B06;
+  /* —— alpha 派生 —— */
+  --text-muted:rgba(26,29,35,.64); --text-faint:rgba(26,29,35,.45);
+  --brand-bg:rgba(43,123,214,.08); --brand-border:rgba(43,123,214,.28);
+  --pos-bg:rgba(46,154,110,.10); --neg-bg:rgba(217,74,74,.10); --neu-bg:rgba(140,140,140,.12);
+  --warn-bg:rgba(180,83,9,.08); --warn-border:rgba(180,83,9,.35);
+  --danger-bg:rgba(217,74,74,.08); --danger-border:rgba(217,74,74,.40);
+  /* —— 圆角 / 阴影 / 间距 —— */
+  --r-sm:6px; --r-md:10px; --r-lg:14px;
+  --sh-xs:0 1px 2px rgba(16,24,40,.04);
+  --sh-sm:0 1px 3px rgba(16,24,40,.07);
+  --sh-md:0 4px 10px -2px rgba(16,24,40,.08),0 2px 4px -2px rgba(16,24,40,.05);
+  /* —— 数字字体（tabular-nums + 系统等宽数字） —— */
+  --font-num:"Bahnschrift","Segoe UI","Microsoft YaHei",sans-serif;
+}
+
+/* ---------- 1. 全局基础 ---------- */
+html, body, [class*="css"], .stApp {
+  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  color: var(--g-900);
+}
+/* 数字排版：所有指标/统计数字使用表格数字，列对齐不跳动 */
+[data-testid="stMetricValue"], .stMetric value, .num {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-num);
+  letter-spacing: .01em;
+}
+
+/* ---------- 2. 侧边栏（P2-2 收敛前的过渡样式） ---------- */
+section[data-testid="stSidebar"] {
+  width: 300px;                       /* 固定宽度，容纳 LLM 设置与任务卡 */
+  background: var(--g-50);
+  border-right: 1px solid var(--g-200);
+}
+section[data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
+section[data-testid="stSidebar"] h4 {                 /* 分组小标题：小写间距样式 */
+  font-size: 12px; font-weight: 600; color: var(--g-500);
+  letter-spacing: .06em; margin: 1.2rem 0 .5rem;
+}
+
+/* ---------- 3. 主区排版节奏 ---------- */
+.block-container { padding: 2rem 2.5rem 4rem; max-width: 1080px; }
+h1 { font-size: 1.5rem; font-weight: 700; }          /* 页标题 24 */
+h2 { font-size: 1.125rem; font-weight: 700; }        /* 章节标题 18 */
+h3 { font-size: .9375rem; font-weight: 700; }        /* 卡片标题 15 */
+p, li, label { font-size: .875rem; line-height: 1.65; color: var(--g-800); }
+
+/* ---------- 4. 指标卡 st.metric（P0-2/P0-4） ---------- */
+[data-testid="stMetric"] {
+  background: var(--c-card);
+  border: 1px solid var(--g-200);
+  border-radius: var(--r-md);
+  padding: 16px 18px;
+  box-shadow: var(--sh-xs);
+}
+[data-testid="stMetricLabel"] p { font-size: 13px; color: var(--text-muted); }
+[data-testid="stMetricValue"] { font-size: 30px; font-weight: 700; }
+
+/* ---------- 4.5 结果页「结论优先」首屏（P1-1，对照 prototype_result.html） ---------- */
+.conclusion-card {
+  background: var(--c-card);
+  border: 1px solid var(--g-200);
+  border-left: 4px solid var(--c-brand);
+  border-radius: var(--r-md);
+  padding: 18px 22px;
+  box-shadow: var(--sh-xs);
+  margin-bottom: 14px;
+}
+.conclusion-card .kicker {
+  font-size: 12px; color: var(--g-500); letter-spacing: .08em;
+  margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+}
+.conclusion-card h2 { margin: 0 0 8px; font-size: 19px; line-height: 1.55; }
+.conclusion-card .trust {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  font-size: 12px; color: var(--text-muted);
+}
+.conclusion-card .trust .t-item {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--g-100); border: 1px solid var(--g-200);
+  border-radius: var(--r-full); padding: 3px 10px;
+}
+.conclusion-card .trust .t-warn {
+  background: var(--warn-bg); border-color: var(--warn-border); color: var(--s-warning-text);
+}
+.stat-cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px; margin-bottom: 14px;
+}
+.stat-card {
+  background: var(--c-card); border: 1px solid var(--g-200);
+  border-radius: var(--r-md); padding: 14px 16px; box-shadow: var(--sh-xs);
+}
+.stat-card .k { font-size: 13px; color: var(--text-muted); }
+.stat-card .v {
+  font-size: 26px; font-weight: 700; margin-top: 4px; line-height: 1.2;
+  font-family: var(--font-num); font-variant-numeric: tabular-nums;
+}
+.stat-card .d { font-size: 12px; color: var(--text-faint); margin-top: 4px; }
+.stat-card .v.pos { color: var(--c-pos); }
+.stat-card .v.neg { color: var(--s-danger-text); }
+
+/* ---------- 4.6 向导步骤条（P1-2，SVG 图标 + 语义色，对照 prototype_app.html） ---------- */
+.wizard-steps {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0;
+  margin: 4px 0 18px;
+}
+.ws-step {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--g-500);
+}
+.ws-step svg { width: 16px; height: 16px; flex: none; }
+.ws-step.cur { font-weight: 600; color: var(--c-brand-hover); }
+.ws-step.cur svg { color: var(--c-brand); }
+.ws-step.done { color: var(--s-success); }
+.ws-link { width: 30px; height: 1.5px; background: var(--g-300); margin: 0 9px; }
+.ws-link.done { background: var(--s-success); }
+
+/* ---------- 4.7 空态（P1-3，对照 prototype_app.html 三态规范） ---------- */
+.empty-state {
+  background: var(--c-card);
+  border: 1px solid var(--g-200);
+  border-radius: var(--r-md);
+  color: var(--text-muted);
+  text-align: center;
+  padding: 22px 18px;
+  margin-bottom: 10px;
+}
+.empty-state .empty-ico {
+  width: 44px; height: 44px; margin: 2px auto 10px;
+  border-radius: 50%; background: var(--g-100);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--g-500);
+}
+.empty-state b { color: var(--g-800); font-size: 14px; }
+.empty-state p { font-size: 13px; margin: 6px 0 0; }
+
+/* ---------- 5. 按钮（悬停仅亮度变化，不引入新色） ---------- */
+button[data-testid^="stBaseButton"], [data-testid="stDownloadButton"] > button {
+  min-height: 44px;                                   /* A11y：触控目标 ≥44px */
+  border-radius: var(--r-md);
+  font-weight: 600;
+  transition: filter .15s ease;
+}
+[data-testid="stBaseButton-primary"] {
+  font-size: 15px;                                    /* 品牌蓝底白字 AA 边界策略：≥15px + 700 */
+  font-weight: 700;
+}
+[data-testid="stBaseButton-primary"]:hover,
+[data-testid="stBaseButton-primary"]:active { filter: brightness(.92); }
+[data-testid="stBaseButton-secondary"]:hover { filter: brightness(.97); }
+[data-testid="stDownloadButton"] > button:hover { filter: brightness(.97); }
+/* 焦点态：键盘可见（P1-6） */
+button:focus-visible,
+[data-testid="stDownloadButton"] > button:focus-visible,
+.stRadio label:focus-within, .stCheckbox label:focus-within {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 2px;
+}
+
+/* ---------- 6. 输入控件 ---------- */
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea {
+  border-radius: var(--r-sm);
+  border-color: var(--g-300);
+}
+[data-testid="stTextInput"] input:focus,
+[data-testid="stTextArea"] textarea:focus {
+  border-color: var(--c-brand);
+  box-shadow: 0 0 0 3px var(--brand-bg);
+}
+
+/* ---------- 7. 折叠面板 expander ---------- */
+[data-testid="stExpander"] {
+  border: 1px solid var(--g-200);
+  border-radius: var(--r-sm);
+  background: var(--c-card);
+  overflow: hidden;
+}
+[data-testid="stExpander"] summary { font-size: 13px; color: var(--g-700); }
+[data-testid="stExpander"]:hover { border-color: var(--g-400); }
+
+/* ---------- 8. 三态语义（P0-5，对应方案 §6-1 状态矩阵） ---------- */
+/* Streamlit 原生 st.success/info/warning/error 换成令牌派生色 */
+[data-testid="stAlert"] { border-radius: var(--r-md); }
+[data-testid="stAlert"] [data-baseweb="notification"] {
+  background: var(--brand-bg);
+  border: 1px solid var(--brand-border);
+  color: var(--c-brand-hover);
+}
+/* 错误态：原因一句话 + 可执行建议（配合 main.py 文案改写） */
+[data-testid="stAlert"][data-kind="error"] [data-baseweb="notification"] {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--s-danger-text);
+}
+[data-testid="stAlert"][data-kind="warning"] [data-baseweb="notification"] {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--s-warning-text);
+}
+[data-testid="stAlert"][data-kind="success"] [data-baseweb="notification"] {
+  background: var(--pos-bg);
+  border-color: rgba(46,154,110,.35);
+  color: #237B57;
+}
+
+/* ---------- 9. 进度条与加载态（S3 场景） ---------- */
+[data-testid="stProgress"] > div > div > div {
+  background: var(--c-brand);
+  border-radius: var(--r-sm);
+}
+[data-testid="stSpinner"] svg { stroke: var(--c-brand); }
+
+/* ---------- 10. 情感语义标签（HTML 组件用，✓/✗/～ 符号叠加） ---------- */
+.tag { display:inline-flex; align-items:center; gap:5px; font-size:13px;
+       border-radius:999px; padding:2px 10px; font-weight:600; }
+.tag .sym { font-weight:700; }
+.tag-pos { background:var(--pos-bg); color:var(--c-pos); }   /* ✓ 正面 */
+.tag-neu { background:var(--neu-bg); color:var(--g-700); }   /* ～ 中性 */
+.tag-neg { background:var(--neg-bg); color:var(--s-danger-text); } /* ✗ 负面 */
+
+/* ---------- 11. 表格（任务中心/附录） ---------- */
+[data-testid="stDataFrame"] { border-radius: var(--r-md); border: 1px solid var(--g-200); }
+table { border-collapse: collapse; }
+th { background: var(--g-50); color: var(--g-500); font-weight: 600; font-size: 12px; }
+td, th { border-bottom: 1px solid var(--g-200); padding: 9px 12px; }
+tbody tr:nth-child(even) { background: var(--g-50); }        /* 斑马纹 */
+
+/* ---------- 12. 动效原则（方案 §6-2：150~200ms 轻过渡） ---------- */
+button[data-testid^="stBaseButton"], [data-testid="stExpander"], [data-testid="stMetric"] {
+  transition: all .15s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

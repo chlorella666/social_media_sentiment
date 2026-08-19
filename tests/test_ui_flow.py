@@ -33,7 +33,17 @@ from streamlit.testing.v1 import AppTest
 
 from app import worker
 from app.core import jobs
+from app.core import plans_store as _plans_store_mod
 from app.core.planner import build_plan
+
+# AppTest 环境限制规避：UX 5.1 复用区（上次计划/命名模板）在测试会话之间
+# 会污染 stage0 条件渲染 widget 的状态收集（Streamlit testing 框架问题）。
+# 复用区与 UI 流程测试目标无关，测试内全局禁用（产品功能不受影响）。
+# 注意：先保存真实函数引用（同模块对象，patch 后原引用也会被覆盖）。
+_REAL_LOAD_LAST_PLAN = _plans_store_mod.load_last_plan
+_REAL_LIST_TEMPLATES = _plans_store_mod.list_templates
+_plans_store_mod.load_last_plan = lambda: None
+_plans_store_mod.list_templates = lambda: []
 
 worker.REPORTS_DIR = _TMP / "reports"
 _STOP = threading.Event()
@@ -90,17 +100,26 @@ def restore_stale_widget_states(at: AppTest) -> None:
     Streamlit 已按新一帧清理旧帧控件的 session_state，
     下一次 run() 收集旧帧控件状态时会 KeyError。
     提交前补回旧帧（阶段3 设置区）控件状态即可继续。"""
-    if "channel_ids" in at.session_state:
-        for cid in at.session_state["channel_ids"]:
-            key = f"limit_{cid}"
-            if key not in at.session_state:
-                at.session_state[key] = 10
-            qkey = f"quota_limit_{cid}"
-            if qkey not in at.session_state:
-                at.session_state[qkey] = -1
+    # AppTest 旧帧残留：stage2 的 limit_<cid> / quota_limit_<cid> 控件在切到
+    # stage3 后已被 stale 清理，但旧帧节点仍会读取 state；且 channel_ids 现为
+    # widget key，切走后 `in` 判断不可靠 → 无条件补全部渠道默认值
+    for cid in (
+        "demo", "bilibili", "websearch", "websearch_zhihu",
+        "websearch_tieba", "websearch_taptap", "weibo", "xiaohongshu",
+    ):
+        at.session_state[f"limit_{cid}"] = 10
+        if f"quota_limit_{cid}" not in at.session_state:
+            at.session_state[f"quota_limit_{cid}"] = -1
+    if "date_range" not in at.session_state:
+        from datetime import date, timedelta
+
+        at.session_state["date_range"] = (
+            date.today() - timedelta(days=30),
+            date.today(),
+        )
     for key, default in (
         ("comments_enabled", True),
-        ("comments_per_post", 20),
+        ("comments_per_post", 10),
         ("exclude_words", ""),
         ("ad_review_mode", "自动（广告/官方计入统计）"),
         ("websearch_eval_suffix", True),
@@ -169,11 +188,11 @@ def main() -> None:
     # 阶段2：默认演示渠道
     assert at.session_state["channel_ids"] == ["demo"]
     marks = [m.value for m in at.markdown if m.value]
-    assert any("渠道安全" in m for m in marks), "渠道安全设置区未渲染"
+    assert any("渠道风控安全" in m for m in marks), "侧边栏渠道风控安全区未渲染"
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 3
     restore_stale_widget_states(at)
-    print("✓ 阶段2（渠道/时间 + 渠道安全设置区）通过")
+    print("✓ 阶段2（渠道/时间 + 侧边栏渠道风控安全区）通过")
 
     # 阶段3：提交后台任务
     click_button(at, "🚀 启动分析")
@@ -198,8 +217,11 @@ def main() -> None:
     # 2.11 起结果页可能多出「导出需复核清单」按钮 → 改为 ≥3
     assert len(at.get("download_button")) >= 3, "缺少即时下载按钮（Excel/HTML/JSON）"
     assert any("Word" in b.label for b in at.button), "缺少 Word 按需生成按钮"
-    assert len(at.metric) == 6  # 2026-08-18：结果页新增「消费者声音占比」指标
-    print("✓ 阶段6（结果与下载）通过：Excel / HTML / JSON 即时下载 + Word 按需生成")
+    # P1-1（2026-08-19）：结果页首屏改为 HTML 结论胶囊 + 指标卡（st.metric 不再使用）
+    marks6 = " ".join(str(m.value) for m in at.markdown)
+    assert "conclusion-card" in marks6, "结果页缺一句话结论胶囊"
+    assert "stat-cards" in marks6, "结果页缺 4 指标卡"
+    print("✓ 阶段6（结果与下载）通过：结论胶囊 + 4 指标卡 + Excel/HTML/JSON 下载")
 
     # 1.2 历史回看：任务详情 → 一键重跑
     task_id = at.session_state["task_id"]
@@ -272,6 +294,108 @@ def test_brand_mode() -> None:
         f"✓ 品牌模式 全流程通过：帖子 {bundle.summary['total_posts']} 条，"
         f"维度统计 {len(bundle.summary['dimensions'])} 个"
     )
+
+
+def test_plan_restore_prefill() -> None:
+    """P1 修复（2026-08-19 审查）：恢复上次计划应完整预填——渠道上限/
+    自定义维度/复核模式/LLM/叙事/WebSearch 优化/关键词多行不再丢失。"""
+    from datetime import date, timedelta
+
+    from app.core import plans_store
+    from app.core.models import Dimension
+    from app.domains.composer import compose_schema
+
+    # 本用例专测恢复链路：临时恢复复用区渲染（AppTest 对条件渲染控件的
+    # state 限制通过下方模块/维度多选显式 set_value 绕开）
+    _plans_store_mod.load_last_plan = _REAL_LOAD_LAST_PLAN
+    _plans_store_mod.list_templates = _REAL_LIST_TEMPLATES
+    try:
+        plans_store.clear_all()
+        dim_ids = [d.id for d in compose_schema(["content"]).dimensions][:2]
+        today = date.today()
+        plan = build_plan(
+            subject="OPPO",
+            domain_id="modules_content",
+            dimension_ids=dim_ids,
+            keyword_groups=[],
+            manual_keywords=["OPPO", "OPPO 评价"],
+            channel_ids=["demo", "websearch", "weibo"],
+            date_start=today - timedelta(days=7),
+            date_end=today,
+            comments_enabled=False,
+            comments_per_post=5,
+            exclude_words=["手机"],
+            llm_enabled=True,
+            llm_base_url="https://api.deepseek.com",
+            llm_model="deepseek-chat",
+            narrative_enabled=True,
+            relevance_check_enabled=True,
+            custom_dimensions=[Dimension(
+                id="custom_01", name="拍照", description="自定义维度（拍照）",
+                source="custom", keywords=["拍照", "影像"], origin="custom")],
+            channel_params={
+                "demo": {"limit": 3},
+                "websearch": {
+                    "limit": 7, "official_domains": "oppo.com", "eval_suffix": "0",
+                },
+                "weibo": {"limit": 10, "queries": ["OPPO 评价"]},
+            },
+            review_enabled=True,
+            exclude_ad_enabled=True,
+        )
+        plans_store.save_last_plan(plan)
+        at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+        at.run()
+        confirm_usage_boundary(at)
+        # 品牌模式 + 模块多选；维度多选出现后显式 set_value（绕开 AppTest state 限制）
+        at.radio[0].set_value("按品牌分析（推荐）").run()
+        at.text_input[0].set_value("OPPO").run()
+        at.multiselect[0].set_value(["content"]).run()
+        dim_ms = next(
+            m for m in at.multiselect if m.label.startswith("选择要分析的维度")
+        )
+        dim_ms.set_value(list(dim_ms.options)).run()
+        click_button_key(at, "reuse_last")
+        assert not at.exception, f"恢复后异常: {at.exception}"
+        assert at.session_state["stage"] == 1
+        ss_ = at.session_state
+        assert ss_["subject"] == "OPPO"
+        assert ss_["channel_ids"] == ["demo", "websearch", "weibo"]
+        assert ss_["selected_dims"] == dim_ids
+        assert ss_["keywords"] == ["OPPO", "OPPO 评价"]
+        assert ss_["channel_limits"] == {"demo": 3, "websearch": 7, "weibo": 10}
+        assert ss_["comments_enabled"] is False
+        assert ss_["comments_per_post"] == 5
+        assert ss_["exclude_words"] == "手机"
+        assert ss_["review_enabled_opt"] is True
+        assert ss_["exclude_ad_opt"] is True
+        assert ss_["ad_review_mode"].startswith("人工复核")
+        assert ss_["llm_enabled"] is True
+        assert ss_["narrative_enabled"] is True
+        assert ss_["custom_dim"] == "拍照：拍照,影像"
+        assert ss_["websearch_eval_suffix"] is False
+        assert ss_["kwopt_weibo"] is True
+        assert ss_["official_domains"] == "oppo.com"
+        assert ss_["selected_modules"] == ["content"]
+        notices = [s.value for s in at.success]
+        assert any("已恢复上次计划" in n for n in notices), notices
+        # 9 修复：恢复后进入渠道页，应显示原渠道/上限/时间段，而非默认 demo
+        click_button(at, "下一步 →")
+        assert at.session_state["stage"] == 2
+        ch_ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+        assert sorted(ch_ms.value) == ["demo", "websearch", "weibo"], ch_ms.value
+        lims = {
+            n.key: n.value for n in at.number_input
+            if n.key and n.key.startswith("limit_")
+        }
+        assert lims.get("limit_demo") == 3, lims
+        assert lims.get("limit_websearch") == 7, lims
+        assert lims.get("limit_weibo") == 10, lims
+        print("✓ P1 修复：恢复上次计划完整预填（渠道上限/自定义维度/复核模式/LLM/叙事/优化开关）通过")
+        print("✓ 9 修复：恢复后渠道页显示原渠道与每关键词上限 通过")
+    finally:
+        _plans_store_mod.load_last_plan = lambda: None
+        _plans_store_mod.list_templates = lambda: []
 
 
 def test_module_combo_dim_cap() -> None:
@@ -415,18 +539,29 @@ def test_need_review_refresh_ui() -> None:
     assert at.session_state["stage"] == 5
     warns = [str(w.value) for w in at.warning]
     assert any("需复核样本未确认" in w for w in warns), f"缺需复核强提示: {warns}"
-    click_button_key(at, f"nr_all_{tid}")
-    assert not at.exception, [str(e) for e in at.exception]
+    # 6/7（2026-08-19）：移除"一键全部/完成复核并刷新"按钮，改为逐条确认，
+    # 最后一条自动重算报告（校验"剩 1 条"问题已修）
+    bundle0 = at.session_state["bundle"]
+    n_before = sum(
+        1 for it in bundle0.coded_items
+        if it.need_review and not it.reviewed_by
+    )
+    assert n_before >= 2, f"需复核样本应 ≥2（实际 {n_before}）"
+    # 逐条确认：每次点击列表第一条（确认后重载，剩余列表前移），
+    # 最后一条确认时自动重算报告
+    for _ in range(n_before):
+        click_button_key(at, f"nr_pos_{tid}_0")
+        assert not at.exception, [str(e) for e in at.exception]
     bundle = at.session_state["bundle"]
     unreviewed = [
         it for it in bundle.coded_items
         if it.need_review and not it.reviewed_by
     ]
-    assert not unreviewed, "一键确认后不应有未复核样本"
+    assert not unreviewed, "最后一条确认后不应有未复核样本"
     assert bundle.summary.get("consumer_voice"), "刷新后 summary 应含 consumer_voice"
     data2 = json.loads(rp.read_text(encoding="utf-8"))
     assert "consumer_voice" in data2.get("summary", {}), "result.json 未落盘新 summary"
-    print("✓ 结果页需复核强提示 + 一键确认并刷新报告 通过")
+    print("✓ 结果页需复核强提示 + 逐条确认自动刷新报告 通过")
 
 
 def test_websearch_confirmation_page() -> None:
@@ -671,6 +806,7 @@ if __name__ == "__main__":
     try:
         main()
         test_brand_mode()
+        test_plan_restore_prefill()
         test_module_combo_dim_cap()
         test_custom_dimension_ui()
         test_channel_strategy_ui()

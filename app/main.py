@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import html
 import json
 import os
 import re
@@ -26,7 +27,10 @@ from app.channels.registry import list_channel_infos
 from app.channels import health
 from app.core import jobs
 from app.core import errors
+from app.core import feedback
 from app.core import lifecycle
+from app.core import plans_store
+from app.core import terms
 from app.core import usage_boundary
 from app.core.models import ReportBundle
 from app.core.planner import MAX_CUSTOM_DIMENSIONS, build_plan, parse_custom_dimensions
@@ -96,8 +100,11 @@ from app.output.html_report import (
 from app.output.html_report import build_html
 from app.output.excel_writer import build_excel
 from app.output.word_report import build_word
+from app.ui.theme import inject_global_css
 
 st.set_page_config(page_title="社交媒体情感分析器", page_icon="📊", layout="wide")
+# P0-2：全局视觉主题注入（令牌 CSS，只改视觉层）
+inject_global_css()
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -241,14 +248,62 @@ STEP_ICONS = {
     "failed": "❌",
 }
 
+# P1-2：线性 SVG 状态图标（stroke=currentColor，颜色由外层样式控制），替换步骤 emoji
+_SVG_WRAP = (
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+    'stroke-linejoin="round">{body}</svg>'
+)
+_STEP_STATE_SVG = {
+    "pending": _SVG_WRAP.format(body='<circle cx="12" cy="12" r="9"/>'),
+    "running": _SVG_WRAP.format(
+        body='<path d="M21 12a9 9 0 1 1-6.2-8.5"/>'
+    ),
+    "done": _SVG_WRAP.format(body='<path d="M20 6 9 17l-5-5"/>'),
+    "skipped": _SVG_WRAP.format(
+        body='<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>'
+    ),
+    "failed": _SVG_WRAP.format(
+        body='<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>'
+    ),
+}
+_WIZARD_STEP_ICONS = [
+    # 品牌和维度 / 关键词 / 渠道时间 / 确认运行 / 后台执行 / 结果
+    _SVG_WRAP.format(
+        body=('<rect x="3" y="3" width="7" height="7" rx="1"/>'
+              '<rect x="14" y="3" width="7" height="7" rx="1"/>'
+              '<rect x="3" y="14" width="7" height="7" rx="1"/>'
+              '<rect x="14" y="14" width="7" height="7" rx="1"/>')
+    ),
+    _SVG_WRAP.format(
+        body='<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'
+    ),
+    _SVG_WRAP.format(
+        body=('<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/>'
+              '<path d="M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/>')
+    ),
+    _SVG_WRAP.format(
+        body=('<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>'
+              '<rect x="8" y="2" width="8" height="4" rx="1"/>'
+              '<path d="M9 14l2 2 4-4"/>')
+    ),
+    _SVG_WRAP.format(
+        body=('<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8"/>'
+              '<path d="M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>')
+    ),
+    _SVG_WRAP.format(
+        body='<path d="M3 3v18h18"/><path d="M7 15v-4M12 15V8M17 15v-6"/>'
+    ),
+]
+
 CHANNEL_LIMIT_DEFAULTS = {
     "demo": 10,
-    "bilibili": 20,
+    "bilibili": 10,
     "websearch": 13,
     "websearch_zhihu": 13,
     "websearch_tieba": 13,
     "websearch_taptap": 13,
-    "weibo": 20,
+    "weibo": 10,
     "xiaohongshu": 10,
 }
 # 各渠道每关键词条数上限：默认值 + 封顶（UI 与渠道层双重限制）。
@@ -264,11 +319,27 @@ CHANNEL_LIMIT_MAX = {
     "xiaohongshu": 10,
 }
 CHANNEL_LIMIT_HELP = {
-    "bilibili": "B站公开 API、零登录最安全：默认 20、上限 50；加量建议加关键词",
+    "bilibili": "B站公开 API、零登录最安全：默认 10、上限 50；加量建议加关键词",
     "weibo": "微博账号级风控最严：默认 20、上限 30，单关键词约 500 条封顶",
     "xiaohongshu": "小红书反爬最严（xsec_token+签名）：默认/封顶 10，单次建议 ≤10",
     "demo": "演示数据固定 2 条/平台/关键词，限额不影响产量",
 }
+
+# 1（2026-08-19 UX 调整）：小白获取 API Key 的操作指引（侧边栏大模型设置内展示）
+API_KEY_GUIDE = (
+    "**DeepSeek（推荐，便宜）**\n"
+    "1. 打开 https://platform.deepseek.com 并注册/登录；\n"
+    "2. 左侧菜单进入「API Keys」→ 点「创建 API Key」；\n"
+    "3. 复制生成的 Key（只显示一次，关掉就看不到了）；\n"
+    "4. 粘贴到上方输入框并「保存到本机」。\n"
+    "5. 首次使用需在「充值」页面充值（最低 ¥10 起），否则会报余额不足。\n\n"
+    "**OpenAI**\n"
+    "1. 打开 https://platform.openai.com 并登录；\n"
+    "2. 右上角头像 →「API keys」→「Create new secret key」；\n"
+    "3. 复制 Key（只显示一次）后粘贴到上方输入框。\n\n"
+    "⚠️ Key 相当于付款凭证：只粘贴到你自己的电脑，程序会加密保存在本机，"
+    "不会上传或写入报告。"
+)
 WS_PROBE_STATUS_CN = {
     "ok": "✅ 正常",
     "degraded": "⚠️ 降级",
@@ -381,8 +452,20 @@ def open_task_result(task_id: str) -> tuple[ReportBundle, dict] | None:
     return bundle, files
 
 
-def apply_need_review_feedback(task_id: str, text_id: str, sentiment: str) -> bool:
-    """2.11：结果页「需复核样本」人工确认回填——更新 result.json 对应条目。"""
+def apply_need_review_feedback(
+    task_id: str,
+    text_id: str,
+    sentiment: str,
+    text: str | None = None,
+    reviewed_by: str = "用户复核",
+) -> bool:
+    """2.11 / 8：回填单条判定到 result.json 对应编码条目。
+
+    7 修复（2026-08-19）：旧任务同一帖子的多条评论共用 text_id
+    （如 URL:comment），原实现只改第一条 → 复核永远剩 N 条无法清零。
+    现按原文精确匹配；新任务 text_id 已加评论序号（coder.py），唯一。
+    8：反馈「这条判错了」也走此函数（任意文本可回填，非 need_review 也可）。
+    """
     task = jobs.get_task(task_id)
     if not task or not task.get("output_dir"):
         return False
@@ -391,19 +474,123 @@ def apply_need_review_feedback(task_id: str, text_id: str, sentiment: str) -> bo
         return False
     try:
         data = json.loads(rp.read_text(encoding="utf-8"))
-        for it in data.get("coded_items", []):
-            if it.get("text_id") == text_id:
-                it["sentiment"] = sentiment
-                it["need_review"] = False
-                it["need_review_reason"] = ""
-                it["reviewed_by"] = "用户复核"
-                break
-        else:
+        matches = [
+            it for it in data.get("coded_items", [])
+            if it.get("text_id") == text_id
+        ]
+        if not matches:
             return False
+        target = matches[0]
+        if len(matches) > 1 and text is not None:
+            exact = [
+                it for it in matches
+                if (it.get("text") or "").strip() == (text or "").strip()
+            ]
+            if len(exact) == 1:
+                target = exact[0]
+        target["sentiment"] = sentiment
+        target["need_review"] = False
+        target["need_review_reason"] = ""
+        target["reviewed_by"] = reviewed_by
         rp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
     except (OSError, ValueError):
         return False
+
+
+def _reload_bundle(task_id: str):
+    """轻量重载：从任务 result.json 重建 bundle（复核/反馈回填后立即用）。
+
+    不走 open_task_result 的完整文件装配，避免"重载失败导致界面停留在
+    旧复核状态"（7 修复的一部分）。
+    """
+    task = jobs.get_task(task_id)
+    if not task or not task.get("output_dir"):
+        return None
+    rp = Path(task["output_dir"]) / "result.json"
+    if not rp.exists():
+        return None
+    try:
+        return ReportBundle.model_validate(
+            json.loads(rp.read_text(encoding="utf-8"))
+        )
+    except Exception:
+        return None
+
+
+def _apply_review_item(task_id: str, item, sentiment: str) -> None:
+    """2.11 单条复核回填统一回调：写盘 → 重载 → 最后一条自动重建报告。"""
+    if not (
+        task_id
+        and apply_need_review_feedback(
+            task_id, item.text_id, sentiment, text=item.text
+        )
+    ):
+        st.error("回填失败：找不到任务结果文件")
+        return
+    bundle2 = _reload_bundle(task_id)
+    if bundle2 is not None:
+        st.session_state.bundle = bundle2
+    remaining = [
+        x for x in st.session_state.bundle.coded_items
+        if x.need_review and not x.reviewed_by
+    ]
+    if not remaining:
+        r2 = rebuild_report_after_review(task_id, st.session_state.bundle)
+        if r2:
+            st.session_state.bundle, st.session_state.output_files = r2
+            st.success(
+                "已回填并刷新报告：全部需复核样本已确认，"
+                "统计/图表/Excel/HTML 已按复核结果重算。"
+            )
+        else:
+            st.success("已回填本条（报告自动刷新失败：结果文件不可写）")
+    else:
+        st.success(
+            f"已回填 {item.text_id} → {sentiment}"
+            f"（还剩 {len(remaining)} 条，全部确认后报告自动重算）"
+        )
+    st.rerun()
+
+
+def _render_dim_charts(s: dict, bundle) -> None:
+    """结果页维度区：维度/热力图/雷达/日期维度图 + 负面原文 Top3（P1-1 抽取共用）。"""
+    dim_fig = dimensions_fig(s)
+    heat_fig = heatmap_fig(s)
+    rad_fig = radar_fig(s)
+    dd_fig = date_dim_heatmap_fig(s)
+    if not dim_fig:
+        return
+    col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(dim_fig, width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('dimensions', '')}")
+    with col2:
+        st.plotly_chart(heat_fig, width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('heatmap', '')}")
+    if rad_fig:
+        st.plotly_chart(rad_fig, width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('radar', '')}")
+    if dd_fig:
+        st.plotly_chart(dd_fig, width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('date_dim', '')}")
+    dim_neg = {}
+    for c in bundle.evidence:
+        if c.get("dimension") and c.get("sentiment") == "negative":
+            dim_neg.setdefault(c["dimension"], []).append(c)
+    if dim_neg:
+        st.markdown("**各维度负面原文 Top 3（规则抽取）**")
+        for dim, cards in dim_neg.items():
+            with st.expander(
+                f"{dimension_cn(dim)}（{dimension_evidence_label(cards)}）",
+                expanded=False,
+            ):
+                for c in cards:
+                    label = " · 待复核" if c.get("need_review") else ""
+                    st.markdown(
+                        f"- 「{c.get('text', '')}」 — {c.get('platform', '')} · "
+                        f"{c.get('date') or '日期未知'}{label}"
+                    )
 
 
 def rebuild_report_after_review(
@@ -468,15 +655,29 @@ def rebuild_report_after_review(
 
 def render_task_center() -> None:
     """后台任务中心：运行中 + 历史任务（列表 → 详情 → 打开旧报告 / 一键重跑）。"""
-    show_all = st.session_state.get("task_center_show_all", False)
-    tasks = jobs.list_tasks(limit=200 if show_all else 10)
+    # UX 5.7 性能：任务中心真分页（每页 10 条），不再一次性渲染全量历史
+    page_size = 10
+    total_tasks = jobs.count_tasks()
+    total_pages = max(1, (total_tasks + page_size - 1) // page_size)
+    page = min(max(int(st.session_state.get("task_center_page", 1) or 1), 1), total_pages)
+    tasks = jobs.list_tasks(limit=page_size, offset=(page - 1) * page_size)
     workers = jobs.active_workers(within_seconds=60)
-    if not tasks:
-        # 零任务也显示后台进程状态，避免小白首次打开无法确认 worker 是否在运行
+    if total_tasks == 0:
+        # P1-3 空态：零任务时用空态卡（图标 + 为什么没有 + 怎么办）
+        _empty_icon = _SVG_WRAP.format(
+            body=('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>')
+        )
+        st.markdown(
+            '<div class="empty-state">'
+            f'<div class="empty-ico">{_empty_icon}</div>'
+            "<b>还没有历史任务</b>"
+            "<p>完成一次分析后，报告会保存在这里，可随时回看或重跑。</p>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         if workers:
             st.caption(
-                "🗂 后台任务中心 · 后台执行进程：运行中 ✅"
-                "（暂无任务，提交分析后此处显示进度）"
+                "后台任务中心 · 后台执行进程：运行中（暂无任务，提交分析后此处显示进度）"
             )
         else:
             st.warning(
@@ -484,8 +685,11 @@ def render_task_center() -> None:
                 "请通过 run.bat 启动后台进程后才会执行。"
             )
         return
-    running = [t for t in tasks if t["status"] in jobs.ACTIVE_STATUSES]
-    with st.expander(f"🗂 后台任务中心（运行中 {len(running)}）", expanded=bool(running)):
+    running_n = jobs.count_tasks(statuses=list(jobs.ACTIVE_STATUSES))
+    with st.expander(
+        f"🗂 后台任务中心（共 {total_tasks} 条 · 运行中 {running_n}）",
+        expanded=running_n > 0,
+    ):
         if workers:
             st.caption("后台执行进程：运行中 ✅")
         else:
@@ -493,12 +697,17 @@ def render_task_center() -> None:
                 "⚠️ 后台执行进程未运行：新任务将排队等待，"
                 "请通过 run.bat 启动后台进程后才会执行。"
             )
-        st.toggle(
-            "显示全部历史任务",
-            value=show_all,
-            key="task_center_show_all",
-            help="关闭时只显示最近 10 条",
-        )
+        if total_pages > 1:
+            p1, p2, p3 = st.columns([1, 3, 1])
+            if p1.button("← 上一页", disabled=(page <= 1), key="task_page_prev"):
+                st.session_state.task_center_page = max(1, page - 1)
+                st.rerun()
+            p2.caption(f"第 {page} / {total_pages} 页（每页 {page_size} 条）")
+            if p3.button("下一页 →", disabled=(page >= total_pages), key="task_page_next"):
+                st.session_state.task_center_page = min(total_pages, page + 1)
+                st.rerun()
+        else:
+            st.caption(f"共 {total_tasks} 条历史任务（每页 {page_size} 条）")
         for t in tasks:
             icon = {
                 jobs.STATUS_PENDING: "⏳",
@@ -642,6 +851,13 @@ def _render_task_detail(t: dict) -> None:
         ):
             for f in fixes:
                 st.markdown(f"- {f}")
+    # 4.3 失败恢复：从失败详情直接进入向导并预填原计划（改参数重试）
+    if t["status"] == jobs.STATUS_FAILED and st.button(
+        "✏️ 修改参数重试", key=f"task_edit_{t['id']}", type="primary"
+    ):
+        _prefill_wizard_from_plan(t.get("plan") or {})
+        st.session_state.stage = 2
+        st.rerun()
     usage = t.get("llm_usage") or {}
     if usage.get("prompt_tokens"):
         st.caption(
@@ -996,85 +1212,341 @@ def prev_stage() -> None:
     st.session_state.stage = max(int(st.session_state.get("stage", 0)) - 1, 0)
 
 
+def _submit_demo_plan() -> None:
+    """一键体验（4.1）：demo 渠道 + 示例品牌预填提交，只跑演示数据。"""
+    demo_plan = build_plan(
+        subject="瑞幸",
+        domain_id=None,
+        dimension_ids=[],
+        keyword_groups=[],
+        manual_keywords=["瑞幸"],
+        channel_ids=["demo"],
+        date_start=dt.date.today() - dt.timedelta(days=7),
+        date_end=dt.date.today(),
+        comments_enabled=False,
+        comments_per_post=0,
+        exclude_words=[],
+        llm_enabled=False,
+        narrative_enabled=False,
+        relevance_check_enabled=False,
+    )
+    task_id = jobs.submit_task(demo_plan)
+    st.session_state.task_id = task_id
+    st.session_state.stage = 4
+
+
+def _prefill_wizard_from_plan(plan: dict) -> None:
+    """4.3 失败重试 + 5.1 恢复上次计划/模板：把任务计划完整预填回向导。
+
+    P1 修复（2026-08-19 审查）：此前只恢复 8 个字段且键名用错
+    （plan 实际是 AnalysisPlan.model_dump：dimensions/channels，旧代码读
+    dimension_ids/channel_ids 取不到），渠道上限/自定义维度/复核模式/
+    WebSearch 优化/LLM/叙事开关全部丢失；comments/exclude_words 的
+    镜像键对 widget 不生效。现按真实结构完整恢复。
+    """
+    st.session_state.subject = plan.get("subject", "")
+    st.session_state._restore_wizard_mode = (
+        "手动关键词（不分类）"
+        if str(plan.get("subject") or "") == "手动关键词"
+        else "按品牌分析（推荐）"
+    )
+    st.session_state.domain_id = plan.get("domain_id")
+    st.session_state.selected_dims = list(
+        plan.get("dimensions") or plan.get("dimension_ids") or []
+    )
+    st.session_state.keywords = list(plan.get("keywords") or [])
+    st.session_state.keyword_groups = plan.get("keyword_groups") or []
+    channels = plan.get("channels") or []
+    channel_ids = [
+        c.get("channel_id") for c in channels if c.get("channel_id")
+    ] or list(plan.get("channel_ids") or [])
+    st.session_state.channel_ids = channel_ids or ["demo"]
+    # 渠道级参数：上限 / 官方域名 / WebSearch 优化 / 微博关键词展开
+    limits: dict[str, int] = {}
+    official_domains = ""
+    ws_suffix = None
+    kwopt_weibo = False
+    for c in channels:
+        cid = c.get("channel_id")
+        params = c.get("params") or {}
+        if not cid:
+            continue
+        if params.get("limit") is not None:
+            limits[cid] = int(params["limit"])
+        if cid.startswith("websearch") and params.get("official_domains"):
+            official_domains = str(params["official_domains"])
+        if cid.startswith("websearch") and "eval_suffix" in params:
+            ws_suffix = str(params["eval_suffix"]) != "0"
+        if cid == "weibo" and params.get("queries"):
+            kwopt_weibo = True
+    if limits:
+        st.session_state.channel_limits = limits
+        # 9 修复：渠道上限的 number_input 有 widget key（limit_<cid>），
+        # 只设镜像 channel_limits 会被控件默认值覆盖 → 直接预填 widget key
+        for cid, v in limits.items():
+            st.session_state[f"limit_{cid}"] = v
+    if official_domains:
+        st.session_state.official_domains = official_domains
+    if ws_suffix is not None:
+        st.session_state.websearch_eval_suffix = ws_suffix
+        st.session_state._restore_websearch_eval_suffix_toggle = ws_suffix
+    if kwopt_weibo:
+        st.session_state.kwopt_weibo = True
+        st.session_state._restore_kwopt_weibo_toggle = True
+    ds, de = plan.get("date_start"), plan.get("date_end")
+    try:
+        if ds and de:
+            st.session_state.date_range = (
+                dt.date.fromisoformat(str(ds)),
+                dt.date.fromisoformat(str(de)),
+            )
+    except (ValueError, TypeError):
+        pass
+    # widget key 统一走延迟应用（顶部 _restore_ 块在 widget 渲染前落位；
+    # 避免"widget 已实例化后修改 session_state"报错）
+    st.session_state._restore_comments_enabled = bool(plan.get("comments_enabled"))
+    _restore_cpp = int(plan.get("comments_per_post") or 0)
+    st.session_state._restore_comments_per_post = min(max(_restore_cpp, 0), 10)
+    st.session_state._restore_exclude_words = "、".join(
+        plan.get("exclude_words") or []
+    )
+    review_on = bool(plan.get("review_enabled"))
+    exclude_ad = bool(plan.get("exclude_ad_enabled"))
+    st.session_state.review_enabled_opt = review_on
+    st.session_state.exclude_ad_opt = exclude_ad
+    st.session_state._restore_ad_review_mode = AD_REVIEW_MODES[
+        2 if review_on else (1 if exclude_ad else 0)
+    ]
+    # 自定义维度：list[dict] → 向导文本（维度名：关键词1,关键词2）
+    custom_dims = plan.get("custom_dimensions") or []
+    if custom_dims:
+        st.session_state.custom_dim = "\n".join(
+            f"{d.get('name')}：{','.join(d.get('keywords') or [])}"
+            for d in custom_dims
+        )
+        st.session_state.custom_dimensions = custom_dims
+    # LLM / 叙事开关（sidebar widget，延迟应用）
+    st.session_state._restore_llm_enabled = bool(plan.get("llm_enabled"))
+    st.session_state._restore_narrative_enabled = bool(plan.get("narrative_enabled"))
+    # 模块反查 + schema 物化（domain_id → modules，供确认页模块行与 worker 维度）
+    mods = _modules_for_domain(plan.get("domain_id"))
+    st.session_state.selected_modules = mods
+    if mods:
+        try:
+            schema = compose_schema(mods)
+            st.session_state.schema = schema
+            save_cached_schema(
+                filter_schema_dims(schema, st.session_state.selected_dims)
+            )
+        except Exception:
+            pass
+    else:
+        st.session_state.schema = None
+
+
+def _modules_for_domain(domain_id: str | None) -> list[str]:
+    """domain_id（modules_content_physical）→ 模块列表反查。"""
+    if not domain_id or not domain_id.startswith("modules_"):
+        return []
+    parts = domain_id[len("modules_"):].split("_")
+    return [p for p in parts if p in ("content", "physical", "service")]
+
+
+def _empty_state(icon: str, title: str, why: str, action: str = "") -> None:
+    """4.2 统一空态：回答"为什么没有 + 怎么才有"。"""
+    st.markdown(f"**{icon} {title}**")
+    st.caption(why)
+    if action:
+        st.caption(f"💡 {action}")
+
+
+# ---------------------------------------------------------------------------
+# 恢复计划的 widget 预填延迟应用（P1 修复）：
+# sidebar/stage0 的带 key widget 在点击"恢复"时已实例化，Streamlit 禁止
+# 直接改写；改为存延迟键，由本块在下一次运行、widget 渲染前统一应用。
+# ---------------------------------------------------------------------------
+for _wk in (
+    "llm_enabled", "narrative_enabled", "wizard_mode",
+    "comments_enabled", "comments_per_post", "exclude_words", "ad_review_mode",
+    "websearch_eval_suffix_toggle", "kwopt_weibo_toggle",
+):
+    _restored_val = st.session_state.pop(f"_restore_{_wk}", None)
+    if _restored_val is not None:
+        st.session_state[_wk] = _restored_val
+
+
 # ---------------------------------------------------------------------------
 # 侧边栏：大模型与高级设置
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
+    # 4.1 首次引导：快速上手卡（首次会话显示、可关闭、不重复）
+    if not st.session_state.get("quickstart_dismissed"):
+        st.markdown("### 🚀 快速上手")
+        st.markdown(
+            "三步开始：\n"
+            "1. **一键体验演示数据**（1 分钟跑通全流程）；\n"
+            "2. 换真实渠道（微博 / B站 等）；\n"
+            "3. 开启 LLM 精分析，结论更可归因。"
+        )
+        qc1, qc2 = st.columns(2)
+        if qc1.button(
+            "▶️ 一键体验", type="primary", width="stretch", key="quickstart_demo"
+        ):
+            st.session_state["quickstart_dismissed"] = True
+            _submit_demo_plan()
+            st.rerun()
+        if qc2.button("知道了", width="stretch", key="quickstart_dismiss"):
+            st.session_state["quickstart_dismissed"] = True
+            st.rerun()
+        st.divider()
+
     st.header("⚙ 大模型设置")
-    saved_key = load_api_key(allow_env=False)
-    api_key = st.text_input(
-        "API Key（可选）", type="password", key="api_key_input",
-        value=saved_key,
-        help="不填则使用词典预筛模式，离线可跑；本机已保存的 Key 会自动回填",
-    )
-    col_save, col_clear = st.columns(2)
-    if col_save.button("💾 保存到本机", width="stretch"):
-        if api_key and api_key.strip():
-            save_api_key(api_key.strip())
-            st.success("已加密保存到本机（Windows DPAPI）")
-        else:
-            st.warning("未填写 API Key，无需保存")
-    if col_clear.button("🗑 清除已保存", width="stretch"):
-        clear_api_key()
-        st.session_state["api_key_input"] = ""
-        st.info("已清除本机保存的 API Key")
-    st.caption(
-        "Key 以 Windows DPAPI 加密存于本机（data/secrets/），仅当前用户可解密；"
-        "换机/重装后需重新填写。"
-    )
-    preset = st.selectbox(
-        "服务商预设",
-        ["DeepSeek", "OpenAI", "自定义"],
-        key="llm_preset",
-        help="选择 DeepSeek 会自动填好 Base URL 与模型名",
-    )
     presets = {
         "DeepSeek": ("https://api.deepseek.com", "deepseek-chat"),
         "OpenAI": ("https://api.openai.com/v1", "gpt-4o-mini"),
     }
-    st.session_state.setdefault("base_url", presets["DeepSeek"][0])
-    st.session_state.setdefault("model_name", presets["DeepSeek"][1])
-    if preset != "自定义":
-        target_base, target_model = presets[preset]
-        if (
-            st.session_state.get("base_url") != target_base
-            or st.session_state.get("model_name") != target_model
-        ):
-            st.session_state.base_url = target_base
-            st.session_state.model_name = target_model
-            st.rerun()
-    base_url = st.text_input("Base URL", key="base_url",
-                             help="DeepSeek：https://api.deepseek.com；OpenAI：https://api.openai.com/v1")
-    model_name = st.text_input("模型名", key="model_name",
-                               help="DeepSeek 用 deepseek-chat；推理模型 deepseek-reasoner 较慢")
-    if st.button("🔌 测试连接", width="stretch"):
-        if not api_key:
-            st.warning("请先填写 API Key 再测试")
-        else:
-            probe = create_analyzer(api_key=api_key, base_url=base_url, model=model_name)
-            ok, msg = probe.ping()
-            if ok:
-                st.success(f"连接正常 ✅ {base_url} / {model_name}")
-            else:
-                st.error(f"连接失败：{msg}")
-    st.divider()
-    st.subheader("高级设置")
-    llm_enabled = st.toggle("启用 LLM 精分析", value=bool(api_key),
-                            help="低置信度文本调用大模型，可提高准确率（按量计费）")
+    # 1（2026-08-19）：LLM 开关先行，开启后才展示 Key/服务商配置区；
+    # P1-2 默认词典模式（离线可跑），LLM 由用户主动开启
+    llm_enabled = st.toggle(
+        "启用 LLM 精分析",
+        value=False,
+        key="llm_enabled",
+        help="默认词典模式（离线可跑，不发送数据）；开启后低置信度文本将发送给"
+             "所选服务商，可提高准确率（按量计费）",
+    )
+    # 2.8（2026-08-18）：LLM 相关性复核随 LLM 自动开启，不再提供独立开关
+    relevance_check_enabled = llm_enabled
     if llm_enabled:
         st.warning(
             "⚠️ 开启后，低置信度文本将发送给所选服务商（DeepSeek/OpenAI 等），"
             "请勿输入含个人敏感信息的内容。"
         )
-    narrative_enabled = st.toggle("叙事框架/归因分析", value=False,
-                                  help="高级模式：分析文本的叙事框架与责任归因（默认关）")
-    # 2.8（2026-08-18）：LLM 相关性复核随 LLM 自动开启，不再提供独立开关
-    relevance_check_enabled = llm_enabled
-    st.caption(
-        "提示：环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 仅用于"
-        "开发/评测脚本，应用内 Key 只存本机 DPAPI。"
-    )
+        with st.expander("❓ 如何获取 API Key（小白版）"):
+            st.markdown(API_KEY_GUIDE)
+        saved_key = load_api_key(allow_env=False)
+        api_key = st.text_input(
+            "API Key（可选）", type="password", key="api_key_input",
+            value=saved_key,
+            help="不填则使用词典预筛模式，离线可跑；本机已保存的 Key 会自动回填",
+        )
+        col_save, col_clear = st.columns(2)
+        if col_save.button("💾 保存到本机", width="stretch"):
+            if api_key and api_key.strip():
+                save_api_key(api_key.strip())
+                st.success("已加密保存到本机（Windows DPAPI）")
+            else:
+                st.warning("未填写 API Key，无需保存")
+        if col_clear.button("🗑 清除已保存", width="stretch"):
+            clear_api_key()
+            st.session_state["api_key_input"] = ""
+            st.info("已清除本机保存的 API Key")
+        st.caption(
+            "Key 以 Windows DPAPI 加密存于本机（data/secrets/），仅当前用户可解密；"
+            "换机/重装后需重新填写。"
+        )
+        preset = st.selectbox(
+            "服务商预设",
+            ["DeepSeek", "OpenAI", "自定义"],
+            key="llm_preset",
+            help="选择 DeepSeek 会自动填好 Base URL 与模型名",
+        )
+        st.session_state.setdefault("base_url", presets["DeepSeek"][0])
+        st.session_state.setdefault("model_name", presets["DeepSeek"][1])
+        if preset != "自定义":
+            target_base, target_model = presets[preset]
+            if (
+                st.session_state.get("base_url") != target_base
+                or st.session_state.get("model_name") != target_model
+            ):
+                st.session_state.base_url = target_base
+                st.session_state.model_name = target_model
+                st.rerun()
+        base_url = st.text_input(
+            "Base URL", key="base_url",
+            help="DeepSeek：https://api.deepseek.com；OpenAI：https://api.openai.com/v1",
+        )
+        model_name = st.text_input(
+            "模型名", key="model_name",
+            help="DeepSeek 用 deepseek-chat；推理模型 deepseek-reasoner 较慢",
+        )
+        if st.button("🔌 测试连接", width="stretch"):
+            if not api_key:
+                st.warning("请先填写 API Key 再测试")
+            else:
+                probe = create_analyzer(
+                    api_key=api_key, base_url=base_url, model=model_name
+                )
+                ok, msg = probe.ping()
+                if ok:
+                    st.success(f"连接正常 ✅ {base_url} / {model_name}")
+                else:
+                    st.error(f"连接失败：{msg}")
+    else:
+        # LLM 关闭时给确认页兜底定义（不渲染配置控件，避免 NameError）
+        api_key = ""
+        base_url = presets["DeepSeek"][0]
+        model_name = presets["DeepSeek"][1]
+    st.divider()
+    # 4（2026-08-19）：渠道风控安全从③渠道页移入"高级选项"；叙事/归因同组
+    with st.expander("高级选项（渠道风控安全/叙事归因，默认收起）", expanded=False):
+        narrative_enabled = st.toggle(
+            "叙事框架/归因分析", value=False, key="narrative_enabled",
+            help="高级模式：分析文本的叙事框架与责任归因（默认关）",
+        )
+        st.caption(
+            "仅对 LLM 精分析过的文本执行（成本控制设计）；归因/框架为固定词表。"
+        )
+        st.caption(
+            "提示：环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 仅用于"
+            "开发/评测脚本，应用内 Key 只存本机 DPAPI。"
+        )
+        st.divider()
+        st.markdown("**渠道风控安全（每日配额）**")
+        st.caption(
+            "每日配额按「关键词数 × 每关键词上限」估算消耗；微博/小红书有默认上限，"
+            "可在下方调整（-1=不限；不限的渠道不在此显示）。"
+            "检测到风控时渠道会自动冷却，可在此手动解除。"
+        )
+        _quota_channels = list(st.session_state.get("channel_ids") or [])
+        _quota_infos = {i["id"]: i["name"] for i in list_channel_infos()}
+        quota_save: dict[str, int] = {}
+        if not _quota_channels:
+            st.caption("未选择采集渠道，暂无可管理的风控设置。")
+        for cid in _quota_channels:
+            s = jobs.channel_state(cid)
+            if int(s.get("quota_limit") or -1) < 0:
+                continue  # 不限额度渠道不显示配额行，避免用户困惑
+            if s.get("paused"):
+                status = "⏸ 已暂停"
+            elif s.get("cool_until"):
+                status = f"🔥 冷却至 {s['cool_until']}"
+            else:
+                limit = s.get("quota_limit")
+                status = f"今日 {s.get('quota_used', 0)}/{limit}"
+            q1, q2, q3, q4 = st.columns([2.2, 1.6, 1, 1])
+            q1.caption(f"{_quota_infos.get(cid, cid)}：{status}")
+            limit_val = q2.number_input(
+                "每日上限",
+                min_value=-1,
+                max_value=100000,
+                value=int(s.get("quota_limit", -1)),
+                key=f"quota_limit_{cid}",
+                label_visibility="collapsed",
+                help="每日消耗上限（按预计采集条数计）；-1 表示不限",
+            )
+            quota_save[cid] = int(limit_val)
+            if q3.button("恢复" if s.get("paused") else "暂停", key=f"pause_{cid}"):
+                (jobs.resume_channel if s.get("paused") else jobs.pause_channel)(cid)
+                st.rerun()
+            if s.get("cool_until") and q4.button("解除冷却", key=f"uncool_{cid}"):
+                jobs.clear_cooldown(cid)
+                st.rerun()
+        if _quota_channels and st.button("保存配额设置", key="save_quota"):
+            for cid, val in quota_save.items():
+                jobs.set_quota_limit(cid, val)
+            st.success("每日配额已保存")
+            st.rerun()
     with st.expander("查看《使用边界》"):
         st.markdown(usage_boundary.boundary_text())
     with st.expander("🗃 数据管理"):
@@ -1159,6 +1631,45 @@ with st.sidebar:
                         )
                     except RuntimeError as exc:
                         st.warning(str(exc))
+            st.divider()
+            # P1-4 一键清除全部数据（删除不可恢复，优先回收站；双重确认）
+            if st.button(
+                "⚠️ 一键清除全部数据（报告/任务/日志/Cookie/Key）",
+                key="lifecycle_clear_all",
+                width="stretch",
+            ):
+                st.session_state["lifecycle_confirm_clear_all"] = True
+            if st.session_state.get("lifecycle_confirm_clear_all"):
+                _cv = lifecycle.clear_all_data(dry_run=True)
+                st.warning(
+                    f"将删除 {_cv['reports_deleted']} 个报告目录（含归档）、全部任务记录、"
+                    f"日志、已存 Cookie/API Key、上次计划与命名模板，并重置《使用边界》确认"
+                    "（重启后重新确认）；"
+                    f"预计释放 {_cv['freed_bytes'] / 1048576:.1f} MB。"
+                    "删除不可恢复（优先回收站）；演示数据与黄金集夹具不删除。"
+                )
+                cc1, cc2 = st.columns(2)
+                if cc1.button(
+                    "确认全部清除（不可恢复）",
+                    key="lifecycle_clear_all_yes",
+                    type="primary",
+                    width="stretch",
+                ):
+                    try:
+                        with lifecycle.LifecycleLock():
+                            res = lifecycle.clear_all_data(dry_run=False)
+                        st.session_state.pop("lifecycle_confirm_clear_all", None)
+                        st.success(
+                            f"已清除 {res['reports_deleted']} 个报告目录，"
+                            f"释放 {res['freed_bytes'] / 1048576:.1f} MB；"
+                            "Key/Cookie 已清除，使用边界确认已重置。"
+                        )
+                        st.rerun()
+                    except RuntimeError as exc:
+                        st.warning(str(exc))
+                if cc2.button("取消", key="lifecycle_clear_all_no", width="stretch"):
+                    st.session_state.pop("lifecycle_confirm_clear_all", None)
+                    st.rerun()
         except Exception as exc:
             st.caption(f"数据管理暂不可用：{exc}")
     with st.expander("🛠 开发者模式"):
@@ -1210,14 +1721,71 @@ stage = st.session_state.stage
 
 if stage == 0:
     st.subheader("① 品牌和分析维度确认")
+    # UX 5.1 复用与连续性：最近一次计划 + ≤5 命名模板（免重填）
+    _last_plan = plans_store.load_last_plan()
+    _templates = plans_store.list_templates()
+    if _last_plan or _templates:
+        with st.expander("♻️ 复用之前的计划（免重填）", expanded=True):
+            if _last_plan:
+                _lp = _last_plan
+                r1, r2 = st.columns([3, 1])
+                r1.caption(
+                    f"**最近一次**：{_lp.get('subject') or '未命名'} · "
+                    f"{len(_lp.get('keywords') or [])} 个关键词 · "
+                    f"{'、'.join(c.get('channel_id', '') for c in _lp.get('channels') or []) or '—'} · "
+                    f"保存于 {(_lp.get('_saved_at') or '')[:16]}"
+                )
+                if r2.button("↩ 恢复上次计划", key="reuse_last", type="primary", width="stretch"):
+                    _prefill_wizard_from_plan(_lp)
+                    st.session_state.plan_restored_notice = (
+                        f"已恢复上次计划「{_lp.get('subject') or '未命名'}」，"
+                        "请核对关键词、渠道、时间与高级参数（渠道上限/自定义维度/复核模式已一并恢复）。"
+                    )
+                    st.session_state.stage = 1
+                    st.rerun()
+            if _templates:
+                _tmap = {
+                    t["id"]: f"{t['name']}（{(t.get('updated_at') or '')[:16]}）"
+                    for t in _templates
+                }
+                tpick = st.selectbox(
+                    "命名模板",
+                    options=list(_tmap),
+                    format_func=lambda i: _tmap[i],
+                    key="reuse_tmpl_pick",
+                    help="保存的常用分析对象；最多 5 个，可在确认页新增/覆盖",
+                )
+                t1, t2 = st.columns([3, 1])
+                if t1.button("↩ 使用该模板", key="reuse_tmpl_use", type="primary", width="stretch"):
+                    _tmpl_plan = plans_store.load_template(tpick) or {}
+                    _prefill_wizard_from_plan(_tmpl_plan)
+                    st.session_state.plan_restored_notice = (
+                        f"已使用模板「{_tmap[tpick].split('（')[0]}」，"
+                        "请核对关键词、渠道、时间与高级参数（渠道上限/自定义维度/复核模式已一并恢复）。"
+                    )
+                    st.session_state.stage = 1
+                    st.rerun()
+                if t2.button("🗑 删除", key="reuse_tmpl_del", width="stretch"):
+                    plans_store.delete_template(tpick)
+                    st.rerun()
+            st.caption(
+                f"模板占用 {len(_templates)}/{plans_store.MAX_TEMPLATES}；"
+                "恢复后请在后续步骤核对关键词、渠道与时间段。"
+            )
+        st.divider()
     mode = st.radio(
-        "分析方式", ["按品牌分析（推荐）", "手动关键词（不分类）"], horizontal=True
+        "分析方式",
+        ["按品牌分析（推荐）", "手动关键词（不分类）"],
+        horizontal=True,
+        key="wizard_mode",
     )
     st.session_state.mode = mode
 
     if mode.startswith("按品牌"):
         subject = st.text_input(
-            "品牌 / 产品 / 事件名称", placeholder="例如：华润万家、恋与深空、iPhone"
+            "品牌 / 产品 / 事件名称",
+            value=st.session_state.get("subject", ""),
+            placeholder="例如：华润万家、恋与深空、iPhone",
         )
         st.session_state.subject = subject.strip()
         st.markdown("**选择品牌模块（可多选）**——模块决定分析维度组合：")
@@ -1256,6 +1824,7 @@ if stage == 0:
             st.info("未选择模块，将按整体情感分析（不区分维度）")
         custom = st.text_area(
             "添加自定义维度（可选，参与分析统计）",
+            value=st.session_state.get("custom_dim", ""),
             placeholder="例如：\n联名活动：联名,IP,周边\n物流体验：发货,快递,物流",
             height=100,
             help="格式：维度名：关键词1,关键词2,…（每行一个维度，最多 4 个；"
@@ -1318,12 +1887,21 @@ if stage == 0:
 
 elif stage == 1:
     st.subheader("② 确认关键词")
+    _restored_notice = st.session_state.pop("plan_restored_notice", None)
+    if _restored_notice:
+        st.success(_restored_notice)
     mode = st.session_state.get("mode", "")
     subject = st.session_state.get("subject", "")
-    default_text = subject if mode.startswith("按品牌") else ""
+    _saved_kws = st.session_state.get("keywords") or []
+    _kw_default = (
+        "\n".join(_saved_kws)
+        if _saved_kws
+        else (subject if mode.startswith("按品牌") else "")
+    )
     editable = st.text_area(
         "关键词（每行一个，可编辑）",
-        value=default_text,
+        value=_kw_default,
+        key="keywords_input",
         height=160,
         help="关键词 = 实际搜索词；数量越多采集越广，但风控风险与费用也越高",
     )
@@ -1357,12 +1935,12 @@ elif stage == 2:
         "采集渠道（建议先使用演示数据体验全流程）",
         options=[i["id"] for i in infos],
         default=default_channels,
+        key="channel_ids",
         format_func=lambda cid: {
             i["id"]: f"{i['name']} — {i['applicability']}"
             for i in infos
         }[cid],
     )
-    st.session_state.channel_ids = selected
 
     # 渠道提示：已选渠道的风控/前置条件/采集规则统一展示（避免警告散落各处）
     risk_texts = []
@@ -1370,7 +1948,7 @@ elif stage == 2:
     if "weibo" in selected:
         risk_texts.append(
             "微博：风控严格，高频请求可能导致账号被临时限制甚至封禁；"
-            "默认上限 20，请避免短时间重复运行。"
+            "默认上限 10，请避免短时间重复运行。"
         )
     if "xiaohongshu" in selected:
         risk_texts.append(
@@ -1392,10 +1970,9 @@ elif stage == 2:
     with col1:
         default_start = dt.date.today() - dt.timedelta(days=30)
         date_range = st.date_input(
-            "时间段", value=(default_start, dt.date.today()), help="采集该时间段内的内容"
+            "时间段", value=(default_start, dt.date.today()),
+            key="date_range", help="采集该时间段内的内容",
         )
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            st.session_state.date_range = date_range
     with col2:
         if "weibo" in selected:
             if not st.session_state.get("weibo_cookie"):
@@ -1443,138 +2020,8 @@ elif stage == 2:
 
     if selected:
         st.divider()
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            comments_enabled = st.toggle(
-                "抓取评论", value=True, key="comments_enabled",
-                help="关闭后不抓取评论，只分析帖子正文",
-            )
-        with c2:
-            comments_per_post = st.slider(
-                "每帖评论上限", 0, 50, 20, key="comments_per_post",
-                help="每条帖子最多抓取多少条评论（评论越多采集越慢）",
-            )
-        # Streamlit 会在控件卸载时清理其 widget key，镜像到普通键供确认页/提交读取
-        st.session_state.comments_enabled_opt = comments_enabled
-        st.session_state.comments_per_post_opt = comments_per_post
-        st.text_input(
-            "词云排除词（可选）",
-            key="exclude_words",
-            placeholder="例如：黄金之地、夏萧因（角色名/地名，逗号或空格分隔）",
-            help="填写的词不会出现在词云和共现网络里；角色名、地名等建议填在这里",
-        )
-        st.caption(
-            "用法：填写不想出现在词云/共现网络里的角色名或地名；"
-            "多个词用逗号、顿号或空格分隔，例如：黄金之地、夏萧因、顾时夜"
-        )
-        st.session_state.exclude_words_opt = [
-            t.strip()
-            for t in re.split(r"[,，、\s]+", st.session_state.get("exclude_words", ""))
-            if t.strip()
-        ]
-        # 广告/官方与人工复核（方案 A：单三选控件取代两个开关，2026-08-16）
-        _review_on = bool(st.session_state.get("review_enabled_opt", False))
-        _exclude_on = bool(st.session_state.get("exclude_ad_opt", False))
-        _mode_default = 3 if _review_on else (2 if _exclude_on else 1)
-        _mode = st.radio(
-            "广告/官方与人工复核",
-            AD_REVIEW_MODES,
-            index=_mode_default - 1,
-            key="ad_review_mode",
-            help=(
-                "广告/官方默认计入（消费者可见的市场信号）；规则剔除仅为建议；"
-                "人工复核时标记的广告/官方将从情感统计剔除（不标记的照常计入）。"
-            ),
-        )
-        st.session_state.review_enabled_opt = _mode.startswith("人工复核")
-        st.session_state.exclude_ad_opt = _mode != AD_REVIEW_MODES[0]
-        st.caption(
-            "「人工复核」= 采集并清洗后暂停，进入审核页把相关性剔除与广告/官方标记一次做完，"
-            "再继续情感分析；标记的广告/官方仅从情感统计剔除（采集量/关键词效果保留）。"
-        )
-        st.divider()
-        st.markdown("**每关键词采集条数上限（按渠道）**")
+        # 5（2026-08-19）：渠道诊断紧随渠道多选之后，选完即可体检
         info_map = {i["id"]: i["name"] for i in infos}
-        st.session_state.channel_limits = {}
-        lim_cols = st.columns(min(len(selected), 4))
-        for i, cid in enumerate(selected):
-            with lim_cols[i % 4]:
-                default = CHANNEL_LIMIT_DEFAULTS.get(cid, 10)
-                is_ws = cid.startswith("websearch")
-                help_txt = CHANNEL_LIMIT_HELP.get(
-                    cid, "每个关键词最多抓取多少条链接"
-                )
-                if is_ws:
-                    help_txt = (
-                        "单查询可获取量约 5~13 条，上限 13 为收益/反爬平衡；"
-                        "要增加采集量建议增加关键词（策略加词），而非调大上限"
-                    )
-                val = st.number_input(
-                    f"{info_map.get(cid, cid)}",
-                    min_value=1,
-                    max_value=CHANNEL_LIMIT_MAX.get(cid, 200),
-                    value=default,
-                    key=f"limit_{cid}",
-                    help=help_txt,
-                )
-                st.session_state.channel_limits[cid] = int(val)
-        st.divider()
-        st.markdown("**渠道安全（每日配额 / 风控冷却 / 暂停）**")
-        st.caption(
-            "每日配额按「关键词数 × 每关键词上限」估算消耗；微博/小红书有默认上限，"
-            "可在下方调整（-1=不限；不限的渠道不在此显示）。"
-            "检测到风控时渠道会自动冷却，可在此手动解除。"
-        )
-        quota_save: dict[str, int] = {}
-        for cid in selected:
-            s = jobs.channel_state(cid)
-            name = info_map.get(cid, cid)
-            if int(s.get("quota_limit") or -1) < 0:
-                continue  # 不限额度渠道不显示配额行，避免用户困惑
-            if s.get("paused"):
-                status = "⏸ 已暂停"
-            elif s.get("cool_until"):
-                status = f"🔥 冷却至 {s['cool_until']}"
-            else:
-                limit = s.get("quota_limit")
-                status = f"今日 {s.get('quota_used', 0)}/{limit}"
-            q1, q2, q3, q4 = st.columns([2.2, 1.6, 1, 1])
-            q1.caption(f"{name}：{status}")
-            limit_val = q2.number_input(
-                "每日上限",
-                min_value=-1,
-                max_value=100000,
-                value=int(s.get("quota_limit", -1)),
-                key=f"quota_limit_{cid}",
-                label_visibility="collapsed",
-                help="每日消耗上限（按预计采集条数计）；-1 表示不限",
-            )
-            quota_save[cid] = int(limit_val)
-            if q3.button("恢复" if s.get("paused") else "暂停", key=f"pause_{cid}"):
-                (jobs.resume_channel if s.get("paused") else jobs.pause_channel)(cid)
-                st.rerun()
-            if s.get("cool_until") and q4.button("解除冷却", key=f"uncool_{cid}"):
-                jobs.clear_cooldown(cid)
-                st.rerun()
-        if st.button("保存配额设置", key="save_quota"):
-            for cid, val in quota_save.items():
-                jobs.set_quota_limit(cid, val)
-            st.success("每日配额已保存")
-            st.rerun()
-        est_items, est_comments, est_min = estimate_collection(
-            st.session_state.get("keywords", []),
-            selected,
-            st.session_state.channel_limits,
-            comments_per_post,
-            comments_enabled,
-        )
-        st.caption(
-            f"预计采集：链接约 {est_items} 条、评论约 {est_comments} 条，"
-            f"耗时约 {est_min} 分钟（受网络与平台频率限制影响；"
-            "估算随关键词数、渠道上限与评论设置变化）"
-        )
-
-        # ── 渠道诊断（体检 × 一键探针融合，docs/archive/渠道诊断融合方案.md）──
         st.markdown("**🔍 渠道诊断**")
         st.caption(
             "轻量层并行真实探测各渠道（WebSearch = 360 单引擎出数探测，含风控/降级"
@@ -1609,9 +2056,62 @@ elif stage == 2:
                     for rich in cur.values()
                 ):
                     st.caption(
-                        "暂停/冷却/配额不足的渠道请到上方「渠道安全」区处理"
-                        "（解除冷却 / 恢复 / 调整每日上限）。"
+                        "暂停/冷却/配额不足的渠道请到侧边栏「高级选项 → 渠道风控安全」"
+                        "处理（解除冷却 / 恢复 / 调整每日上限）。"
                     )
+        st.divider()
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            comments_enabled = st.toggle(
+                "抓取评论", value=True, key="comments_enabled",
+                help="关闭后不抓取评论，只分析帖子正文。"
+                "评论抓取仅对 B站/微博/小红书渠道生效",
+            )
+        with c2:
+            comments_per_post = st.slider(
+                "每帖评论上限", 0, 10, 10, key="comments_per_post",
+                help="每条帖子最多抓取多少条评论（评论越多采集越慢）",
+            )
+        # Streamlit 会在控件卸载时清理其 widget key，镜像到普通键供确认页/提交读取
+        st.session_state.comments_enabled_opt = comments_enabled
+        st.session_state.comments_per_post_opt = comments_per_post
+        st.divider()
+        st.markdown("**每关键词采集条数上限（按渠道）**")
+        st.session_state.channel_limits = {}
+        lim_cols = st.columns(min(len(selected), 4))
+        for i, cid in enumerate(selected):
+            with lim_cols[i % 4]:
+                default = CHANNEL_LIMIT_DEFAULTS.get(cid, 10)
+                is_ws = cid.startswith("websearch")
+                help_txt = CHANNEL_LIMIT_HELP.get(
+                    cid, "每个关键词最多抓取多少条链接"
+                )
+                if is_ws:
+                    help_txt = (
+                        "单查询可获取量约 5~13 条，上限 13 为收益/反爬平衡；"
+                        "要增加采集量建议增加关键词（策略加词），而非调大上限"
+                    )
+                val = st.number_input(
+                    f"{info_map.get(cid, cid)}",
+                    min_value=1,
+                    max_value=CHANNEL_LIMIT_MAX.get(cid, 200),
+                    value=default,
+                    key=f"limit_{cid}",
+                    help=help_txt,
+                )
+                st.session_state.channel_limits[cid] = int(val)
+        est_items, est_comments, est_min = estimate_collection(
+            st.session_state.get("keywords", []),
+            selected,
+            st.session_state.channel_limits,
+            comments_per_post,
+            comments_enabled,
+        )
+        st.caption(
+            f"预计采集：链接约 {est_items} 条、评论约 {est_comments} 条，"
+            f"耗时约 {est_min} 分钟（受网络与平台频率限制影响；"
+            "估算随关键词数、渠道上限与评论设置变化）"
+        )
 
         # ── 关键词优化模块（2026-08-18）──
         # 仅展示已实际生效的渠道：微博（2 品牌达标）。B站经 A4 修复后单关键词
@@ -1684,6 +2184,44 @@ elif stage == 2:
                 value=st.session_state.get("official_domains", ""),
             )
 
+        # 2（2026-08-19）：词云排除词 / 广告与人工复核放到采集设置之后
+        st.divider()
+        st.text_input(
+            "词云排除词（可选）",
+            key="exclude_words",
+            placeholder="例如：黄金之地、夏萧因（角色名/地名，逗号或空格分隔）",
+            help="填写的词不会出现在词云和共现网络里；角色名、地名等建议填在这里",
+        )
+        st.caption(
+            "用法：填写不想出现在词云/共现网络里的角色名或地名；"
+            "多个词用逗号、顿号或空格分隔，例如：黄金之地、夏萧因、顾时夜"
+        )
+        st.session_state.exclude_words_opt = [
+            t.strip()
+            for t in re.split(r"[,，、\s]+", st.session_state.get("exclude_words", ""))
+            if t.strip()
+        ]
+        # 广告/官方与人工复核（方案 A：单三选控件取代两个开关，2026-08-16）
+        _review_on = bool(st.session_state.get("review_enabled_opt", False))
+        _exclude_on = bool(st.session_state.get("exclude_ad_opt", False))
+        _mode_default = 3 if _review_on else (2 if _exclude_on else 1)
+        _mode = st.radio(
+            "广告/官方与人工复核",
+            AD_REVIEW_MODES,
+            index=_mode_default - 1,
+            key="ad_review_mode",
+            help=(
+                "广告/官方默认计入（消费者可见的市场信号）；规则剔除仅为建议；"
+                "人工复核时标记的广告/官方将从情感统计剔除（不标记的照常计入）。"
+            ),
+        )
+        st.session_state.review_enabled_opt = _mode.startswith("人工复核")
+        st.session_state.exclude_ad_opt = _mode != AD_REVIEW_MODES[0]
+        st.caption(
+            "「人工复核」= 采集并清洗后暂停，进入审核页把相关性剔除与广告/官方标记一次做完，"
+            "再继续情感分析；标记的广告/官方仅从情感统计剔除（采集量/关键词效果保留）。"
+        )
+
     col1, col2 = st.columns(2)
     if col1.button("← 上一步", width="stretch", key="prev_2"):
         prev_stage()
@@ -1752,7 +2290,7 @@ elif stage == 3:
     st.markdown("### 计划摘要")
     est_items, est_comments, est_min = estimate_collection(
         keywords, channel_ids, st.session_state.get("channel_limits", {}),
-        st.session_state.get("comments_per_post_opt", 20),
+        st.session_state.get("comments_per_post_opt", 10),
         st.session_state.get("comments_enabled_opt", True),
         channel_queries=channel_queries,
     )
@@ -1845,6 +2383,63 @@ elif stage == 3:
         for i, k in enumerate(keywords, 1):
             st.markdown(f"{i}. {k}")
 
+    # 确认页物化计划（供提交与模板保存共用；不产生副作用）
+    plan = build_plan(
+        subject=st.session_state.get("subject", ""),
+        domain_id=st.session_state.get("domain_id") or None,
+        dimension_ids=st.session_state.get("selected_dims", []),
+        keyword_groups=st.session_state.get("keyword_groups", []),
+        manual_keywords=st.session_state.get("keywords", []),
+        channel_ids=channel_ids,
+        date_start=date_range[0] if isinstance(date_range, tuple) else None,
+        date_end=date_range[1] if isinstance(date_range, tuple) else None,
+        comments_enabled=st.session_state.get("comments_enabled_opt", True),
+        comments_per_post=st.session_state.get("comments_per_post_opt", 10),
+        exclude_words=st.session_state.get("exclude_words_opt", []),
+        llm_enabled=llm_enabled,
+        llm_base_url=base_url,
+        llm_model=model_name,
+        custom_dimensions=st.session_state.get("custom_dimensions", []),
+        narrative_enabled=narrative_enabled,
+        relevance_check_enabled=relevance_check_enabled,
+        channel_params=channel_params,
+        review_enabled=st.session_state.get("review_enabled_opt", False),
+        exclude_ad_enabled=st.session_state.get("exclude_ad_opt", False),
+    )
+
+    # UX 5.2 预期管理：同类任务历史耗时均值（供"通常多久跑完"预期）
+    _dur = jobs.history_duration_stats(plan)
+    if _dur.get("avg_minutes") is not None:
+        st.caption(
+            f"⏱ 同类任务（LLM {'开' if plan.llm_enabled else '关'} · "
+            f"{'抓评论' if plan.comments_enabled else '不抓评论'}）历史执行约 "
+            f"**{_dur['avg_minutes']:.0f} 分钟**（中位 {_dur['median_minutes']:.0f} 分钟，"
+            f"基于最近 {_dur['n']} 次{'同类' if _dur['bucket'] == '同类' else '全部'}任务；"
+            "不含排队时间，实际受网络与平台频率限制影响）"
+        )
+    else:
+        st.caption(
+            "⏱ 暂无同类任务历史，耗时无法预估；建议先用演示数据体验全流程。"
+        )
+
+    # UX 5.1：把当前配置存为命名模板（≤5，同名覆盖）
+    st.divider()
+    tp1, tp2 = st.columns([3, 1])
+    _tmpl_name = tp1.text_input(
+        "把当前配置存为命名模板（≤5 个，下次在①直接恢复）",
+        placeholder="例如：OPPO 周度复盘",
+        key="tmpl_save_name",
+    )
+    if tp2.button("💾 保存模板", key="tmpl_save_btn", width="stretch"):
+        _res = plans_store.save_template(_tmpl_name, plan)
+        if _res["ok"]:
+            st.success(
+                f"已{'更新' if _res['action'] == 'updated' else '新增'}模板「{_tmpl_name.strip()}」"
+                f"（{len(plans_store.list_templates())}/{plans_store.MAX_TEMPLATES}）"
+            )
+        else:
+            st.error(_res["error"])
+
     col1, col2 = st.columns(2)
     if col1.button("← 上一步", width="stretch", key="prev_3"):
         prev_stage()
@@ -1865,28 +2460,6 @@ elif stage == 3:
                 save_cookie("weibo", st.session_state.weibo_cookie.strip())
             except Exception:
                 pass  # 加密保存失败不阻塞提交，该渠道会降级提示
-        plan = build_plan(
-            subject=st.session_state.get("subject", ""),
-            domain_id=st.session_state.get("domain_id") or None,
-            dimension_ids=st.session_state.get("selected_dims", []),
-            keyword_groups=st.session_state.get("keyword_groups", []),
-            manual_keywords=st.session_state.get("keywords", []),
-            channel_ids=channel_ids,
-            date_start=date_range[0] if isinstance(date_range, tuple) else None,
-            date_end=date_range[1] if isinstance(date_range, tuple) else None,
-            comments_enabled=st.session_state.get("comments_enabled_opt", True),
-            comments_per_post=st.session_state.get("comments_per_post_opt", 20),
-            exclude_words=st.session_state.get("exclude_words_opt", []),
-            llm_enabled=llm_enabled,
-            llm_base_url=base_url,
-            llm_model=model_name,
-            custom_dimensions=st.session_state.get("custom_dimensions", []),
-            narrative_enabled=narrative_enabled,
-            relevance_check_enabled=relevance_check_enabled,
-            channel_params=channel_params,
-            review_enabled=st.session_state.get("review_enabled_opt", False),
-            exclude_ad_enabled=st.session_state.get("exclude_ad_opt", False),
-        )
         # 渠道安全预检：暂停/冷却/配额不足在提交前拦截，避免任务空跑
         blocked = []
         for cfg in plan.channels:
@@ -1908,6 +2481,8 @@ elif stage == 3:
             st.stop()
         # 任务提交后台队列：关页面/刷新不中断，由常驻 worker 执行
         task_id = jobs.submit_task(plan)
+        # UX 5.1：提交成功后自动记录"最近一次计划"（脱敏落库，免重填）
+        plans_store.save_last_plan(plan)
         st.session_state.task_id = task_id
         st.session_state.stage = 4
         st.rerun()
@@ -1955,18 +2530,43 @@ elif stage == 4:
         frac = max(0.0, min(float(task["progress_frac"]), 1.0))
         st.progress(frac, text=task["message"] or "排队中…")
         st.caption(f"整体进度：{frac * 100:.0f}%")
+        _started = task.get("started_at")
+        if _started:
+            try:
+                _run_mins = (
+                    dt.datetime.now() - dt.datetime.fromisoformat(_started)
+                ).total_seconds() / 60.0
+                st.caption(f"已运行约 {_run_mins:.0f} 分钟")
+            except (TypeError, ValueError):
+                pass
         snapshot = task.get("step_snapshot") or {}
         step_map = (snapshot.get("steps") or {}) if isinstance(snapshot, dict) else {}
         for sid, label in STEP_DEFS:
             st_data = step_map.get(sid)
             if not st_data:
-                st.caption(f"⏳ {label}：等待中")
-                continue
-            icon = STEP_ICONS.get(st_data.get("state", "pending"), "⏳")
-            text = f"{icon} {label}"
-            if st_data.get("detail"):
-                text += f"：{st_data['detail']}"
-            st.caption(text)
+                _st, _detail = "pending", "等待中"
+            else:
+                _st = st_data.get("state", "pending")
+                _detail = st_data.get("detail") or ""
+            _color = {
+                "pending": "var(--g-500)",
+                "running": "var(--c-brand-hover)",
+                "done": "var(--s-success)",
+                "skipped": "var(--g-400)",
+                "failed": "var(--s-danger)",
+            }.get(_st, "var(--g-500)")
+            _opacity = "opacity:.45;" if _st == "skipped" else ""
+            _row = html.escape(label)
+            if _detail:
+                _row += f"：{html.escape(_detail)}"
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:8px;'
+                f'color:{_color};{_opacity}min-height:26px">'
+                f'<span style="display:inline-flex;flex:none">'
+                f'{_STEP_STATE_SVG.get(_st, _STEP_STATE_SVG["pending"])}</span>'
+                f'<span>{_row}</span></div>',
+                unsafe_allow_html=True,
+            )
             if sid == "collect":
                 channels = (snapshot.get("channels") or {}) if isinstance(snapshot, dict) else {}
                 if channels:
@@ -2025,6 +2625,18 @@ elif stage == 5:
     s = bundle.summary
     dist = s["sentiment_distribution"]
     st.subheader("⑥ 分析结果")
+    # P1-1：视图切换（结论视图 = 结论 + 4 指标 + 整体情感主图；全部图表 = 展开全部）
+    view = st.segmented_control(
+        "视图",
+        ["只看结论", "全部图表"],
+        default="只看结论",
+        key="result_view",
+        label_visibility="collapsed",
+        help="结论视图 = 一句话结论 + 4 指标 + 整体情感主图；需要全部图表时切换",
+    )
+    show_all = view == "全部图表"
+    if s["total_items"] < 10:
+        st.caption("⚠️ 小样本（n<10）：以下指标与结论仅供参考。")
 
     for w in bundle.warnings:
         st.warning(w)
@@ -2056,19 +2668,85 @@ elif stage == 5:
                 else:
                     st.error("请先粘贴新的 Cookie")
 
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("整体倾向", s["overall_sentiment"])
-    m2.metric("平均情感分", f"{s['avg_score']:.2f}")
-    m3.metric("帖子数", s["total_posts"])
-    m4.metric("编码文本数", s["total_items"])
-    m5.metric("正面占比", f"{dist['positive']['ratio'] * 100:.1f}%")
+    # —— ① 一句话结论胶囊（含可信度胶囊：数据量 + 时间窗 + 待复核） ——
     cv = s.get("consumer_voice") or {}
-    m6.metric(
-        "消费者声音占比",
-        "—" if cv.get("ratio") is None else f"{cv['ratio'] * 100:.1f}%",
-        cv.get("tier"),
-        help="E=保留且非广告/官方文本；占比=E/采集量。分档：充足/够用/不足"
-             "（不足说明消费者声音样本偏少，建议检查关键词与广告/官方剔除）",
+    _lead = (bundle.report_text or "").strip()
+    _lead = _lead.splitlines()[0] if _lead else (bundle.conclusion or "")
+    _dr = (
+        f"{bundle.plan.date_start} ~ {bundle.plan.date_end}"
+        if bundle.plan.date_start or bundle.plan.date_end
+        else "不限时间"
+    )
+    _llm_n = sum(1 for it in bundle.coded_items if it.method == "llm")
+    _llm_ratio = round(_llm_n / max(s["total_items"], 1) * 100)
+    _nr_n = sum(
+        1 for it in bundle.coded_items
+        if it.need_review and not it.reviewed_by
+    )
+    _ti = s["total_items"]
+    _trust_txt = (
+        "较高（样本充足）" if _ti >= 100
+        else "中等（样本较少）" if _ti >= 30
+        else "较低（小样本）"
+    )
+    st.markdown(
+        f"""
+<div class="conclusion-card">
+  <div class="kicker">分析结论</div>
+  <h2>{html.escape(_lead or "暂无结论")}</h2>
+  <div class="trust">
+    <span class="t-item">{len(bundle.channel_results)} 渠道 · {_dr}</span>
+    <span class="t-item">帖子 {s['total_posts']} · 编码文本 {s['total_items']} 条</span>
+    <span class="t-item">LLM 精分析 {_llm_ratio}%</span>
+    <span class="t-item">可信度：{_trust_txt}</span>
+    {f'<span class="t-item t-warn">{_nr_n} 条样本待人工复核</span>' if _nr_n else ''}
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # —— ② 4 张指标卡（数字 tabular-nums；整体倾向用情感标签三件套） ——
+    _ov_key = (
+        "pos" if s["overall_sentiment"] == "正面"
+        else ("neg" if s["overall_sentiment"] == "负面" else "neu")
+    )
+    _ov_sym = {"pos": "✓", "neg": "✗", "neu": "～"}[_ov_key]
+    _worst = "—"
+    _dims = s.get("dimensions") or {}
+    if _dims:
+        _worst_dim = max(
+            _dims, key=lambda d: (_dims[d].get("negative_rate") or 0)
+        )
+        if _dims[_worst_dim].get("count", 0) >= 3:
+            _worst = dimension_cn(_worst_dim)
+    _cv_ratio = cv.get("ratio")
+    st.markdown(
+        f"""
+<div class="stat-cards">
+  <div class="stat-card">
+    <div class="k">整体倾向</div>
+    <div class="v"><span class="tag tag-{_ov_key}" style="font-size:18px;padding:4px 12px"><span class="sym">{_ov_sym}</span>{html.escape(s['overall_sentiment'])}</span></div>
+    <div class="d">正面 {dist['positive']['ratio'] * 100:.1f}% · 中性 {dist['neutral']['ratio'] * 100:.1f}% · 负面 {dist['negative']['ratio'] * 100:.1f}%</div>
+  </div>
+  <div class="stat-card">
+    <div class="k">平均情感分</div>
+    <div class="v">{s['avg_score']:.2f}<span style="font-size:14px;font-weight:600;color:var(--text-muted)"> / 1.0</span></div>
+    <div class="d">区间 −1.0 ~ +1.0</div>
+  </div>
+  <div class="stat-card">
+    <div class="k">负面占比</div>
+    <div class="v neg">{dist['negative']['ratio'] * 100:.1f}<span style="font-size:14px;font-weight:600;color:var(--text-muted)">%</span></div>
+    <div class="d">{f'集中在「{_worst}」维度' if _worst != '—' else '—'}</div>
+  </div>
+  <div class="stat-card">
+    <div class="k">消费者声音</div>
+    <div class="v">{'—' if _cv_ratio is None else f'{_cv_ratio * 100:.1f}'}<span style="font-size:14px;font-weight:600;color:var(--text-muted)">%</span></div>
+    <div class="d">{html.escape(str(cv.get('tier') or '—'))}</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
     )
 
     # 采集说明（2026-08-18 采集透明度）：实际保留 < 配置上限时解释缺口
@@ -2092,24 +2770,13 @@ elif stage == 5:
             f"⚠️ 有 **{len(nr_unreviewed)}** 条需复核样本未确认："
             "当前指标与结论基于模型判定。复核后报告统计/图表/Excel/HTML 会自动更新。"
         )
-        c_go, c_skip, c_rebuild = st.columns([1, 1, 2])
+        c_go, c_skip = st.columns(2)
         if c_go.button("✅ 先去复核", key=f"nr_go_{task_id}"):
             st.session_state[f"nr_focus_{task_id}"] = True
             st.rerun()
         if c_skip.button("先看报告", key=f"nr_skip_btn_{task_id}"):
             st.session_state[f"nr_skip_{task_id}"] = True
             st.rerun()
-        if c_rebuild.button(
-            "完成复核并刷新报告（应用已确认项）", key=f"nr_rebuild_top_{task_id}"
-        ):
-            res = rebuild_report_after_review(task_id, bundle)
-            if res:
-                st.session_state.bundle, st.session_state.output_files = res
-                st.success("已按复核结果刷新报告（统计/图表/Excel/HTML 已更新）")
-                st.session_state[f"nr_skip_{task_id}"] = False
-                st.rerun()
-            else:
-                st.error("刷新报告失败：任务结果文件不可写")
 
     if bundle.insight_mode == "lexicon":
         st.warning(
@@ -2166,70 +2833,12 @@ elif stage == 5:
         ):
             st.caption(
                 "人工确认后回填情感并标记已复核；**全部确认后报告统计/图表/Excel/HTML "
-                "会按复核结果重算**（点「完成复核并刷新报告」或确认最后一条自动刷新）。"
+                "会按复核结果自动重算**（确认最后一条即自动刷新，无需手动操作）。"
             )
             unreviewed = [it for it in nr_items if not it.reviewed_by]
-            if unreviewed:
-                q1, q2 = st.columns(2)
-                if q1.button(
-                    "✅ 一键全部按当前判定确认并刷新报告",
-                    key=f"nr_all_{task_id}",
-                ):
-                    ok_n = sum(
-                        1 for it in unreviewed
-                        if task_id and apply_need_review_feedback(
-                            task_id, it.text_id, it.sentiment.value)
-                    )
-                    # 先重载 result.json（含刚写入的修正），再重建报告，避免覆盖
-                    res_load = open_task_result(task_id)
-                    if res_load:
-                        st.session_state.bundle, st.session_state.output_files = res_load
-                    res = rebuild_report_after_review(
-                        task_id, st.session_state.bundle)
-                    if res:
-                        st.session_state.bundle, st.session_state.output_files = res
-                    st.success(f"已按当前判定确认 {ok_n}/{len(unreviewed)} 条并刷新报告")
-                    st.session_state[f"nr_focus_{task_id}"] = False
-                    st.rerun()
-                if q2.button(
-                    "完成复核并刷新报告（应用已确认项）",
-                    key=f"nr_rebuild_{task_id}",
-                ):
-                    res = rebuild_report_after_review(
-                        task_id, st.session_state.bundle)
-                    if res:
-                        st.session_state.bundle, st.session_state.output_files = res
-                        st.success("已按复核结果刷新报告（统计/图表/Excel/HTML 已更新）")
-                        st.rerun()
-                    else:
-                        st.error("刷新报告失败：任务结果文件不可写")
-            csv_rows = [{
-                "text_id": it.text_id, "原文": it.text, "平台": it.platform,
-                "情感": it.sentiment.value,
-                "置信度": round(display_confidence(it.confidence, it.method), 3),
-                "需复核原因": it.need_review_reason, "已复核": it.reviewed_by,
-            } for it in nr_items]
-            csv_text = "\ufeff" + "\n".join(
-                [",".join(csv_rows[0].keys())]
-                + [",".join(str(r[k]).replace(",", "，").replace("\n", " ") for k in r)
-                   for r in csv_rows]
-            )
-            st.download_button(
-                "导出需复核清单 CSV", data=csv_text.encode("utf-8"),
-                file_name=f"need_review_{task_id or 'task'}.csv", mime="text/csv",
-                key=f"nr_export_{task_id}",
-            )
-            show_all = bool(st.session_state.get(f"nr_all_{task_id}"))
-            if st.button(
-                "显示：全部" if not show_all else "显示：仅未确认",
-                key=f"nr_toggle_{task_id}",
-            ):
-                st.session_state[f"nr_all_{task_id}"] = not show_all
-                st.rerun()
-            shown = nr_items if show_all == "全部" else [it for it in nr_items if not it.reviewed_by]
-            if len(shown) > 50:
-                st.caption(f"仅展示前 50 条（共 {len(shown)}），其余请用「导出需复核清单 CSV」处理。")
-                shown = shown[:50]
+            shown = unreviewed[:50]
+            if len(unreviewed) > 50:
+                st.caption(f"仅展示前 50 条（共 {len(unreviewed)} 条未确认）。")
             for i, it in enumerate(shown):
                 c1, c2, c3, c4, c5 = st.columns([0.3, 3, 1.3, 1.4, 1.2])
                 c1.caption(str(i + 1))
@@ -2244,80 +2853,11 @@ elif stage == 5:
                 else:
                     b1, b2, b3 = c5.columns(3)
                     if b1.button("正", key=f"nr_pos_{task_id}_{i}"):
-                        if task_id and apply_need_review_feedback(task_id, it.text_id, "positive"):
-                            res = open_task_result(task_id)
-                            if res:
-                                st.session_state.bundle, st.session_state.output_files = res
-                            remaining = [
-                                x for x in st.session_state.bundle.coded_items
-                                if x.need_review and not x.reviewed_by
-                            ]
-                            if not remaining:
-                                r2 = rebuild_report_after_review(
-                                    task_id, st.session_state.bundle)
-                                if r2:
-                                    st.session_state.bundle, st.session_state.output_files = r2
-                                    st.success(
-                                        f"已回填 {it.text_id} → positive；最后一条已确认，报告已刷新")
-                                else:
-                                    st.success(f"已回填 {it.text_id} → positive（刷新失败：文件不可写）")
-                            else:
-                                st.success(
-                                    f"已回填 {it.text_id} → positive（还剩 {len(remaining)} 条，"
-                                    "可点「完成复核并刷新报告」）")
-                            st.rerun()
-                        else:
-                            st.error("回填失败：找不到任务结果文件")
+                        _apply_review_item(task_id, it, "positive")
                     if b2.button("负", key=f"nr_neg_{task_id}_{i}"):
-                        if task_id and apply_need_review_feedback(task_id, it.text_id, "negative"):
-                            res = open_task_result(task_id)
-                            if res:
-                                st.session_state.bundle, st.session_state.output_files = res
-                            remaining = [
-                                x for x in st.session_state.bundle.coded_items
-                                if x.need_review and not x.reviewed_by
-                            ]
-                            if not remaining:
-                                r2 = rebuild_report_after_review(
-                                    task_id, st.session_state.bundle)
-                                if r2:
-                                    st.session_state.bundle, st.session_state.output_files = r2
-                                    st.success(
-                                        f"已回填 {it.text_id} → negative；最后一条已确认，报告已刷新")
-                                else:
-                                    st.success(f"已回填 {it.text_id} → negative（刷新失败：文件不可写）")
-                            else:
-                                st.success(
-                                    f"已回填 {it.text_id} → negative（还剩 {len(remaining)} 条，"
-                                    "可点「完成复核并刷新报告」）")
-                            st.rerun()
-                        else:
-                            st.error("回填失败：找不到任务结果文件")
+                        _apply_review_item(task_id, it, "negative")
                     if b3.button("中", key=f"nr_neu_{task_id}_{i}"):
-                        if task_id and apply_need_review_feedback(task_id, it.text_id, "neutral"):
-                            res = open_task_result(task_id)
-                            if res:
-                                st.session_state.bundle, st.session_state.output_files = res
-                            remaining = [
-                                x for x in st.session_state.bundle.coded_items
-                                if x.need_review and not x.reviewed_by
-                            ]
-                            if not remaining:
-                                r2 = rebuild_report_after_review(
-                                    task_id, st.session_state.bundle)
-                                if r2:
-                                    st.session_state.bundle, st.session_state.output_files = r2
-                                    st.success(
-                                        f"已回填 {it.text_id} → neutral；最后一条已确认，报告已刷新")
-                                else:
-                                    st.success(f"已回填 {it.text_id} → neutral（刷新失败：文件不可写）")
-                            else:
-                                st.success(
-                                    f"已回填 {it.text_id} → neutral（还剩 {len(remaining)} 条，"
-                                    "可点「完成复核并刷新报告」）")
-                            st.rerun()
-                        else:
-                            st.error("回填失败：找不到任务结果文件")
+                        _apply_review_item(task_id, it, "neutral")
 
     # 2.11 方案 A：复核后重新生成 LLM 深度结论（基于当前复核结果）
     if st.session_state.get(f"nr_had_{task_id}"):
@@ -2327,11 +2867,20 @@ elif stage == 5:
         ):
             if not api_key:
                 st.warning("未配置 API Key：将生成词典规则结论（不调用 LLM）")
-            res = rebuild_report_after_review(
-                task_id, st.session_state.bundle, regenerate_insights=True)
+            try:
+                res = rebuild_report_after_review(
+                    task_id, st.session_state.bundle, regenerate_insights=True)
+            except Exception as exc:
+                # 7：LLM 调用失败不阻断——降级规则路径重算并明示
+                st.warning(f"LLM 深度结论生成失败（{exc}），已按词典规则重新生成报告。")
+                res = rebuild_report_after_review(
+                    task_id, st.session_state.bundle)
             if res:
                 st.session_state.bundle, st.session_state.output_files = res
-                st.success("深度结论已按当前复核结果重新生成")
+                st.success(
+                    "报告已按当前复核结果重新生成（统计/图表/结论已重算，"
+                    "Excel/HTML 已同步更新）"
+                )
                 st.rerun()
             else:
                 st.error("重新生成失败：任务结果文件不可写")
@@ -2364,185 +2913,283 @@ elif stage == 5:
                     if c.get("need_review"):
                         label += " · 待复核"
                     st.markdown(f"「{c.get('text', '')}」\n\n{label}")
+                    # UX 5.6 反馈闭环：证据旁"这条判错了"一键反馈 → 评测中心候选池
+                    _fkey = f"fb_{task_id}_{f.get('id')}_{rid}"
+                    if not st.session_state.get(_fkey, False):
+                        if st.button("这条判错了？", key=f"{_fkey}_btn"):
+                            st.session_state[_fkey] = True
+                            st.rerun()
+                    else:
+                        _sent_cn = {
+                            "positive": "正面 ✓",
+                            "neutral": "中性 ～",
+                            "negative": "负面 ✗",
+                        }
+                        _val = st.radio(
+                            "应判定为",
+                            ["positive", "neutral", "negative"],
+                            format_func=lambda v: _sent_cn[v],
+                            horizontal=True,
+                            key=f"{_fkey}_val",
+                        )
+                        _reason = st.text_input("原因（可选，帮我们改进）", key=f"{_fkey}_reason")
+                        _sub1, _sub2 = st.columns(2)
+                        if _sub1.button("提交反馈", key=f"{_fkey}_submit"):
+                            try:
+                                feedback.add_feedback(
+                                    task_id=task_id or "",
+                                    text_id=c.get("text_id") or rid,
+                                    text_snippet=c.get("text", ""),
+                                    model_sentiment=c.get("sentiment") or "",
+                                    user_sentiment=_val,
+                                    reason=_reason or "",
+                                )
+                            except ValueError as _exc:
+                                st.error(str(_exc))
+                            else:
+                                # 8：反馈真正生效——回填该文本判定并重算报告，
+                                # 不再是"只记录不影响报告"的无效入口
+                                _fb_text_id = c.get("text_id") or rid
+                                if task_id and apply_need_review_feedback(
+                                    task_id,
+                                    _fb_text_id,
+                                    _val,
+                                    text=c.get("text", ""),
+                                    reviewed_by="用户反馈",
+                                ):
+                                    _bundle2 = _reload_bundle(task_id)
+                                    if _bundle2 is not None:
+                                        st.session_state.bundle = _bundle2
+                                    _r3 = rebuild_report_after_review(
+                                        task_id, st.session_state.bundle
+                                    )
+                                    if _r3:
+                                        st.session_state.bundle, (
+                                            st.session_state.output_files
+                                        ) = _r3
+                                    _fb_note = (
+                                        "已按你的判定更新本条并刷新报告"
+                                        "（统计/图表已重算，Excel/HTML 已同步）；"
+                                        "如原为 LLM 深度结论，可点上方「重新生成 LLM 深度结论」。"
+                                    )
+                                else:
+                                    _fb_note = (
+                                        "反馈已记录（用于评测改进）；"
+                                        "本条不在任务编码中，报告未改动。"
+                                    )
+                                st.session_state.pop(_fkey, None)
+                                st.success(f"已记录，感谢反馈！{_fb_note}")
+                                st.rerun()
+                        if _sub2.button("取消", key=f"{_fkey}_cancel"):
+                            st.session_state.pop(_fkey, None)
+                            st.rerun()
                 if f.get("action"):
                     st.markdown(f"**建议：**{display_action(f.get('action'))}")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(overall_fig(s), width="stretch")
-        st.markdown(f"**解析：**{bundle.chart_insights.get('overall', '')}")
-    with col2:
-        st.plotly_chart(platform_fig(s), width="stretch")
-        st.markdown(f"**解析：**{bundle.chart_insights.get('platform', '')}")
+    # —— ③ 整体情感主图（结论视图唯一默认展开） ——
+    st.markdown("### 整体情感占比")
+    st.plotly_chart(overall_fig(s), width="stretch")
+    st.markdown(f"**解析：**{bundle.chart_insights.get('overall', '')}")
 
-    st.plotly_chart(trend_fig(s), width="stretch")
-    st.markdown(f"**解析：**{bundle.chart_insights.get('trend', '')}")
-
-    st.plotly_chart(intensity_fig(s), width="stretch")
-    st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
-
-    dim_fig = dimensions_fig(s)
-    heat_fig = heatmap_fig(s)
-    rad_fig = radar_fig(s)
-    dd_fig = date_dim_heatmap_fig(s)
-    if dim_fig:
+    # —— 其余图：全部视图展开；结论视图折叠钻取 ——
+    if show_all:
         col1, col2 = st.columns(2)
-        with col1:
-            st.plotly_chart(dim_fig, width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('dimensions', '')}")
         with col2:
-            st.plotly_chart(heat_fig, width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('heatmap', '')}")
-        if rad_fig:
-            st.plotly_chart(rad_fig, width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('radar', '')}")
-        if dd_fig:
-            st.plotly_chart(dd_fig, width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('date_dim', '')}")
-        dim_neg = {}
-        for c in bundle.evidence:
-            if c.get("dimension") and c.get("sentiment") == "negative":
-                dim_neg.setdefault(c["dimension"], []).append(c)
-        if dim_neg:
-            st.markdown("**各维度负面原文 Top 3（规则抽取）**")
-            for dim, cards in dim_neg.items():
-                with st.expander(
-                    f"{dimension_cn(dim)}（{dimension_evidence_label(cards)}）",
-                    expanded=False,
-                ):
-                    for c in cards:
-                        label = " · 待复核" if c.get("need_review") else ""
-                        st.markdown(
-                            f"- 「{c.get('text', '')}」 — {c.get('platform', '')} · "
-                            f"{c.get('date') or '日期未知'}{label}"
-                        )
-
+            st.plotly_chart(platform_fig(s), width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('platform', '')}")
+        st.plotly_chart(trend_fig(s), width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('trend', '')}")
+        st.plotly_chart(intensity_fig(s), width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
+        _render_dim_charts(s, bundle)
+    else:
+        with st.expander("📊 各平台情感分布（细节）", expanded=False):
+            st.plotly_chart(platform_fig(s), width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('platform', '')}")
+        with st.expander("📈 时间趋势（细节）", expanded=False):
+            st.plotly_chart(trend_fig(s), width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('trend', '')}")
+        with st.expander("🔥 情绪强度分布（细节）", expanded=False):
+            st.plotly_chart(intensity_fig(s), width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
+        with st.expander("🧩 维度分析（细节）", expanded=False):
+            _render_dim_charts(s, bundle)
+    # 非核心钻取区：结论视图折叠；全部视图展开（词云保持按需生成）
     pd_fig = platform_dim_fig(s)
     if pd_fig:
-        st.plotly_chart(pd_fig, width="stretch")
-        st.markdown(f"**解析：**{bundle.chart_insights.get('platform_dim', '')}")
-
-    st.plotly_chart(words_fig(s), width="stretch")
-    st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
-    st.subheader("情感词云（按情感拆分，权重 = 词频 × 情感强度）")
-    for which, caption in (
-        ("positive", "正面讨论词云"),
-        ("negative", "负面讨论词云"),
-        ("worst_dim", "负面率最高维度词云"),
-    ):
-        wc_bytes = wordcloud_png_bytes(s, which)
-        if wc_bytes:
-            st.image(wc_bytes, caption=caption, width=700)
-    st.markdown(f"**解析：**{bundle.chart_insights.get('wordcloud', '')}")
-
+        with st.expander("📊 平台 × 维度负面率（细节）", expanded=show_all):
+            st.plotly_chart(pd_fig, width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('platform_dim', '')}")
+    with st.expander("🔤 高频情感词 Top20（细节）", expanded=show_all):
+        st.plotly_chart(words_fig(s), width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
+    with st.expander("☁️ 情感词云（细节，按需生成）", expanded=False):
+        if not st.session_state.get(f"wc_gen_{task_id}"):
+            st.caption("词云图片生成较慢（3 张约 2~5 秒），点击后生成。")
+            if st.button("生成词云图片", key=f"wc_gen_btn_{task_id}"):
+                st.session_state[f"wc_gen_{task_id}"] = True
+                st.rerun()
+        else:
+            wc = {
+                w: wordcloud_png_bytes(s, w)
+                for w in ("positive", "negative", "worst_dim")
+            }
+            if any(wc.values()):
+                for which, caption in (
+                    ("positive", "正面讨论词云"),
+                    ("negative", "负面讨论词云"),
+                    ("worst_dim", "负面率最高维度词云"),
+                ):
+                    if wc[which]:
+                        st.image(wc[which], caption=caption, width=700)
+                st.markdown(f"**解析：**{bundle.chart_insights.get('wordcloud', '')}")
+            else:
+                st.caption("暂无词云数据（样本过少）。")
     co_fig = cooccurrence_fig(s)
     if co_fig:
-        st.plotly_chart(co_fig, width="stretch")
-        st.markdown(f"**解析：**{bundle.chart_insights.get('cooccurrence', '')}")
-        cluster_rows = topic_cluster_rows(s)
-        if cluster_rows:
-            st.markdown("**话题簇榜单**")
-            st.table(
-                [
-                    {
-                        "簇名": r["name"],
-                        "代表词": r["words"],
-                        "涉及文本数": r["doc_count"],
-                        "负面率": r["negative_rate"],
-                    }
-                    for r in cluster_rows
-                ]
+        with st.expander("🕸 讨论话题共现网络（细节）", expanded=show_all):
+            st.markdown(
+                terms.md_label("共现网络", "cooccurrence"),
+                unsafe_allow_html=True,
             )
+            st.plotly_chart(co_fig, width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('cooccurrence', '')}")
+            cluster_rows = topic_cluster_rows(s)
+            if cluster_rows:
+                st.markdown(
+                    terms.md_label("话题簇榜单", "cluster"),
+                    unsafe_allow_html=True,
+                )
+                st.table(
+                    [
+                        {
+                            "簇名": r["name"],
+                            "代表词": r["words"],
+                            "涉及文本数": r["doc_count"],
+                            "负面率": r["negative_rate"],
+                        }
+                        for r in cluster_rows
+                    ]
+                )
     elif cooccurrence_plan(s)["kind"] == "pairs":
-        st.caption(
-            "讨论结构样本不足，已显示话题词对榜："
-            f"{cooccurrence_plan(s)['reason']}。"
-        )
-        pair_rows = topic_pairs(s)
-        if pair_rows:
-            st.markdown("**话题词对榜**")
-            st.table(
-                [
-                    {
-                        "词对": f"{r['source']} — {r['target']}",
-                        "共现文本数": r["count"],
-                        "PMI": round(r["pmi"], 2),
-                    }
-                    for r in pair_rows
-                ]
+        with st.expander("🕸 话题词对榜（细节）", expanded=show_all):
+            st.caption(
+                "讨论结构样本不足，已显示话题词对榜："
+                f"{cooccurrence_plan(s)['reason']}。"
             )
+            pair_rows = topic_pairs(s)
+            if pair_rows:
+                st.markdown(
+                    terms.md_label("话题词对榜", "word_pairs"),
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    terms.md_label("PMI 列口径", "pmi"),
+                    unsafe_allow_html=True,
+                )
+                st.table(
+                    [
+                        {
+                            "词对": f"{r['source']} — {r['target']}",
+                            "共现文本数": r["count"],
+                            "PMI": round(r["pmi"], 2),
+                        }
+                        for r in pair_rows
+                    ]
+                )
     src_fig = sentiment_sources_fig(s)
     if src_fig:
-        st.plotly_chart(src_fig, width="stretch")
-
+        with st.expander("🗣 负面情绪来源话题榜（细节）", expanded=show_all):
+            st.plotly_chart(src_fig, width="stretch")
     narr_stats = s.get("narrative_stats") or {}
     narr_total = narr_stats.get("total", 0)
     if narr_total >= 10:
-        st.subheader("叙事框架与归因（LLM 高级分析）")
-        st.caption("仅对 LLM 精分析过的文本执行（成本控制设计）；归因/框架为固定词表。")
-        for line in narrative_insight_text(s):
-            st.markdown(line)
-        a1 = narrative_actor_fig(s)
-        if a1:
-            st.plotly_chart(a1, width="stretch")
-        a2 = narrative_frame_actor_heatmap(s)
-        if a2:
-            st.plotly_chart(a2, width="stretch")
+        with st.expander("🧩 叙事框架与归因（LLM 高级分析）", expanded=show_all):
+            st.caption("仅对 LLM 精分析过的文本执行（成本控制设计）；归因/框架为固定词表。")
+            for line in narrative_insight_text(s):
+                st.markdown(line)
+            a1 = narrative_actor_fig(s)
+            if a1:
+                st.plotly_chart(a1, width="stretch")
+            a2 = narrative_frame_actor_heatmap(s)
+            if a2:
+                st.plotly_chart(a2, width="stretch")
     elif narr_total > 0:
-        st.subheader("叙事框架与归因（LLM 高级分析）")
-        st.caption(f"叙事/归因样本仅 {narr_total} 条，样本不足，未生成聚合图。")
+        with st.expander("🧩 叙事框架与归因（LLM 高级分析）", expanded=False):
+            st.caption(f"叙事/归因样本仅 {narr_total} 条，样本不足，未生成聚合图。")
 
-    st.subheader("概览")
+    # 4.4 降噪：概览与（无 findings 时的）深度结论合并为"结论"一个区
+    st.subheader("结论")
     st.markdown(bundle.report_text)
-
-    if not bundle.findings:
-        st.subheader(findings_section_title(bundle.insight_mode))
+    if not bundle.findings and bundle.conclusion:
+        st.divider()
         st.markdown(bundle.conclusion)
 
     st.subheader("下载报告")
+    st.caption("⚠️ 导出物包含用户原文等个人信息，仅限内部使用，禁止二次传播（P1-6）。")
     d1, d2, d3, d4 = st.columns(4)
-    d1.download_button(
-        "📥 原始数据 Excel",
-        data=files.get("excel", b""),
-        file_name=f"{bundle.plan.subject}_原始数据与编码.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        width="stretch",
-    )
-    d2.download_button(
-        "📥 HTML 交互报告",
-        data=files.get("html", ""),
-        file_name=f"{bundle.plan.subject}_分析报告.html",
-        mime="text/html",
-        width="stretch",
-    )
-    if "word_bytes" in st.session_state:
-        d3.download_button(
-            "📥 Word 报告（含图表）",
-            data=st.session_state.word_bytes,
-            file_name=f"{bundle.plan.subject}_分析报告.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    with d1:
+        st.download_button(
+            "📥 原始数据 Excel",
+            data=files.get("excel", b""),
+            file_name=f"{bundle.plan.subject}_原始数据与编码.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
         )
-    else:
-        if d3.button("⏳ 生成 Word 报告（含图表图片，约 30~60 秒）", width="stretch"):
-            with st.spinner("正在渲染图表图片并生成 Word 报告…"):
-                st.session_state.word_bytes = build_word(bundle).getvalue()
-            st.rerun()
-    d4.download_button(
-        "📥 结果 JSON",
-        data=bundle.model_dump_json(indent=2),
-        file_name=f"{bundle.plan.subject}_result.json",
-        mime="application/json",
-        width="stretch",
-    )
+        st.caption("原始帖子/评论/编码明细，可编辑、可二次分析")
+    with d2:
+        st.download_button(
+            "📥 HTML 交互报告",
+            data=files.get("html", ""),
+            file_name=f"{bundle.plan.subject}_分析报告.html",
+            mime="text/html",
+            width="stretch",
+        )
+        st.caption("带交互图表的分析报告，适合分享")
+    with d3:
+        if "word_bytes" in st.session_state:
+            st.download_button(
+                "📥 Word 报告（含图表）",
+                data=st.session_state.word_bytes,
+                file_name=f"{bundle.plan.subject}_分析报告.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                width="stretch",
+            )
+        else:
+            if st.button("⏳ 生成 Word 报告（约 30~60 秒）", width="stretch"):
+                with st.spinner("正在渲染图表图片并生成 Word 报告…"):
+                    st.session_state.word_bytes = build_word(bundle).getvalue()
+                st.rerun()
+        st.caption("正式汇报用文档")
+    with d4:
+        st.download_button(
+            "📥 结果 JSON",
+            data=bundle.model_dump_json(indent=2),
+            file_name=f"{bundle.plan.subject}_result.json",
+            mime="application/json",
+            width="stretch",
+        )
+        st.caption("机器可读结果，供二次分析/评测")
 
     if st.button("🔄 开始新的分析", width="stretch"):
         reset_wizard()
         st.rerun()
 
 
-# 顶部分步提示
+# 顶部分步提示（P1-2：SVG 图标 + 语义色，对照 prototype_app.html 步骤条）
 st.divider()
 steps = ["品牌和维度", "关键词", "渠道/时间", "确认运行", "后台执行", "结果"]
 current = min(int(st.session_state.get("stage", 0)), 5)
-st.caption("步骤：" + " → ".join(f"{'●' if i == current else '○'} {s}" for i, s in enumerate(steps)))
+_ws_parts = []
+for i, (label, _icon) in enumerate(zip(steps, _WIZARD_STEP_ICONS)):
+    _cls = "done" if i < current else ("cur" if i == current else "")
+    _ws_parts.append(
+        f'<span class="ws-step {_cls}">{_icon}<span>{html.escape(label)}</span></span>'
+    )
+    if i < len(steps) - 1:
+        _link_cls = "done" if i < current else ""
+        _ws_parts.append(f'<span class="ws-link {_link_cls}"></span>')
+st.markdown(
+    f'<div class="wizard-steps">{"".join(_ws_parts)}</div>',
+    unsafe_allow_html=True,
+)

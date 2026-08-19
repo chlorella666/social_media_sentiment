@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 import requests
 
+from app.coding.cleaner import desensitize_text
 from app.coding import lexicon
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -799,6 +800,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
         """LLM 相关性复核（可选步骤，按量计费）：判断文本是否与品牌/主题相关。"""
         if not texts:
             return []
+        texts = [desensitize_text(t) for t in texts]  # P1-3：唯一漏点，补脱敏
         system = (
             "你是社交媒体内容审核助手。判断每条文本是否与给定品牌/主题相关："
             "只要涉及对该主题的讨论、评价、体验、对比、求助、吐槽等均算相关；"
@@ -837,6 +839,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
     ) -> list[dict]:
         """真批量请求：BATCH_SIZE 条文本一次请求，最多 max_workers 批并发。"""
         self._errors = []
+        texts = [desensitize_text(t) for t in texts]  # P1-3：LLM 前脱敏（幂等）
         results: list[dict] = [None] * len(texts)  # type: ignore[list-item]
 
         def _send(batch: list[str]) -> list[dict]:
@@ -880,6 +883,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
     ) -> list[dict]:
         """叙事/归因：并发批量调用（默认每条文本一次请求改为每批一次）。"""
         self._errors = []
+        texts = [desensitize_text(t) for t in texts]  # P1-3：LLM 前脱敏（幂等）
         results: list[dict] = [None] * len(texts)  # type: ignore[list-item]
 
         def _send(batch: list[str]) -> list[dict]:

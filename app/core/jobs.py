@@ -326,6 +326,7 @@ def update_task_files(
 
 def list_tasks(
     limit: int = 20,
+    offset: int = 0,
     statuses: list[str] | None = None,
     db_path_: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -334,11 +335,80 @@ def list_tasks(
     if statuses:
         sql += " WHERE status IN (%s)" % ",".join("?" * len(statuses))
         params.extend(statuses)
-    sql += " ORDER BY created_at DESC LIMIT ?"
-    params.append(max(1, int(limit)))
+    sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params.extend([max(1, int(limit)), max(0, int(offset))])
     with closing(_connect(db_path_)) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [d for d in (_row_to_dict(r) for r in rows) if d is not None]
+
+
+def count_tasks(
+    statuses: list[str] | None = None,
+    db_path_: Path | None = None,
+) -> int:
+    sql = "SELECT COUNT(*) AS n FROM tasks"
+    params: list[Any] = []
+    if statuses:
+        sql += " WHERE status IN (%s)" % ",".join("?" * len(statuses))
+        params.extend(statuses)
+    with closing(_connect(db_path_)) as conn:
+        return int(conn.execute(sql, params).fetchone()["n"])
+
+
+def history_duration_stats(
+    plan: AnalysisPlan | dict | None = None,
+    db_path_: Path | None = None,
+) -> dict[str, Any]:
+    """UX 5.2 预期管理：同类已完成任务的历史耗时（分钟）。
+
+    优先匹配「LLM 开关 + 是否抓评论」同桶（≥2 条才用）；不足时回退到全部
+    已完成任务。返回 {n, avg_minutes, median_minutes, bucket}；无历史时
+    n=0、avg_minutes=None。
+    """
+    want_llm = bool((plan.get("llm_enabled") if isinstance(plan, dict) else
+                     (plan.llm_enabled if plan else False)))
+    want_comments = bool((plan.get("comments_enabled") if isinstance(plan, dict) else
+                          (plan.comments_enabled if plan else True)))
+    with closing(_connect(db_path_)) as conn:
+        rows = conn.execute(
+            "SELECT plan, started_at, finished_at FROM tasks "
+            "WHERE status=? AND started_at IS NOT NULL AND started_at != '' "
+            "AND finished_at IS NOT NULL AND finished_at != '' "
+            "ORDER BY finished_at DESC LIMIT 200",
+            (STATUS_COMPLETED,),
+        ).fetchall()
+    durations: list[float] = []
+    bucket_durations: list[float] = []
+    for r in rows:
+        try:
+            t0 = datetime.fromisoformat(r["started_at"])
+            t1 = datetime.fromisoformat(r["finished_at"])
+        except (TypeError, ValueError):
+            continue
+        mins = (t1 - t0).total_seconds() / 60.0
+        if mins < 0 or mins > 24 * 60:
+            continue  # 丢弃异常时长（时钟回拨/挂起超 24h）
+        durations.append(mins)
+        try:
+            p = json.loads(r["plan"] or "{}")
+        except json.JSONDecodeError:
+            p = {}
+        if bool(p.get("llm_enabled")) == want_llm and \
+                bool(p.get("comments_enabled", True)) == want_comments:
+            bucket_durations.append(mins)
+    pool = bucket_durations if len(bucket_durations) >= 2 else durations
+    if not pool:
+        return {"n": 0, "avg_minutes": None, "median_minutes": None,
+                "bucket": "同类" if len(bucket_durations) >= 2 else "全部"}
+    pool.sort()
+    n = len(pool)
+    med = pool[n // 2] if n % 2 else (pool[n // 2 - 1] + pool[n // 2]) / 2
+    return {
+        "n": n,
+        "avg_minutes": round(sum(pool) / n, 1),
+        "median_minutes": round(med, 1),
+        "bucket": "同类" if len(bucket_durations) >= 2 else "全部",
+    }
 
 
 def claim_next_task(worker_id: str, db_path_: Path | None = None) -> dict[str, Any] | None:

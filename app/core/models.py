@@ -74,7 +74,7 @@ class AnalysisPlan(BaseModel):
     date_end: Optional[date] = None
     per_keyword_limit: int = 50
     comments_enabled: bool = True
-    comments_per_post: int = 20
+    comments_per_post: int = 10
     llm_enabled: bool = False
     llm_base_url: str = ""  # LLM 服务地址（非敏感，随计划传给 worker）
     llm_model: str = ""  # LLM 模型名（非敏感，随计划传给 worker）

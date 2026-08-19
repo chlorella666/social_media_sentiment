@@ -62,12 +62,30 @@ def test_doc_missing_fallback() -> None:
     print("✓ 文档缺失：内置兜底文案 + 默认版本 通过")
 
 
+def test_privacy_regression_items() -> None:
+    """P1-8 隐私回归项：LLM 出境提示 + 离线模式可用（P1-2）+ 确认可重置（P1-4 联动）。"""
+    text = usage_boundary.boundary_text()
+    assert any(k in text for k in ("发送给", "出境", "服务商")), "《使用边界》应明示数据出境"
+    assert any(k in text for k in ("敏感信息", "勿输入")), "应提示勿输入个人敏感信息"
+    # P1-2：无 Key 时默认走词典（Mock）分析器，离线可跑
+    from app.coding.llm_analyzer import MockAnalyzer, create_analyzer
+
+    assert isinstance(create_analyzer(api_key=None, allow_env=False), MockAnalyzer)
+    # P1-4 联动：确认记录可一键重置（清除后重新弹确认）
+    usage_boundary.acknowledge()
+    assert usage_boundary.is_acknowledged()
+    usage_boundary.reset_ack()
+    assert not usage_boundary.is_acknowledged()
+    print("✓ P1-8 隐私回归项：出境提示 / 离线默认 / 确认可重置 通过")
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_default_not_acknowledged()
     test_acknowledge_then_acknowledged()
     test_version_change_requires_reconfirm()
     test_doc_missing_fallback()
+    test_privacy_regression_items()
     print("全部《使用边界》确认测试通过 ✅")
 
 

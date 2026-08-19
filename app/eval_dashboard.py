@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from app.core import eval_store  # noqa: E402
+from app.core import feedback  # noqa: E402
 from app.core import keyword_effects as ke  # noqa: E402
 
 st.set_page_config(page_title="评测中心 · 黄金集", layout="wide")
@@ -91,6 +92,46 @@ TOOLTIPS = {
     "err_drill": "错误样本下钻：把判错的文本列出来，看错在哪、错得有没有规律",
 }
 
+# P2-7 评测中心改动类型引导（2026-08-20）：改动类型 → 推荐数据集组合（hybrid 口径）。
+# 门槛卷（主集/边界集词典）由 run_regression 自动覆盖，说明见 CHANGE_TYPE_HINT；
+# 领域级当前仅数码3C 一个已转正领域，新领域转正后需同步扩展该映射。
+CHANGE_TYPES = ["通用规则", "领域级", "模块级", "采集清洗"]
+CHANGE_TYPE_RECOMMEND = {
+    "领域级": [
+        "domain_digital3c_hybrid",
+        "holdout_digital3c_hybrid",
+        "holdout_digital3c_r2_hybrid",
+        "holdout_digital3c_r3_hybrid",
+        "holdout_digital3c_r4_hybrid",
+    ],
+    "模块级": [
+        "module_content_hybrid",
+        "module_physical_hybrid",
+        "module_service_hybrid",
+        "module_content_holdout_hybrid",
+        "module_physical_holdout_hybrid",
+        "module_service_holdout_hybrid",
+    ],
+    "通用规则": [
+        "hybrid",
+        "edge_hybrid",
+        "domain_digital3c_hybrid",
+        "module_content_hybrid",
+        "module_physical_hybrid",
+        "module_service_hybrid",
+    ],
+    "采集清洗": [],
+}
+CHANGE_TYPE_HINT = {
+    "通用规则": "改动影响所有领域 → 主集/边界集/3C/三模块卷全量防回退；"
+                "回归门槛（主集词典）由 run_regression 自动覆盖。",
+    "领域级": "目标领域（数码3C）提升 + 对应 hold-out 同向；"
+              "回归门槛（主集词典）由 run_regression 自动覆盖。",
+    "模块级": "对应模块卷 + 该模块 hold-out；"
+              "回归门槛（主集/边界集词典）由 run_regression 自动覆盖。",
+    "采集清洗": "本轮不跑准确率——请用「关键词效果 / 报告质量指标」验证采集与清洗改动，无需勾选数据集。",
+}
+
 
 def _fmt_acc(v) -> str:
     return "—" if v is None else f"{v:.1%}"
@@ -116,11 +157,35 @@ def _is_shortboard(n: int, acc) -> bool:
 
 
 def _mode_options(history: list[dict]) -> list[str]:
-    """P1-1：模式 radio 从 history 动态发现（核心 4 模式优先，其余按出现顺序）。"""
+    """P1-1：模式 radio 从 history 动态发现；hold-out 卷归到末尾「留出卷」分组（P2-7）。"""
     base = ["lexicon", "hybrid", "edge_lexicon", "edge_hybrid"]
     rest = [h.get("mode_key") for h in history
             if h.get("mode_key") and h.get("mode_key") not in base]
-    return base + list(dict.fromkeys(rest))
+    rest = list(dict.fromkeys(rest))
+    regular = [m for m in rest if not _is_holdout_mode(m)]
+    holdout = [m for m in rest if _is_holdout_mode(m)]
+    return base + regular + holdout
+
+
+def _is_holdout_mode(m: str) -> bool:
+    """P2-7：hold-out 卷判定（前缀 holdout_ 或中间 _holdout_）。"""
+    return m.startswith("holdout_") or "_holdout_" in m
+
+
+def _is_lexicon_gate(m: str) -> bool:
+    """P2-7：词典门槛卷判定（lexicon 或 *_lexicon）。"""
+    return m == "lexicon" or m.endswith("_lexicon")
+
+
+def _mode_option_label(m: str) -> str:
+    """模式 radio 展示名（P2-7）：hold-out 加「留出卷（≤2 次）」分组前缀、lexicon 加「门槛」徽标。"""
+    label = _mode_label(m)
+    tags = []
+    if _is_lexicon_gate(m):
+        tags.append("门槛")
+    if _is_holdout_mode(m):
+        tags.append("留出卷（≤2 次）")
+    return " · ".join(tags + [label]) if tags else label
 
 
 def _mode_label(m: str) -> str:
@@ -231,6 +296,66 @@ def _render_guide() -> None:
         if st.button("我已了解，开始使用", key="eval_guide_ok"):
             st.session_state["eval_guide_done"] = True
             st.rerun()
+
+
+def _render_feedback_panel() -> None:
+    """UX 5.6 反馈闭环：结果页「这条判错了」→ 待处理清单（评测中心候选池）。"""
+    st.subheader("💬 用户反馈（结果页「这条判错了」）")
+    st.caption(
+        "来自结果页证据旁的一键纠错反馈；用于发现模型短板，"
+        "处理后可导出 CSV 回流黄金集做样本扩充。"
+    )
+    rows = feedback.list_feedback(status="open", limit=200)
+    if not rows:
+        st.caption("暂无待处理反馈：在分析结果页的证据卡片点「这条判错了」即可记录。")
+        return
+    fb_rows = [{
+        "ID": r["id"],
+        "时间": (r["created_at"] or "")[:16],
+        "任务": r["task_id"],
+        "文本ID": r["text_id"],
+        "原文": (r["text_snippet"] or "")[:80],
+        "模型判定": CLASS_CN.get(r.get("model_sentiment") or "",
+                         r.get("model_sentiment") or "—"),
+        "用户判定": CLASS_CN.get(r.get("user_sentiment"),
+                         r.get("user_sentiment") or "—"),
+        "原因": (r.get("reason") or "")[:80],
+    } for r in rows]
+    fb_df = pd.DataFrame(fb_rows)
+    st.dataframe(fb_df, use_container_width=True, hide_index=True)
+    st.caption(f"共 {len(rows)} 条待处理反馈（最多显示 200 条）。")
+    ids = fb_df["ID"].tolist()
+    pick = st.multiselect(
+        "选择反馈（可多选）",
+        ids,
+        format_func=lambda i: f"#{i}",
+        key="fb_pick",
+    )
+    c1, c2 = st.columns(2)
+    if c1.button("✅ 标记已处理", key="fb_process"):
+        for fid in pick:
+            feedback.mark_processed(fid)
+        st.success(f"已处理 {len(pick)} 条")
+        st.rerun()
+    if c2.button("🗑 删除选中", key="fb_delete"):
+        for fid in pick:
+            feedback.delete_feedback(fid)
+        st.success(f"已删除 {len(pick)} 条")
+        st.rerun()
+    csv_text = "\ufeff" + "\n".join(
+        [",".join(fb_df.columns)]
+        + [
+            ",".join(str(v).replace(",", "，").replace("\n", " ") for v in row)
+            for row in fb_df.to_dict("records")
+        ]
+    )
+    st.download_button(
+        "📥 导出反馈 CSV",
+        data=csv_text.encode("utf-8"),
+        file_name="user_feedback.csv",
+        mime="text/csv",
+        key="fb_export",
+    )
 
 
 def _flags_contain(flags: str, picked: list[str]) -> bool:
@@ -422,11 +547,43 @@ def main() -> None:
             "暂无评测历史。先运行词典评测（无需 Key）：`python tests/benchmark_golden.py`，"
             "或混合评测（需 Key）：`python tests/benchmark_golden.py --llm`。"
         )
+        _render_feedback_panel()
         return
 
     with st.sidebar:
         st.header("筛选")
+        # P2-7 改动类型引导（2026-08-20）：按改动类型推荐数据集组合，一键应用
+        change_type = st.radio(
+            "本次改动类型",
+            CHANGE_TYPES,
+            key="eval_change_type",
+            help="按改动范围推荐应跑的数据集；hold-out 卷限用 ≤2 次（仅标注不强制）。",
+        )
+        st.caption(CHANGE_TYPE_HINT[change_type])
+        reco = CHANGE_TYPE_RECOMMEND[change_type]
+        if reco:
+            reco_sel = st.multiselect(
+                "推荐数据集组合（可调整）",
+                reco,
+                default=reco,
+                key=f"eval_reco_{change_type}",
+                format_func=_mode_option_label,
+            )
+            if st.button("一键应用为当前评测模式", key="eval_reco_apply"):
+                sel = [m for m in reco if m in reco_sel]
+                if not sel:
+                    st.warning("请至少勾选一个数据集再应用。")
+                else:
+                    st.session_state["eval_mode"] = sel[0]
+                    st.caption(
+                        f"已应用「{_mode_option_label(sel[0])}」，"
+                        "其余推荐项可在下方模式列表切换。"
+                    )
+        st.divider()
         mode_options = _mode_options(history)
+        forced = st.session_state.get("eval_mode")
+        if forced and forced not in mode_options:
+            mode_options = list(mode_options) + [forced]
         last_mode = (st.session_state.get("eval_mode")
                      or (history[-1].get("mode_key") if history else "hybrid")
                      or "hybrid")
@@ -435,9 +592,9 @@ def main() -> None:
             "评测模式",
             mode_options,
             index=default_idx,
-            format_func=_mode_label,
+            format_func=_mode_option_label,
+            key="eval_mode",
         )
-        st.session_state["eval_mode"] = mode
         st.markdown(_md_label("评测模式是什么", "mode"), unsafe_allow_html=True)
         st.caption("词典模式确定性可重复；混合模式受 LLM 温度影响，对比仅供参考。")
         st.divider()
@@ -458,7 +615,7 @@ def main() -> None:
 
     tab_labels = [
         "📊 概览", "🎯 哪里好哪里差", "😊 情感表现", "🧩 维度情感", "🔁 运行对比",
-        "🔑 关键词效果", "🎛 关键词策略配置", "🕘 运行历史",
+        "🔑 关键词效果", "🎛 关键词策略配置", "🕘 运行历史", "💬 用户反馈",
     ]
     # 深链（2026-08-17）：主应用关键词确认页通过 ?tab=strategy 直达策略配置
     default_tab = None
@@ -470,7 +627,9 @@ def main() -> None:
     elif qtab == "dimension":
         default_tab = "🧩 维度情感"
     (tab_overview, tab_segments, tab_sentiment, tab_dimension, tab_compare,
-     tab_keywords, tab_strategy, tab_history) = st.tabs(tab_labels, default=default_tab)
+     tab_keywords, tab_strategy, tab_history, tab_feedback) = st.tabs(
+        tab_labels, default=default_tab
+    )
 
     # ---------- 概览 ----------
     with tab_overview:
@@ -1219,6 +1378,10 @@ def main() -> None:
                 st.rerun()
             else:
                 st.error("评测失败，请查看上方输出。")
+
+    # ---------- 用户反馈（UX 5.6） ----------
+    with tab_feedback:
+        _render_feedback_panel()
 
 
 if __name__ == "__main__":

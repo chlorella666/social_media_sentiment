@@ -133,9 +133,9 @@ def test_dashboard_module_mode() -> None:
     try:
         at = AppTest.from_file(str(DASH), default_timeout=30).run()
         assert not at.exception, [str(e) for e in at.exception]
-        opts = at.radio[0].options or []
+        opts = at.radio(key="eval_mode").options or []
         assert "数字产品·混合流水线" in opts, f"模块模式不可见: {opts}"
-        at.radio[0].set_value("数字产品·混合流水线").run()
+        at.radio(key="eval_mode").set_value("数字产品·混合流水线").run()
         assert not at.exception, [str(e) for e in at.exception]
         subs = [s.value for s in at.subheader]
         assert any("维度级情感" in s for s in subs), "模块模式维度情感视图未渲染"
@@ -163,6 +163,20 @@ def test_helpers() -> None:
     assert d._mode_label("module_content_hybrid") == "数字产品·混合流水线"
     assert d._mode_label("holdout_digital3c_r4_hybrid") == "3C·hold-out r4·混合"
     assert d._mode_label("未知_mode_key") == "未知·mode·key"
+    assert d._is_holdout_mode("holdout_digital3c_r4_hybrid")
+    assert d._is_holdout_mode("module_service_holdout_hybrid")
+    assert not d._is_holdout_mode("module_content_hybrid")
+    assert d._is_lexicon_gate("lexicon") and d._is_lexicon_gate("edge_lexicon")
+    assert not d._is_lexicon_gate("hybrid")
+    assert d._mode_option_label("lexicon").startswith("门槛")
+    assert "留出卷（≤2 次）" in d._mode_option_label("holdout_digital3c_r4_hybrid")
+    assert d._mode_option_label("module_content_hybrid") == "数字产品·混合流水线"
+    opts2 = d._mode_options([
+        {"mode_key": "holdout_digital3c_r4_hybrid"},
+        {"mode_key": "module_content_hybrid"},
+    ])
+    assert (opts2.index("module_content_hybrid")
+            < opts2.index("holdout_digital3c_r4_hybrid")), "hold-out 卷应归组到末尾"
     print("✓ helper（by_flag 拆分匹配 / 模式动态发现与标签）通过")
 
 
@@ -181,8 +195,9 @@ def test_dashboard_edge_mode() -> None:
     at = AppTest.from_file(str(DASH), default_timeout=30).run()
     try:
         assert not at.exception, [str(e) for e in at.exception]
-        assert at.radio and "边界集·混合流水线（词典+LLM）" in (at.radio[0].options or [])
-        at.radio[0].set_value("边界集·混合流水线（词典+LLM）").run()
+        assert (at.radio
+                and "边界集·混合流水线（词典+LLM）" in (at.radio(key="eval_mode").options or []))
+        at.radio(key="eval_mode").set_value("边界集·混合流水线（词典+LLM）").run()
         assert not at.exception, [str(e) for e in at.exception]
         text_all = " ".join(str(getattr(w, "value", "")) for w in at.dataframe)
         assert "irony" in text_all, "子集分组应渲染 irony"
@@ -194,12 +209,70 @@ def test_dashboard_edge_mode() -> None:
     print("✓ 边界集模式（模式选择/子集分组/错误下钻）通过")
 
 
+def test_change_type_recommend_and_apply() -> None:
+    """P2-7：按改动类型推荐数据集组合，hold-out/门槛标注，一键应用切换模式。"""
+    reco_dir = Path(tempfile.mkdtemp(prefix="sms_dash_reco_")) / "benchmark"
+    rd = reco_dir / "runs"
+    hf = reco_dir / "history.jsonl"
+    eval_store.write_run(_report("2026-08-17T10:00:00", 0.85, mode="module_content_hybrid"),
+                         runs_dir_path=rd, history_file=hf)
+    eval_store.write_run(_report("2026-08-17T11:00:00", 0.87, mode="module_content_hybrid"),
+                         runs_dir_path=rd, history_file=hf)
+    old = os.environ.get("SMS_BENCHMARK_DIR")
+    os.environ["SMS_BENCHMARK_DIR"] = str(reco_dir)
+    try:
+        at = AppTest.from_file(str(DASH), default_timeout=30).run()
+        assert not at.exception, [str(e) for e in at.exception]
+        # 默认「通用规则」：推荐组合含主集 hybrid 与三模块卷
+        reco_ms = at.multiselect(key="eval_reco_通用规则")
+        assert "混合流水线（词典+LLM）" in reco_ms.options
+        assert "数字产品·混合流水线" in reco_ms.options
+        # 一键应用 → 当前模式切到第一个推荐项（hybrid）
+        at.button(key="eval_reco_apply").click().run()
+        assert not at.exception, [str(e) for e in at.exception]
+        assert at.radio(key="eval_mode").value == "hybrid"
+        # 切「模块级」→ 推荐组合换成模块卷 + 模块 hold-out（分组标注）
+        at.radio(key="eval_change_type").set_value("模块级").run()
+        assert not at.exception, [str(e) for e in at.exception]
+        labels = list(at.multiselect(key="eval_reco_模块级").options)
+        assert "有形实物·混合流水线" in labels
+        assert any("留出卷（≤2 次）" in x for x in labels), labels
+        # 一键应用模块级 → 模式切到 module_content_hybrid（有历史，正常渲染）
+        at.button(key="eval_reco_apply").click().run()
+        assert not at.exception, [str(e) for e in at.exception]
+        assert at.radio(key="eval_mode").value == "module_content_hybrid"
+        subs = [s.value for s in at.subheader]
+        assert any("维度级情感" in s for s in subs), "应用后模块模式应正常渲染"
+    finally:
+        if old is None:
+            os.environ.pop("SMS_BENCHMARK_DIR", None)
+        else:
+            os.environ["SMS_BENCHMARK_DIR"] = old
+    print("✓ 改动类型引导（推荐组合/分组标注/一键应用）通过")
+
+
+def test_change_type_collection_hint() -> None:
+    """P2-7：采集清洗类不勾选数据集，仅提示看关键词效果。"""
+    _seed()
+    at = AppTest.from_file(str(DASH), default_timeout=30).run()
+    assert not at.exception, [str(e) for e in at.exception]
+    at.radio(key="eval_change_type").set_value("采集清洗").run()
+    assert not at.exception, [str(e) for e in at.exception]
+    assert not any(m.key == "eval_reco_采集清洗" for m in at.multiselect), \
+        "采集清洗类不应展示数据集多选"
+    captions = " ".join(getattr(w, "value", "") for w in at.caption)
+    assert "不跑准确率" in captions
+    print("✓ 改动类型引导（采集清洗提示）通过")
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_dashboard_empty_state()
     test_dashboard_with_data()
     test_dashboard_edge_mode()
     test_dashboard_module_mode()
+    test_change_type_recommend_and_apply()
+    test_change_type_collection_hint()
     test_helpers()
     print("评测仪表盘冒烟测试全部通过 ✅")
 

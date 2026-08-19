@@ -472,6 +472,71 @@ def run_cleanup(
         return res
 
 
+def clear_all_data(dry_run: bool = True, use_recycle: bool = True) -> dict:
+    """P1-4 一键清除全部数据：报告（含归档）+ 回归报告 + 轮转日志 +
+    任务记录 + 已存 Cookie/Key + 使用边界确认记录（重启后重新确认）。
+
+    删除不可恢复（优先回收站）；演示数据与黄金集等测试夹具不删除。
+    """
+    freed = 0
+    deleted_reports = 0
+    with LifecycleLock():
+        for d in _list_children(REPORTS_DIR):
+            if d.name == "archive":
+                continue
+            size = _dir_size(d)
+            if not dry_run:
+                _remove_dir_safely(d, use_recycle=use_recycle)
+            freed += size
+            deleted_reports += 1
+        if ARCHIVE_DIR.is_dir():
+            for d in _list_children(ARCHIVE_DIR):
+                size = _dir_size(d)
+                if not dry_run:
+                    _remove_dir_safely(d, use_recycle=use_recycle)
+                freed += size
+                deleted_reports += 1
+        regression = prune_regression(keep_reports=0, dry_run=dry_run)
+        logs = purge_old_logs(days=0, dry_run=dry_run)
+        tasks_deleted = 0
+        if not dry_run:
+            for t in jobs.list_tasks(limit=10000):
+                jobs.delete_task(t["id"])
+                tasks_deleted += 1
+        from app.core import plans_store
+
+        plans_count = 0
+        feedback_count = 0
+        if not dry_run:
+            plans_count = plans_store.clear_all()
+            from app.core import feedback
+
+            feedback_count = feedback.clear_all()
+            from app.core.secrets import clear_api_key, clear_cookie
+            from app.core.usage_boundary import reset_ack
+
+            clear_api_key()
+            for key in ("weibo", "bilibili", "xiaohongshu", "websearch"):
+                try:
+                    clear_cookie(key)
+                except Exception:
+                    pass
+            reset_ack()
+        return {
+            "dry_run": dry_run,
+            "reports_deleted": deleted_reports,
+            "tasks_deleted": tasks_deleted,
+            "plans_deleted": plans_count,
+            "feedback_deleted": feedback_count,
+            "regression": regression,
+            "logs": logs,
+            "freed_bytes": freed,
+            "note": "已删除全部报告/任务/日志/Cookie/Key/反馈；使用边界确认记录已重置"
+                    "；已清空上次计划与命名模板（重启后重新确认）。"
+                    "演示数据与黄金集等测试夹具不删除。",
+        }
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="数据生命周期：占用统计/归档/清理（默认 dry-run）")

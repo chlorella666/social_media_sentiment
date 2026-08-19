@@ -174,6 +174,54 @@ def test_narrative_sanitizes_invalid_values() -> None:
     print("✓ 非法叙事/归因取值自动清洗（修复 unclear 崩溃）")
 
 
+def test_llm_entries_desensitize_before_send() -> None:
+    """P1-3：LLM 前脱敏覆盖全部文本入口（相关性复核/情感批量/叙事批量），
+    发送给模型的 chunk 不得含手机号/@用户/链接。"""
+    from app.coding.cleaner import desensitize_text
+
+    analyzer = OpenAICompatibleAnalyzer(
+        LLMConfig(api_key="x", base_url="http://x", model="m")
+    )
+    pii = "联系 13800138000 或 a@b.com，@某用户 https://x.com 不错"
+    captured: dict = {}
+
+    def fake_relevance(chunk, **_kw):
+        captured["rel"] = chunk
+        return [True] * len(chunk)  # 真实路径 sanitize_fn 在此步内完成
+
+    analyzer._structured_batch = fake_relevance  # type: ignore[method-assign]
+    out = analyzer.check_relevance("测试", [pii, "正常文本"])
+    assert out == [True, True]
+    assert "13800138000" not in captured["rel"][0]
+    assert "a@b.com" not in captured["rel"][0]
+    assert "@某用户" not in captured["rel"][0]
+    assert "x.com" not in captured["rel"][0]
+
+    def fake_sentiment(texts, dimension_schema=None, subject=None):
+        captured["sent"] = texts
+        return [
+            {"sentiment": "positive", "score": 0.5, "confidence": 0.9,
+             "keywords": [], "dimension_sentiments": {}}
+            for _ in texts
+        ]
+
+    analyzer._request_batch = fake_sentiment  # type: ignore[method-assign]
+    analyzer.analyze_batch([pii, "正常文本"])
+    assert "13800138000" not in captured["sent"][0]
+    assert "@某用户" not in captured["sent"][0]
+
+    def fake_narrative(texts):
+        captured["narr"] = texts
+        return [{"narrative": None, "attribution": None} for _ in texts]
+
+    analyzer._request_narrative_batch = fake_narrative  # type: ignore[method-assign]
+    analyzer.analyze_narrative([pii, "正常文本"])
+    assert "13800138000" not in captured["narr"][0]
+    # 幂等：再脱敏一次结果不变
+    assert desensitize_text(captured["sent"][0]) == captured["sent"][0]
+    print("✓ P1-3：相关性/情感/叙事三入口发送前均脱敏（幂等） 通过")
+
+
 def test_truncation_split_retry() -> None:
     """finish_reason=length 触发拆小批重试，整层不丢失。"""
     cfg = LLMConfig(api_key="sk-test", base_url="https://api.deepseek.com", model="deepseek-chat")
@@ -418,6 +466,7 @@ if __name__ == "__main__":
     test_batch_progress_updates_per_completion()
     test_narrative_batching_progress()
     test_narrative_sanitizes_invalid_values()
+    test_llm_entries_desensitize_before_send()
     test_truncation_split_retry()
     test_small_batch_fallback_on_truncation()
     test_missing_index_completion_recovers()

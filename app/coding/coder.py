@@ -213,13 +213,16 @@ class Coder:
                 if not need_llm:
                     llm_indices.pop()
             _tick()
-            for comment in post.comments:
+            for ci, comment in enumerate(post.comments, 1):
                 ctext = clean_text(comment.text)
                 if not ctext:
                     continue
                 pre = lexicon.score_text(ctext)
                 item = CodedItem(
-                    text_id=f"{post.id}:comment",
+                    # 7 修复（2026-08-19）：同一帖子的多条评论曾共用
+                    # post.id:comment 作 text_id → 需复核/反馈无法定位单条，
+                    # 永远"剩 1 条"。现加评论序号保证唯一。
+                    text_id=f"{post.id}:comment:{ci}",
                     text=ctext,
                     platform=post.platform,
                     keyword=post.keyword,

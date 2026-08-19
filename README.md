@@ -30,6 +30,21 @@ python -m streamlit run app/main.py
 6. **查看结果**：任务完成后自动进入结果页，可下载
    Excel（原始数据/编码明细/统计汇总）、HTML 交互报告、Word 报告
 
+## 可选：开启 LLM 精分析（更准，按量计费）
+
+默认不开启 LLM，完全离线运行（词典模式，免费且不发送任何数据）。
+开启后，低置信度文本会发送给所选服务商做更准确的情感判定。
+
+**获取 API Key（侧边栏「大模型设置」内也有同款图文指引）**
+
+- DeepSeek（推荐，便宜）：打开 https://platform.deepseek.com 注册 →
+  左侧「API Keys」→「创建 API Key」→ 复制（只显示一次）→
+  粘贴回应用侧边栏并「保存到本机」；首次使用需充值（¥10 起）。
+- OpenAI：打开 https://platform.openai.com 登录 →
+  右上角头像 →「API keys」→「Create new secret key」→ 复制后粘贴。
+
+Key 会以 Windows DPAPI 加密保存在本机（`data/secrets/`），不会上传或写入报告。
+
 ## 后台任务队列
 
 - 任务提交后写入本地 SQLite（`data/app.db`），由独立常驻进程执行，
@@ -50,6 +65,10 @@ python -m streamlit run app/main.py
 
 - 各渠道**每关键词条数上限**有默认值与封顶（B站 20/50、微博 20/30、小红书 10/10、
   WebSearch 13/13，详见项目方案 §九）；加量建议**增加关键词**（策略加词）而非调大上限；
+- **评论抓取能力**：「抓取评论」开关仅对 B站/微博/小红书/演示数据生效；WebSearch
+  各渠道（全网/知乎/贴吧/TapTap）为搜索摘要供给，**不支持评论抓取**（2026-08-20
+  spike 收口：TapTap 匿名 No-Go、知乎需登录态，匿名评论抓取不立项；详见
+  [WebSearch评论抓取Spike方案.md](docs/archive/WebSearch评论抓取Spike方案.md)）；
 - 「渠道/时间」步骤提供渠道安全设置：每个渠道可设**每日上限**
   （按预计采集条数计，-1=不限）、**暂停/恢复**、**解除风控冷却**；
 - 检测到平台风控（限频/验证码/429）时渠道**自动冷却**（10 分钟起步，
@@ -73,13 +92,14 @@ python -m streamlit run app/main.py
   LLM 编码只作用于筛选后文本（费用随之下降）；
 - 同时开启 LLM 相关性复核时，LLM 判定仅作为"建议徽标"，最终以人工为准。
 
-> 默认使用"演示数据"渠道即可跑通全流程；真实采集渠道（微博/知乎/B站/小红书/WebSearch）已在 V1 接入。
+> 默认使用"演示数据"渠道即可跑通全流程；真实采集渠道（微博/知乎/B站/小红书/WebSearch）已在 V1 接入
+> （WebSearch 为摘要供给，不支持评论抓取）。
 
 ## 测试与一键回归
 
 - 一键回归（单元测试 + 黄金集词典门槛）：双击 `regress.bat`（POSIX 用
   `./regress.sh`），等价于 `python tests/run_regression.py`；
-- 全量 33 个单元/UI 测试逐文件子进程隔离运行，失败自动重跑 1 次；
+- 全量 37 个单元/UI 测试逐文件子进程隔离运行，失败自动重跑 1 次；
   黄金集词典直判准确率**跌破基线 1.0pp 即 FAIL**，需 `--accept-baseline`
   显式接受新基线（基线文件 `tests/fixtures/baseline_lexicon.json`，随代码提交）；
 - 报告落 `data/regression/<时间戳>/report.json`，历史曲线在
@@ -118,6 +138,9 @@ python -m streamlit run app/main.py
   （本次 vs 上次 Δpp、n<30 标"参考"、渠道/领域/情感类别 n≥30 且准确率<75% 标"短板"）、
   情感类别 P/R/F1 + 混淆矩阵、任选两次运行对比 + 错误样本下钻、关键词效果
   （前后对照/候选确认/策略配置页）、运行历史、一键重跑词典评测；
+- 侧边栏**改动类型引导**（2026-08-20 落地，P2-7）：按改动类型（领域级/模块级/通用
+  规则/采集清洗）推荐数据集组合并一键应用；hold-out 折叠为「留出卷（≤2 次）」、
+  lexicon 门槛卷加「门槛」徽标，采集清洗类提示「不跑准确率、看关键词效果」；
 - 冻结基线：`tests/fixtures/baseline_lexicon.json`（词典 0.3543，回归门槛）+
   `baseline_hybrid.json`（混合 0.7829，仅记录不设门槛）；黄金集内容变更后
   指纹变化，跨版本对比会被拦截；
