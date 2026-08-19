@@ -120,9 +120,9 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
     from app.coding.cleaner import clean_text, desensitize_text
     from app.coding.dimensions import match_dimension_sentiments
     from app.coding.llm_analyzer import (
-        ALWAYS_LLM_DOMAINS,
         CONFIDENCE_THRESHOLD,
-        SUBJECT_DOMAINS,
+        is_always_llm_domain,
+        uses_subject_domain,
     )
 
     schemas = {d: load_schema(d) for d in {r["domain"] for r in rows}}
@@ -131,8 +131,10 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
     for i, r in enumerate(rows):
         text = clean_text(r["text"] or "")
         pre = lexicon.score_text(text)
-        force_llm = r["domain"] in ALWAYS_LLM_DOMAINS
-        direct = (not force_llm) and pre["confidence"] >= CONFIDENCE_THRESHOLD
+        force_llm = is_always_llm_domain(r["domain"])
+        # 2.8 新口径（2026-08-18）：混合模式全量送 LLM（direct=False），
+        # 与生产"llm_enabled → 全量 LLM"一致；词典模式（无 --llm）保持原阈值口径
+        direct = (not use_llm) and (not force_llm) and pre["confidence"] >= CONFIDENCE_THRESHOLD
         schema = schemas.get(r["domain"], {})
         # 维度情感（2.4 词典兜底口径）：gold 用维度中文名，预测同样用中文名
         dim_sents = match_dimension_sentiments(r["text"] or "", schema, use_names=True)
@@ -163,7 +165,7 @@ def predict_all(rows: list[dict], use_llm: bool, llm=None) -> list[dict]:
             groups[(rows[i]["domain"], rows[i].get("brand") or "")].append((pos, i))
         results: list[dict | None] = [None] * len(llm_texts)
         for (domain, brand), idxs in groups.items():
-            subject = brand if domain in SUBJECT_DOMAINS and brand else None
+            subject = brand if uses_subject_domain(domain) and brand else None
             part = llm.analyze_batch(
                 [llm_texts[pos] for pos, _ in idxs],
                 dimension_schema=schemas[domain],
@@ -246,14 +248,24 @@ def dimension_report(rows, preds):
     )
     per_dim: dict = {}
     mention_per: dict = {}
+    dist: dict = {}
     for dim in all_dims:
         pt = pf = pn = 0
         mt = mf = mn = 0
+        gpos = gneg = ppos = pneg = 0
         for r, p in zip(rows, preds):
             g = r["dimension_sentiments"]
             pr = p.get("dimension_sentiments") or {}
             gold_v = g.get(dim)
             pred_v = pr.get(dim)
+            if gold_v == "positive":
+                gpos += 1
+            elif gold_v == "negative":
+                gneg += 1
+            if pred_v == "positive":
+                ppos += 1
+            elif pred_v == "negative":
+                pneg += 1
             # 维度情感（2.4）：值一致为 TP；值不一致 = FP + FN；单侧缺失按 FN/FP
             if pred_v and gold_v and pred_v == gold_v:
                 pt += 1
@@ -290,6 +302,10 @@ def dimension_report(rows, preds):
             "recall": round(m_recall, 4),
             "f1": round(m_f1, 4),
         }
+        dist[dim] = {
+            "gold_positive": gpos, "gold_negative": gneg,
+            "pred_positive": ppos, "pred_negative": pneg,
+        }
         tp += pt
         fp += pf
         fn += pn
@@ -316,6 +332,7 @@ def dimension_report(rows, preds):
         "micro_recall": round(micro_r, 4),
         "micro_f1": round(micro_f1, 4),
         "per_dimension": per_dim,
+        "dimension_sentiment_dist": dist,
         "mention": {
             "口径": "维度提及识别（旧口径，2.3 及之前）",
             "micro_precision": round(m_micro_p, 4),

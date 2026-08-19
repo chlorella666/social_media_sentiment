@@ -70,7 +70,7 @@ EDGE_TARGETS = {
     "irony_hint": 0.10,    # 疑似反讽（启发式，仅供采样偏置）
 }
 
-# 边界样本专项集（docs/边界样本专项集方案.md，2026-08-13 定稿）
+# 边界样本专项集（docs/archive/边界样本专项集方案.md，2026-08-13 定稿）
 EDGE_QUOTA = 50
 LOWCONF_MIN, LOWCONF_MAX = 0.55, 0.95  # 低置信子集：词典得分区间
 EDGE_CHANNELS = {
@@ -889,7 +889,7 @@ def write_edge_xlsx(rows: dict[str, list[dict]], dims: dict[str, list[str]],
 
     guide = wb.create_sheet("说明")
     lines = [
-        "边界样本专项集标注说明（docs/边界样本专项集方案.md + docs/抽样与标注规范.md）",
+        "边界样本专项集标注说明（docs/archive/边界样本专项集方案.md + docs/抽样与标注规范.md）",
         "",
         "一、标注规则与主集完全一致：先定整条情感与强度，再对「明确带情感」的维度填 positive/negative；",
         "    反讽=表面正向/中性、实际负向；黑话标了在备注写含义；emoji 承载情感时标「emoji主导」。",
@@ -1063,7 +1063,7 @@ def main():
     ap.add_argument("--trial", type=int, default=0, help="生成试标集条数（默认 0 不生成）")
     ap.add_argument("--trial-domain", default="game", choices=["game", "consumer"])
     ap.add_argument("--edge-only", action="store_true",
-                    help="只生成边界样本专项集标注表（2.3，docs/边界样本专项集方案.md）")
+                    help="只生成边界样本专项集标注表（2.3，docs/archive/边界样本专项集方案.md）")
     ap.add_argument("--edge-quota", type=int, default=EDGE_QUOTA,
                     help="边界集每子集目标条数（默认 50）")
     ap.add_argument("--force", action="store_true", help="覆盖已存在的产物文件（默认跳过）")

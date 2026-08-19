@@ -201,14 +201,24 @@ class BilibiliChannel(ChannelAdapter):
     ) -> ChannelResult:
         session = _get_session()
         posts: list[Post] = []
+        dropped_records: list[dict] = []  # 采集层丢弃（透明度，2026-08-18）
+        stats: dict[str, int] = {
+            "requested_limit": 0, "api_returned_cards": 0, "mblog_cards": 0,
+            "skipped_other_type": 0, "skipped_dup": 0, "skipped_ad": 0,
+            "skipped_out_of_range": 0, "kept": 0,
+        }
         seen_ids: set[str] = set(skip_urls or ())
         first_error = ""
-        keywords = plan.keywords or [plan.subject]
+        # 2026-08-18：渠道策略展开后的查询串优先（channel_params.queries），
+        # 缺省回退用户关键词
+        cfg = next((c for c in plan.channels if c.channel_id == self.id), None)
+        keywords = (cfg.params.get("queries") if cfg else None) \
+            or plan.keywords or [plan.subject]
         limit = plan.per_keyword_limit
-        for channel in plan.channels:
-            if channel.channel_id == self.id:
-                limit = int(channel.params.get("limit") or limit)
+        if cfg:
+            limit = int(cfg.params.get("limit") or limit)
         limit = min(limit, MAX_LIMIT)
+        stats["requested_limit"] = limit
 
         for idx, keyword in enumerate(keywords):
             if cancel_event and cancel_event.is_set():
@@ -225,14 +235,38 @@ class BilibiliChannel(ChannelAdapter):
                     break
                 if not results:
                     break
+                stats["api_returned_cards"] += len(results)
                 for video in results:
                     bvid = str(video.get("bvid") or "")
-                    if not bvid or bvid in seen_ids:
+                    vurl = f"https://www.bilibili.com/video/{bvid}" if bvid else ""
+                    # 2026-08-18（A4）：bvid + URL 双键去重，防止同视频重复返回
+                    if not bvid or bvid in seen_ids or (vurl and vurl in seen_ids):
+                        stats["skipped_dup"] += 1
+                        if bvid:
+                            dropped_records.append({
+                                "platform": self.id, "url": vurl,
+                                "title": str(video.get("title") or "")[:80],
+                                "keyword": keyword, "query": keyword,
+                                "reason": "重复返回（同帖）",
+                                "kind": "collection",
+                            })
                         continue
                     seen_ids.add(bvid)
+                    if vurl:
+                        seen_ids.add(vurl)
                     post = _to_post(video, keyword)
+                    post.platform_specific["query"] = keyword  # 2.9：实际查询串（渠道级）
                     if not _in_date_range(post, plan):
+                        stats["skipped_out_of_range"] += 1
+                        dropped_records.append({
+                            "platform": self.id, "url": post.url,
+                            "title": (post.title or "")[:80],
+                            "keyword": keyword, "query": keyword,
+                            "reason": "超出时间范围",
+                            "kind": "collection",
+                        })
                         continue
+                    stats["kept"] += 1
                     keyword_posts.append(post)
                     if len(keyword_posts) >= limit:
                         break
@@ -266,10 +300,15 @@ class BilibiliChannel(ChannelAdapter):
                 )
 
         if not posts:
-            return degraded_result(
-                self.id,
-                first_error or "B站未采集到任何内容（关键词无结果或全部超出时间范围）",
+            return ChannelResult(
+                channel_id=self.id, ok=False, posts=posts,
+                error=first_error
+                or "B站未采集到任何内容（关键词无结果或全部超出时间范围）",
+                degraded=True, dropped=dropped_records, collection_stats=stats,
             )
         if on_progress:
             on_progress(f"B站采集完成，共 {len(posts)} 条", 1.0)
-        return ChannelResult(channel_id=self.id, ok=True, posts=posts)
+        return ChannelResult(
+            channel_id=self.id, ok=True, posts=posts,
+            dropped=dropped_records, collection_stats=stats,
+        )

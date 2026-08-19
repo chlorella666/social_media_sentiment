@@ -27,12 +27,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from app.core.drops import _reason_is_quality, is_quality_drop  # noqa: E402
 DEFAULT_STRATEGY = ROOT / "app" / "channels" / "keyword_strategy.json"
 
 REF_N = 30  # 证据样本数低于该值仅作参考
 MAX_ALIASES = 2      # 每品牌同义词上限（含品牌名共 ≤3 查询）
 MAX_EXTRA = 5        # 每品牌额外查询候选上限
 MAX_SUFFIX_POOL = 5  # 后缀池上限
+MAX_XHS_PREFERRED = 2  # 小红书 preferred 精简词上限（只精简不扩量）
+MAX_AVOID = 20         # 小红书 avoid 词上限（人工确认）
+
+# 渠道级查询策略（2026-08-18 schema v2）：bilibili/weibo 用 queries，
+# xiaohongshu 用 preferred（精简，不扩量）+ avoid（低效词避免）
+CHANNEL_QUERY_RULES = ("bilibili", "weibo")
+CHANNEL_XHS = "xiaohongshu"
 
 ALIAS_RE = re.compile(r"[A-Za-z][A-Za-z0-9._\-]{1,}")
 SKIP_ALIASES = {"https", "http", "www", "com", "cn", "html", "htm"}
@@ -84,6 +92,106 @@ def load_keyword_strategy(path: str | Path | None = None) -> dict:
         return {}
 
 
+def expand_channel_queries(
+    keywords: list[str], channel: str, strategy: dict | None = None,
+) -> list[str]:
+    """计划层展开（2026-08-18）：按渠道策略把品牌词改写为渠道查询串。
+
+    - bilibili/weibo：rules.<ch>.queries[品牌] 命中（kw == 品牌 或 kw 以
+      「品牌 」开头）→ 替换为映射查询（≤MAX_EXTRA）；未命中原样保留；
+    - xiaohongshu：只精简不扩量——rules.xiaohongshu.preferred[品牌] 命中 →
+      用其 ≤MAX_XHS_PREFERRED 个查询替换（数量不增）。
+    """
+    strat = strategy if strategy is not None else load_keyword_strategy()
+    rules = (strat.get("rules") or {}).get(channel) or {}
+    if channel == CHANNEL_XHS:
+        pref = rules.get("preferred") or {}
+        out: list[str] = []
+        for kw in keywords:
+            hits = [v for k, v in pref.items()
+                    if kw == k or kw.startswith(k + " ")]
+            if hits:
+                out.extend(hits[0][:MAX_XHS_PREFERRED])
+            else:
+                out.append(kw)
+        return out
+    qmap = rules.get("queries") or {}
+    out = []
+    for kw in keywords:
+        hits = [v for k, v in qmap.items()
+                if kw == k or kw.startswith(k + " ")]
+        if hits:
+            out.extend(hits[0][:MAX_EXTRA])
+        else:
+            out.append(kw)
+    return out
+
+
+def expand_websearch_keywords(
+    keywords: list[str],
+    subject: str,
+    enabled: bool = True,
+    strategy: dict | None = None,
+) -> list[str]:
+    """WebSearch 查询串展开（总开关语义，2026-08-18）。
+
+    - 每个确认关键词原样保留；
+    - 开启时对品牌词（kw == subject）追加同义词（≤MAX_ALIASES）与
+      额外查询（≤MAX_EXTRA）；
+    - 关闭时完全按确认关键词原词（后缀由 build_query 另行控制）。
+
+    与 websearch.collect 共用同一实现，保证确认页估算与真实采集一致
+    （避免"开关关了还跑同义词"的透明度问题，2.9）。
+    """
+    strat = strategy if strategy is not None else load_keyword_strategy()
+    out: list[str] = []
+    for kw in keywords or []:
+        out.append(kw)
+        if enabled and kw == subject:
+            out.extend((strat.get("synonyms") or {}).get(subject, [])[:MAX_ALIASES])
+            out.extend((strat.get("extra_queries") or {}).get(subject, [])[:MAX_EXTRA])
+    return out
+
+
+def extract_channel_candidates(history: list[dict], channel: str) -> list[dict]:
+    """渠道级候选反推（2026-08-18，Phase 0）：
+
+    - bilibili/weibo：按 (品牌, 渠道, 查询串) 聚合漏斗，有效供给率 ≥70% 且
+      n≥30 的组合 → 「查询候选」；
+    - xiaohongshu：有效供给率 <40% 且 n≥10 的词 → 「避免」建议（不新增查询）。
+    """
+    agg = aggregate_unique(history)
+    funnel = agg.get("funnel", [])
+    rows = [r for r in funnel if r.get("channel") == channel]
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        q = r.get("query") or ""
+        subject = r.get("keyword") or ""
+        collected = r.get("collected") or 0
+        kept = r.get("kept") or 0
+        rate = kept / collected if collected else None
+        key = (subject, q)
+        if key in seen or not subject or not q:
+            continue
+        seen.add(key)
+        if channel == CHANNEL_XHS:
+            if rate is not None and rate < 0.4 and collected >= 10:
+                out.append({
+                    "类型": "避免", "主题": subject, "候选": q,
+                    "证据n": collected, "有效供给率": rate,
+                    "渠道": channel, "备注": "小红书低效词，避免使用",
+                })
+        elif rate is not None and rate >= 0.7 and collected >= REF_N:
+            out.append({
+                "类型": "查询候选", "主题": subject, "候选": q,
+                "证据n": collected, "有效供给率": rate,
+                "渠道": channel,
+                "备注": f"{channel} 有效查询组合（n≥{REF_N}）",
+            })
+    return out
+
+
 def save_keyword_strategy(strategy: dict, path: str | Path | None = None) -> Path:
     p = Path(path) if path else DEFAULT_STRATEGY
     strategy.setdefault("schema", 1)
@@ -104,13 +212,34 @@ def apply_candidates(
     strat.setdefault("synonyms", {})
     strat.setdefault("extra_queries", {})
     strat.setdefault("suffix_pool", ["评价"])
+    strat.setdefault("rules", {})
     for row in selected:
         typ = str(row.get("类型") or row.get("type") or "")
         cand = str(row.get("候选") or row.get("candidate") or "").strip()
         subject = str(row.get("主题") or row.get("subject") or "").strip()
+        channel = str(row.get("渠道") or row.get("channel") or "websearch").strip()
         if not cand:
             continue
-        if typ == "后缀":
+        if channel != "websearch" and channel in CHANNEL_QUERY_RULES and typ == "查询候选" and subject:
+            # 渠道级查询组合（bilibili/weibo）：rules.<channel>.queries
+            rules = strat.setdefault("rules", {}).setdefault(channel, {})
+            qs = rules.setdefault("queries", {}).setdefault(subject, [])
+            if cand not in qs:
+                qs.append(cand)
+            rules["queries"][subject] = qs[:MAX_EXTRA]
+        elif channel == CHANNEL_XHS and typ == "避免" and subject:
+            rules = strat.setdefault("rules", {}).setdefault(channel, {})
+            av = rules.setdefault("avoid", {}).setdefault(subject, [])
+            if cand not in av:
+                av.append(cand)
+            rules["avoid"][subject] = av[:MAX_AVOID]
+        elif channel == CHANNEL_XHS and typ == "精简候选" and subject:
+            rules = strat.setdefault("rules", {}).setdefault(channel, {})
+            pr = rules.setdefault("preferred", {}).setdefault(subject, [])
+            if cand not in pr:
+                pr.append(cand)
+            rules["preferred"][subject] = pr[:MAX_XHS_PREFERRED]
+        elif typ == "后缀":
             pool = strat["suffix_pool"]
             if cand not in pool:
                 pool.append(cand)
@@ -251,6 +380,9 @@ def save_strategy_edit(
     synonyms_updates: dict[str, list[str]] | None = None,
     extra_queries_updates: dict[str, list[str]] | None = None,
     suffix_pool: list[str] | None = None,
+    channel_queries_updates: dict[str, dict[str, list[str]]] | None = None,
+    xhs_preferred_updates: dict[str, list[str]] | None = None,
+    xhs_avoid_updates: dict[str, list[str]] | None = None,
     path: str | Path | None = None,
 ) -> dict:
     """结构化保存策略配置（按品牌合并，空列表=删除该品牌）。
@@ -301,6 +433,61 @@ def save_strategy_edit(
             )
         current["suffix_pool"] = pool
 
+    # 渠道级查询组合（2026-08-18 schema v2）：bilibili/weibo rules.<ch>.queries
+    if channel_queries_updates is not None:
+        rules = current.setdefault("rules", {})
+        for channel, brands in channel_queries_updates.items():
+            if channel not in CHANNEL_QUERY_RULES:
+                warnings.append(f"未知渠道规则：{channel}")
+                continue
+            ch_rules = rules.setdefault(channel, {})
+            qmap = dict(ch_rules.get("queries") or {})
+            for brand, words in brands.items():
+                ws = [w.strip() for w in words if w and w.strip()]
+                if len(ws) > MAX_EXTRA:
+                    warnings.append(
+                        f"{channel}「{brand}」查询词 {len(ws)} 个，超过上限 "
+                        f"{MAX_EXTRA}，只会用前 {MAX_EXTRA} 个"
+                    )
+                if ws:
+                    qmap[brand] = ws
+                else:
+                    qmap.pop(brand, None)
+            ch_rules["queries"] = qmap
+
+    if xhs_preferred_updates is not None:
+        rules = current.setdefault("rules", {})
+        ch_rules = rules.setdefault(CHANNEL_XHS, {})
+        pr = dict(ch_rules.get("preferred") or {})
+        for brand, words in xhs_preferred_updates.items():
+            ws = [w.strip() for w in words if w and w.strip()]
+            if len(ws) > MAX_XHS_PREFERRED:
+                warnings.append(
+                    f"小红书「{brand}」精简词 {len(ws)} 个，超过上限 "
+                    f"{MAX_XHS_PREFERRED}，只会用前 {MAX_XHS_PREFERRED} 个"
+                )
+            if ws:
+                pr[brand] = ws
+            else:
+                pr.pop(brand, None)
+        ch_rules["preferred"] = pr
+
+    if xhs_avoid_updates is not None:
+        rules = current.setdefault("rules", {})
+        ch_rules = rules.setdefault(CHANNEL_XHS, {})
+        av = dict(ch_rules.get("avoid") or {})
+        for brand, words in xhs_avoid_updates.items():
+            ws = [w.strip() for w in words if w and w.strip()]
+            if len(ws) > MAX_AVOID:
+                warnings.append(
+                    f"小红书「{brand}」避免词 {len(ws)} 个，超过上限 {MAX_AVOID}"
+                )
+            if ws:
+                av[brand] = ws
+            else:
+                av.pop(brand, None)
+        ch_rules["avoid"] = av
+
     save_keyword_strategy(current, target)
     append_strategy_history(
         "编辑配置",
@@ -309,6 +496,7 @@ def save_strategy_edit(
                 "synonyms": current.get("synonyms"),
                 "extra_queries": current.get("extra_queries"),
                 "suffix_pool": current.get("suffix_pool"),
+                "rules": current.get("rules"),
             },
             ensure_ascii=False,
         )[:500],
@@ -333,6 +521,25 @@ def _suffix_of(keyword: str, query: str) -> str:
     return " ".join(q.split())
 
 
+def _row_quality_dropped(r: dict) -> int:
+    """行级质量丢弃数：新行用 quality_dropped 字段；旧行从 drop_reasons 兜底重算
+    （2026-08-19 修复：旧历史行无该字段，若按 0 计会把质量口径虚高到 100%）。"""
+    if "quality_dropped" in r:
+        return int(r.get("quality_dropped") or 0)
+    return sum(
+        n for reason, n in (r.get("drop_reasons") or {}).items()
+        if _reason_is_quality(str(reason))
+    )
+
+
+def _has_quality_data(rows: list[dict]) -> bool:
+    """行集合是否有质量口径数据（quality_dropped 字段或 drop_reasons 可重算）。"""
+    return any(
+        "quality_dropped" in r or (r.get("drop_reasons") or {})
+        for r in rows
+    )
+
+
 def extract_funnel(report: dict) -> dict:
     """从 result.json 提取每 (渠道, 关键词, 查询串) 漏斗与候选提示。"""
     plan = report.get("plan") or {}
@@ -343,11 +550,14 @@ def extract_funnel(report: dict) -> dict:
 
     coded = Counter()
     neg = Counter()
+    ad = Counter()
     for it in coded_items:
         key = (it.get("platform", ""), it.get("keyword", ""))
         coded[key] += 1
         if it.get("sentiment") == "negative":
             neg[key] += 1
+        if it.get("ad_flag"):
+            ad[key] += 1
 
     rows: list[dict] = []
     urls: dict[str, dict] = {}
@@ -376,6 +586,7 @@ def extract_funnel(report: dict) -> dict:
             if len(qs) == 1:
                 query_fallback[k] = next(iter(qs))
         drop_by: dict[tuple, Counter] = defaultdict(Counter)
+        quality_by: dict[tuple, int] = defaultdict(int)
         for d in drops:
             kw = d.get("keyword", "")
             if not kw:
@@ -383,18 +594,27 @@ def extract_funnel(report: dict) -> dict:
                 continue
             q = d.get("query") or query_fallback.get((cid, kw), kw)
             drop_by[(cid, kw, q)][d.get("reason", "")] += 1
+            if is_quality_drop(d):
+                quality_by[(cid, kw, q)] += 1
             key = f"{cid}\x1f{q}"
             urls.setdefault(key, {"kept": [], "dropped": []})["dropped"].append(
-                {"url": d.get("url", ""), "reason": d.get("reason", "")}
+                {
+                    "url": d.get("url", ""),
+                    "reason": d.get("reason", ""),
+                    "kind": d.get("kind", ""),
+                }
             )
         for key in sorted(set(kept_by) | set(drop_by)):
             cid_, kw, q = key
             kept = kept_by[key]
             reasons = dict(drop_by[key])
             dropped_n = sum(reasons.values())
+            quality_n = quality_by[key]
             coded_n = coded.get((cid_, kw), 0)
             neg_n = neg.get((cid_, kw), 0)
+            ad_n = ad.get((cid_, kw), 0)
             total = kept + dropped_n
+            q_total = kept + quality_n
             rows.append({
                 "channel": cid_,
                 "keyword": kw,
@@ -402,10 +622,13 @@ def extract_funnel(report: dict) -> dict:
                 "collected": total,
                 "kept": kept,
                 "dropped": dropped_n,
+                "quality_dropped": quality_n,
                 "drop_reasons": reasons,
                 "coded": coded_n,
                 "negative": neg_n,
+                "ad_count": ad_n,  # 2026-08-18：消费者声音（E = kept − ad_count）
                 "effective_rate": round(kept / total, 4) if total else None,
+                "quality_effective_rate": round(kept / q_total, 4) if q_total else None,
                 "negative_rate": round(neg_n / coded_n, 4) if coded_n else None,
             })
 
@@ -606,8 +829,8 @@ def scan_path(path: Path, history_file: Path | None = None) -> list[dict]:
 def aggregate(history: list[dict]) -> dict:
     """跨任务聚合：按 (渠道, 查询串) 求和漏斗 + 合并候选提示。"""
     agg: dict[tuple, dict] = defaultdict(
-        lambda: {"collected": 0, "kept": 0, "dropped": 0, "coded": 0,
-                 "negative": 0, "reasons": Counter()}
+        lambda: {"collected": 0, "kept": 0, "dropped": 0, "quality_dropped": 0,
+                 "coded": 0, "negative": 0, "reasons": Counter()}
     )
     suffix_stat: dict[str, dict] = {}
     cooccur: dict[str, dict] = {}
@@ -621,6 +844,7 @@ def aggregate(history: list[dict]) -> dict:
             a["collected"] += r["collected"]
             a["kept"] += r["kept"]
             a["dropped"] += r["dropped"]
+            a["quality_dropped"] += _row_quality_dropped(r)
             a["coded"] += r["coded"]
             a["negative"] += r["negative"]
             a["reasons"].update(r.get("drop_reasons") or {})
@@ -652,6 +876,7 @@ def aggregate(history: list[dict]) -> dict:
         agg.items(), key=lambda kv: -kv[1]["collected"]
     ):
         total = a["collected"]
+        q_total = a["kept"] + a["quality_dropped"]
         funnel.append({
             "channel": channel,
             "query": query,
@@ -659,10 +884,14 @@ def aggregate(history: list[dict]) -> dict:
             "collected": total,
             "kept": a["kept"],
             "dropped": a["dropped"],
+            "quality_dropped": a["quality_dropped"],
             "drop_reasons": dict(a["reasons"].most_common()),
             "coded": a["coded"],
             "negative": a["negative"],
             "effective_rate": round(a["kept"] / total, 4) if total else None,
+            "quality_effective_rate": (
+                round(a["kept"] / q_total, 4) if q_total else None
+            ),
             "negative_rate": round(a["negative"] / a["coded"], 4) if a["coded"] else None,
         })
     for st in suffix_stat.values():
@@ -701,7 +930,8 @@ def aggregate_unique(
     候选提示（后缀/共现/别称）仍为任务次数累计，仅作参考。
     """
     kept: dict[tuple, set] = defaultdict(set)
-    dropped: dict[tuple, dict] = defaultdict(dict)  # (channel, query) -> url -> reason
+    # (channel, query) -> url -> {"reason": str, "kind": str}
+    dropped: dict[tuple, dict] = defaultdict(dict)
     missing: list[str] = []
     for h in history:
         run = _run_payload(h.get("run_id"), runs_dir_path)
@@ -716,7 +946,10 @@ def aggregate_unique(
             for d in v.get("dropped") or []:
                 u = str(d.get("url") or "")
                 if u:
-                    dropped[k].setdefault(u, str(d.get("reason") or ""))
+                    dropped[k].setdefault(u, {
+                        "reason": str(d.get("reason") or ""),
+                        "kind": str(d.get("kind") or ""),
+                    })
 
     funnel: list[dict] = []
     for (channel, query) in sorted(
@@ -730,6 +963,8 @@ def aggregate_unique(
         }
         kept_n, dropped_n = len(kept_set), len(dropped_map)
         total = kept_n + dropped_n
+        quality_n = sum(1 for r in dropped_map.values() if is_quality_drop(r))
+        q_total = kept_n + quality_n
         funnel.append({
             "channel": channel,
             "query": query,
@@ -737,10 +972,14 @@ def aggregate_unique(
             "collected": total,
             "kept": kept_n,
             "dropped": dropped_n,
-            "drop_reasons": dict(Counter(dropped_map.values()).most_common()),
+            "quality_dropped": quality_n,
+            "drop_reasons": dict(
+                Counter(r["reason"] for r in dropped_map.values()).most_common()
+            ),
             "coded": 0,
             "negative": 0,
             "effective_rate": round(kept_n / total, 4) if total else None,
+            "quality_effective_rate": round(kept_n / q_total, 4) if q_total else None,
             "negative_rate": None,
         })
 
@@ -797,20 +1036,30 @@ def _strip_query(query: str) -> str:
     return " ".join(q.split()).strip()
 
 
-def _websearch_rows(entry: dict) -> list[dict]:
-    return [
-        r for r in (entry.get("funnel") or [])
-        if str(r.get("channel", "")).startswith("websearch")
-    ]
+def _channel_rows(entry: dict, channel: str | None = None) -> list[dict]:
+    """按渠道筛选漏斗行；channel=None 保持旧口径（WebSearch 全子渠道）。"""
+    rows = entry.get("funnel") or []
+    if channel is None:
+        return [r for r in rows if str(r.get("channel", "")).startswith("websearch")]
+    return [r for r in rows if r.get("channel") == channel]
 
 
 def _agg_rates(rows: list[dict]) -> dict:
     col = sum(r.get("collected", 0) for r in rows)
     kept = sum(r.get("kept", 0) for r in rows)
+    qd = sum(_row_quality_dropped(r) for r in rows)
+    has_quality = _has_quality_data(rows)
+    rate = (kept / col) if col else None
+    if has_quality:
+        qrate = (kept / (kept + qd)) if (kept + qd) else None
+    else:
+        qrate = rate  # 旧数据无质量口径 → 回落全漏斗
     return {
         "collected": col,
         "kept": kept,
-        "effective_rate": (kept / col) if col else None,
+        "quality_dropped": qd,
+        "effective_rate": rate,
+        "quality_effective_rate": qrate,
     }
 
 
@@ -819,6 +1068,7 @@ def compare_runs_metrics(
     cur: dict,
     strategy: dict | None = None,
     agg_rows: list[dict] | None = None,
+    channel: str | None = None,
 ) -> dict:
     """策略效果判定：选两次任务（基准/本次），输出有效率、纯品牌词、新增词、低效词。
 
@@ -831,14 +1081,21 @@ def compare_runs_metrics(
       聚合漏斗，即 aggregate_unique(history)["funnel"]）时取累计样本。
     """
     subject = cur.get("subject") or base.get("subject") or ""
-    ws_base = _websearch_rows(base)
-    ws_cur = _websearch_rows(cur)
+    ws_base = _channel_rows(base, channel)
+    ws_cur = _channel_rows(cur, channel)
+    if channel is not None and agg_rows:
+        agg_rows = [r for r in agg_rows if r.get("channel") == channel]
     b = _agg_rates(ws_base)
     c = _agg_rates(ws_cur)
 
     delta_pp = None
-    if b["effective_rate"] is not None and c["effective_rate"] is not None:
-        delta_pp = round((c["effective_rate"] - b["effective_rate"]) * 100, 1)
+    if (
+        b["quality_effective_rate"] is not None
+        and c["quality_effective_rate"] is not None
+    ):
+        delta_pp = round(
+            (c["quality_effective_rate"] - b["quality_effective_rate"]) * 100, 1
+        )
     if delta_pp is None:
         eff_verdict = "无法判定（缺少有效率数据）"
     elif delta_pp >= 5:
@@ -896,12 +1153,17 @@ def compare_runs_metrics(
         a = _agg_rates([r for r in ws_base if r.get("channel") == ch])
         d = _agg_rates([r for r in ws_cur if r.get("channel") == ch])
         dp = None
-        if a["effective_rate"] is not None and d["effective_rate"] is not None:
-            dp = round((d["effective_rate"] - a["effective_rate"]) * 100, 1)
+        if (
+            a["quality_effective_rate"] is not None
+            and d["quality_effective_rate"] is not None
+        ):
+            dp = round(
+                (d["quality_effective_rate"] - a["quality_effective_rate"]) * 100, 1
+            )
         per_channel.append({
             "channel": ch,
-            "before_rate": a["effective_rate"],
-            "after_rate": d["effective_rate"],
+            "before_rate": a["quality_effective_rate"],
+            "after_rate": d["quality_effective_rate"],
             "before_n": a["collected"],
             "after_n": d["collected"],
             "delta_pp": dp,
@@ -921,14 +1183,16 @@ def compare_runs_metrics(
     low: list[dict] = []
     for w, rows in word_rows.items():
         a = _agg_rates(rows)
-        eff = a["effective_rate"]
+        eff = a["quality_effective_rate"]
         col = a["collected"]
         if eff is None:
             continue
         if col >= 30 and eff < 0.50:
-            level, reason = "强建议删除", f"样本 {col}≥30 且有效供给率 {eff:.0%}<50%"
+            level, reason = "强建议删除", f"样本 {col}≥30 且有效供给率（质量口径）{eff:.0%}<50%"
         elif col >= 10 and eff < 0.40:
-            level, reason = "弱建议（参考）", f"样本 {col}≥10 且有效供给率 {eff:.0%}<40%，样本偏少"
+            level, reason = "弱建议（参考）", (
+                f"样本 {col}≥10 且有效供给率（质量口径）{eff:.0%}<40%，样本偏少"
+            )
         else:
             continue
         extra = (strat.get("extra_queries") or {}).get(subject, [])
@@ -949,10 +1213,20 @@ def compare_runs_metrics(
 
     strong_n = sum(1 for x in low if x["level"] == "强建议删除")
     weak_n = len(low) - strong_n
-    btxt = f"{b['effective_rate'] * 100:.1f}%" if b["effective_rate"] is not None else "—"
-    ctxt = f"{c['effective_rate'] * 100:.1f}%" if c["effective_rate"] is not None else "—"
+    has_quality_data = any(
+        "quality_dropped" in r for r in ws_base + ws_cur
+    )
+    btxt = (
+        f"{b['quality_effective_rate'] * 100:.1f}%"
+        if b["quality_effective_rate"] is not None else "—"
+    )
+    ctxt = (
+        f"{c['quality_effective_rate'] * 100:.1f}%"
+        if c["quality_effective_rate"] is not None else "—"
+    )
     parts = [
-        f"有效供给率 {btxt}（n={b['collected']}）→ {ctxt}（n={c['collected']}），{eff_verdict}。"
+        f"有效供给率（质量口径）{btxt}（n={b['collected']}）→ "
+        f"{ctxt}（n={c['collected']}），{eff_verdict}。"
     ]
     if pure.get("present"):
         btxt = f"{pure.get('before_drop_pct')}%" if pure.get("before_drop_pct") is not None else "—"
@@ -965,8 +1239,8 @@ def compare_runs_metrics(
     if new_agg["collected"]:
         parts.append(
             f"新增 {len(new_rows)} 个查询串，采集 {new_agg['collected']} 保留 "
-            f"{new_agg['kept']}（有效供给率 "
-            f"{new_agg['effective_rate'] * 100:.1f}%）。"
+            f"{new_agg['kept']}（有效供给率（质量口径）"
+            f"{new_agg['quality_effective_rate'] * 100:.1f}%）。"
         )
     else:
         parts.append("无新增查询串。")
@@ -977,20 +1251,27 @@ def compare_runs_metrics(
 
     return {
         "effective": {
-            "before_pct": round(b["effective_rate"] * 100, 1) if b["effective_rate"] is not None else None,
-            "after_pct": round(c["effective_rate"] * 100, 1) if c["effective_rate"] is not None else None,
+            "before_pct": (
+                round(b["quality_effective_rate"] * 100, 1)
+                if b["quality_effective_rate"] is not None else None
+            ),
+            "after_pct": (
+                round(c["quality_effective_rate"] * 100, 1)
+                if c["quality_effective_rate"] is not None else None
+            ),
             "before_n": b["collected"],
             "after_n": c["collected"],
             "delta_pp": delta_pp,
             "verdict": eff_verdict,
+            "quality": has_quality_data,
         },
         "pure_brand": pure,
         "new_queries": {
             "count": len(new_rows),
             "collected": new_agg["collected"],
             "kept": new_agg["kept"],
-            "effective_pct": round(new_agg["effective_rate"] * 100, 1)
-            if new_agg["effective_rate"] is not None else None,
+            "effective_pct": round(new_agg["quality_effective_rate"] * 100, 1)
+            if new_agg["quality_effective_rate"] is not None else None,
         },
         "per_channel": per_channel,
         "low_efficiency": low,
@@ -1006,14 +1287,14 @@ def write_candidates(agg: dict, out: Path | None = None) -> Path:
     for suf, st in agg.get("suffix_stats", {}).items():
         ref = "参考（证据<30）" if st["collected"] < REF_N else ""
         rows.append({
-            "类型": "后缀", "主题": "", "候选": suf,
+            "类型": "后缀", "主题": "", "候选": suf, "渠道": "websearch",
             "证据n": st["n_queries"], "有效供给率": st["effective_rate"],
             "示例1": "", "示例2": "", "备注": ref,
         })
     for v in agg.get("cooccur", {}).values():
         ex = v.get("examples") or []
         rows.append({
-            "类型": "查询候选", "主题": v["subject"],
+            "类型": "查询候选", "主题": v["subject"], "渠道": "websearch",
             "候选": f"{v['subject']} {v['token']}",
             "证据n": v["n"], "有效供给率": "",
             "示例1": ex[0] if len(ex) > 0 else "",
@@ -1022,14 +1303,22 @@ def write_candidates(agg: dict, out: Path | None = None) -> Path:
     for tok, v in agg.get("alias", {}).items():
         ex = v.get("examples") or []
         rows.append({
-            "类型": "同义词", "主题": v.get("subject", ""),
+            "类型": "同义词", "主题": v.get("subject", ""), "渠道": "websearch",
             "候选": tok, "证据n": v["n"], "有效供给率": "",
             "示例1": ex[0] if len(ex) > 0 else "",
             "示例2": ex[1] if len(ex) > 1 else "", "备注": "",
         })
+    for ch_rows in agg.get("channel_candidates", []):
+        rows.append({
+            "类型": ch_rows["类型"], "主题": ch_rows["主题"],
+            "候选": ch_rows["候选"], "渠道": ch_rows["渠道"],
+            "证据n": ch_rows["证据n"], "有效供给率": ch_rows.get("有效供给率"),
+            "示例1": "", "示例2": "", "备注": ch_rows.get("备注", ""),
+        })
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=[
-            "类型", "主题", "候选", "证据n", "有效供给率", "示例1", "示例2", "备注",
+            "类型", "主题", "候选", "渠道", "证据n", "有效供给率",
+            "示例1", "示例2", "备注",
         ])
         w.writeheader()
         w.writerows(rows)
@@ -1103,7 +1392,15 @@ def main() -> int:
                   f"{r['collected']:>6}{r['kept']:>6}{r['dropped']:>6}"
                   f"{r['coded']:>6}{eff:>10}{neg:>8}")
     if args.candidates:
-        out = write_candidates(aggregate(load_history()), args.out)
+        hist = load_history()
+        agg = aggregate(hist)
+        # 渠道级候选（2026-08-18）：B站/微博 查询组合 + 小红书 避免词
+        agg["channel_candidates"] = (
+            extract_channel_candidates(hist, "bilibili")
+            + extract_channel_candidates(hist, "weibo")
+            + extract_channel_candidates(hist, "xiaohongshu")
+        )
+        out = write_candidates(agg, args.out)
         print(f"候选清单：{out}")
     return 0
 

@@ -1,18 +1,18 @@
 {
-  "version": "0.1",
-  "status": "draft",
-  "note": "主导对象模板草案（领域配方模型 v0.2，2026-08-14）。领域分类 = 主导对象模板 + 叠加维度（非互斥归属）；本文件本轮仅作为 schema origin 引用的元数据与 2.5 提案引擎的输入，标准维度待 2.5 证据定稿。存放于 app/domains/（schema 资产，入库受版本管理，避免被 data/ 运行时目录规则忽略）。",
+  "version": "1.0",
+  "status": "production",
+  "note": "主导对象模板定稿（模块化分类 v1.0，2026-08-17）。模块 = content/physical/service，对应用户侧「数字产品/有形实物/服务内容」；任何品牌 = 模块多选 → 模板维度并集（概念去重，见 app/domains/composer.py）。keywords 由 game/consumer/digital3c 同源维度回填（content/physical）或按零售/餐饮语体新起草（service），由模块卷标注评测作为验证证据。组合维度强制 ≤10。",
   "templates": [
     {
       "id": "content",
       "name": "内容型",
       "description": "数字内容产品（游戏/影视/内容 App 等）：内容与玩法为主，运营与定价为次",
       "dimensions": [
-        {"id": "content_quality", "name": "内容质量", "description": "内容、剧情、叙事质量", "keywords": []},
-        {"id": "feature_gameplay", "name": "功能玩法", "description": "核心玩法、功能体验", "keywords": []},
-        {"id": "update_ops", "name": "更新运营", "description": "更新节奏、运营活动、社区管理", "keywords": []},
-        {"id": "pricing", "name": "付费定价", "description": "定价、付费机制、性价比", "keywords": []},
-        {"id": "tech_stability", "name": "技术稳定性", "description": "性能、稳定性、兼容性", "keywords": []}
+        {"id": "content_quality", "name": "内容质量", "description": "内容、剧情、叙事质量", "keywords": ["剧情", "文案", "世界观", "故事", "结局", "主线", "文本", "内容"]},
+        {"id": "feature_gameplay", "name": "功能玩法", "description": "核心玩法、功能体验", "keywords": ["玩法", "战斗", "养成", "操作", "平衡", "副本", "活动", "手感", "打击感"]},
+        {"id": "update_ops", "name": "更新运营", "description": "更新节奏、运营活动、社区管理", "keywords": ["运营", "客服", "补偿", "公告", "社区", "发福利", "策划", "活动"]},
+        {"id": "pricing", "name": "付费定价", "description": "定价、付费机制、性价比", "keywords": ["氪金", "抽卡", "保底", "充钱", "付费", "皮肤", "礼包", "概率", "性价比", "定价"]},
+        {"id": "tech_stability", "name": "技术稳定性", "description": "性能、稳定性、兼容性", "keywords": ["闪退", "卡顿", "Bug", "bug", "优化", "崩溃", "发热", "掉帧", "加载", "兼容"]}
       ]
     },
     {
@@ -20,13 +20,13 @@
       "name": "实物型",
       "description": "有形商品（消费品/3C/食品等）：质量、效果与价格为主，渠道与服务为次",
       "dimensions": [
-        {"id": "quality_material", "name": "质量材质", "description": "材质、做工、耐用性", "keywords": []},
-        {"id": "effectiveness", "name": "功能效果", "description": "功能、效果、使用体验", "keywords": []},
-        {"id": "safety_compliance", "name": "安全合规", "description": "成分、安全、资质合规", "keywords": []},
-        {"id": "price_value", "name": "价格价值", "description": "价格、性价比、促销折扣", "keywords": []},
-        {"id": "channel_service", "name": "渠道服务", "description": "购买渠道、物流、售后", "keywords": []},
-        {"id": "brand_image", "name": "品牌形象", "description": "品牌声誉、营销、代言", "keywords": []},
-        {"id": "competitor", "name": "竞品对比", "description": "同类产品比较", "keywords": []}
+        {"id": "quality_material", "name": "质量材质", "description": "材质、做工、耐用性", "keywords": ["质量", "材质", "耐用", "做工", "手感", "坏", "破损", "褪色", "变形", "开裂"]},
+        {"id": "effectiveness", "name": "功能效果", "description": "功能、效果、使用体验", "keywords": ["好用", "方便", "体验", "功能", "效果", "性能", "卡顿", "系统", "画质", "续航", "充电", "拍照", "防抖", "流畅", "舒适", "难用", "麻烦", "异味", "密封"]},
+        {"id": "safety_compliance", "name": "安全合规", "description": "成分、安全、资质合规", "keywords": ["成分", "安全", "过敏", "添加剂", "防腐", "检测", "超标", "认证", "标准", "合规", "隐私"]},
+        {"id": "price_value", "name": "价格价值", "description": "价格、性价比、促销折扣", "keywords": ["价格", "贵", "便宜", "性价比", "涨价", "降价", "折扣", "优惠", "促销", "划算", "价值", "保值"]},
+        {"id": "channel_service", "name": "渠道服务", "description": "购买渠道、物流、售后", "keywords": ["发货", "物流", "快递", "售后", "客服", "退款", "退货", "缺货", "旗舰店", "门店", "保修", "维修"]},
+        {"id": "brand_image", "name": "品牌形象", "description": "品牌声誉、营销、代言", "keywords": ["广告", "代言", "品牌", "形象", "营销", "网红", "联名", "曝光", "315", "审美", "质感", "情怀"]},
+        {"id": "competitor", "name": "竞品对比", "description": "同类产品比较", "keywords": ["对比", "比", "不如", "更好", "替代", "平替", "PK", "vs", "竞品", "其他牌子", "差距", "谁强", "别家"]}
       ]
     },
     {
@@ -34,13 +34,13 @@
       "name": "服务型",
       "description": "服务过程（餐饮/门店/平台服务等）：过程体验为主，价格与信任为次",
       "dimensions": [
-        {"id": "service_attitude", "name": "服务态度", "description": "服务人员态度", "keywords": []},
-        {"id": "timeliness", "name": "时效", "description": "等待时长、响应速度", "keywords": []},
-        {"id": "convenience", "name": "环境便利", "description": "环境、位置、便利性", "keywords": []},
-        {"id": "professionalism", "name": "专业度", "description": "服务专业水平", "keywords": []},
-        {"id": "price", "name": "价格", "description": "价格、性价比", "keywords": []},
-        {"id": "after_sales", "name": "售后", "description": "售后、退款、投诉处理", "keywords": []},
-        {"id": "brand_trust", "name": "品牌信任", "description": "品牌信任、口碑", "keywords": []}
+        {"id": "service_attitude", "name": "服务态度", "description": "服务人员态度", "keywords": ["服务", "态度", "店员", "服务员", "热情", "冷漠", "不耐烦", "耐心", "态度差", "态度好"]},
+        {"id": "timeliness", "name": "时效", "description": "等待时长、响应速度", "keywords": ["等待", "排队", "出餐", "送餐", "送达", "响应", "速度", "慢", "快", "时长", "翻台", "等位"]},
+        {"id": "convenience", "name": "环境便利", "description": "环境、位置、便利性", "keywords": ["环境", "门店", "位置", "停车", "方便", "干净", "卫生", "装修", "噪音", "拥挤", "营业时间", "线上点单"]},
+        {"id": "professionalism", "name": "专业度", "description": "服务专业水平", "keywords": ["专业", "水平", "技术", "手法", "建议", "推荐", "熟练", "师傅", "配方", "手艺"]},
+        {"id": "price", "name": "价格", "description": "价格、性价比", "keywords": ["价格", "贵", "便宜", "性价比", "涨价", "降价", "会员", "套餐", "折扣", "优惠", "活动", "划算"]},
+        {"id": "after_sales", "name": "售后", "description": "售后、退款、投诉处理", "keywords": ["售后", "退款", "退货", "投诉", "处理", "赔偿", "客服", "维权", "纠纷", "补偿"]},
+        {"id": "brand_trust", "name": "品牌信任", "description": "品牌信任、口碑", "keywords": ["信任", "口碑", "品牌", "信誉", "放心", "靠谱", "踩雷", "加盟", "连锁", "黑"]}
       ]
     }
   ]

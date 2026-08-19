@@ -32,7 +32,7 @@ from app.channels.base import (
     degraded_result,
     jittered_sleep,
 )
-from app.core.keyword_effects import load_keyword_strategy
+from app.core.keyword_effects import expand_websearch_keywords, load_keyword_strategy
 from app.core.models import AnalysisPlan, ChannelResult, Post
 
 SO_URL = "https://www.so.com/s"
@@ -389,7 +389,7 @@ def lightweight_probe(query: str) -> dict:
 
     与 probe_engines 单条同构（engine/status/items/message/risk/http），
     供渠道诊断的 WebSearch 行复用——不再以 HTTP 200 为准（验证码页/降级页
-    会被识别为 risk/degraded）。见 docs/渠道诊断融合方案.md。
+    会被识别为 risk/degraded）。见 docs/archive/渠道诊断融合方案.md。
     """
     return _probe_one(requests.Session(), "360", query)
 
@@ -444,13 +444,16 @@ class WebSearchChannel(ChannelAdapter):
     ) -> ChannelResult:
         strategy = load_keyword_strategy()
         subject = plan.subject or ""
-        aliases = (strategy.get("synonyms") or {}).get(subject, [])[:2]
-        extra_queries = (strategy.get("extra_queries") or {}).get(subject, [])[:5]
         session = requests.Session()
         session.headers.update(dict(REQUEST_HEADERS))
         session.headers["User-Agent"] = random.choice(USER_AGENTS)
         posts: list[Post] = []
         dropped: list[dict] = []
+        stats: dict[str, int] = {
+            "requested_limit": 0, "api_returned_cards": 0, "kept": 0,
+            "skipped_dup": 0, "skipped_domain_filter": 0,
+            "skipped_official": 0, "empty_queries": 0, "risk_stop": 0,
+        }
         seen_urls: set[str] = set(skip_urls or ())
         first_error = ""
         keywords = plan.keywords or [plan.subject]
@@ -472,13 +475,13 @@ class WebSearchChannel(ChannelAdapter):
                 else:
                     official_domains = list(raw_domains)
         limit = min(limit, MAX_LIMIT)
+        stats["requested_limit"] = limit
 
-        query_keywords: list[str] = []
-        for kw in keywords:
-            query_keywords.append(kw)
-            if kw == subject:
-                query_keywords.extend(aliases)
-                query_keywords.extend(extra_queries)
+        # 总开关语义（2026-08-18）：开关开 = 后缀/同义词/策略词全量展开；
+        # 关 = 完全按确认关键词原词（与确认页估算共用 expand_websearch_keywords）
+        query_keywords = expand_websearch_keywords(
+            keywords, subject, enabled=eval_suffix, strategy=strategy
+        )
 
         # 每日关键词总量拦截（防触发风控，含子渠道展开后的查询次数）
         used = _day_used()
@@ -515,17 +518,21 @@ class WebSearchChannel(ChannelAdapter):
                     hard_stop = _diag_has_hard_risk(diag)
                     if not items or hard_stop:
                         break
+                    stats["api_returned_cards"] += len(items)
                     for item in items:
                         if item["url"] in seen_urls:
+                            stats["skipped_dup"] += 1
                             continue
                         if self._domains and not any(
                             d in item["url"] for d in self._domains
                         ):
+                            stats["skipped_domain_filter"] += 1
                             continue
                         domain = urllib.parse.urlparse(item["url"]).netloc
                         if official_domains and any(
                             d in domain for d in official_domains
                         ):
+                            stats["skipped_official"] += 1
                             dropped.append(
                                 {
                                     "platform": self.id,
@@ -534,6 +541,7 @@ class WebSearchChannel(ChannelAdapter):
                                     "keyword": keyword,
                                     "query": query,
                                     "reason": "官网域名黑名单",
+                                    "kind": "quality",
                                 }
                             )
                             continue
@@ -558,6 +566,7 @@ class WebSearchChannel(ChannelAdapter):
                                 },
                             )
                         )
+                        stats["kept"] += 1
                         if len(keyword_posts) >= limit:
                             break
                     jittered_sleep(REQUEST_INTERVAL, 0.25)
@@ -580,8 +589,10 @@ class WebSearchChannel(ChannelAdapter):
                     empty_in_a_row = EMPTY_RISK_THRESHOLD  # 验证码即停：直接触发冷却
                 else:
                     empty_in_a_row += 1
+                stats["empty_queries"] += 1
                 if hard_stop or any(d.get("risk") for d in kw_diag):
                     risk_hit = True
+                    stats["risk_stop"] = 1
                 diag_summary.append(f"「{query}」{_diag_compact(kw_diag)}")
                 if empty_in_a_row >= EMPTY_RISK_THRESHOLD:
                     break  # 连续 ≥2 个空结果或验证码即停 → 判定风控，提前结束
@@ -597,7 +608,11 @@ class WebSearchChannel(ChannelAdapter):
                 )
             else:
                 error = first_error or "WebSearch 未获取到任何结果"
-            return degraded_result(self.id, error)
+            return ChannelResult(
+                channel_id=self.id, ok=False, posts=posts,
+                error=error, degraded=True,
+                dropped=dropped, collection_stats=stats,
+            )
         if risk_hit:
             # 部分成功但触发风控信号：本轮结果可用，冷却防止下轮继续空跑
             try:
@@ -612,5 +627,6 @@ class WebSearchChannel(ChannelAdapter):
         if on_progress:
             on_progress(f"WebSearch 采集完成，共 {len(posts)} 条", 1.0)
         return ChannelResult(
-            channel_id=self.id, ok=True, posts=posts, dropped=dropped
+            channel_id=self.id, ok=True, posts=posts, dropped=dropped,
+            collection_stats=stats,
         )

@@ -9,7 +9,7 @@
     一致性核对表 + 人工抽检校准表（edge_review_consistency_v1.xlsx /
       edge_review_calibration_v1.xlsx，人工判定列已填写）
 
-处理（docs/边界样本专项集方案.md §四/§六）：
+处理（docs/archive/边界样本专项集方案.md §四/§六）：
     - 人工判定优先（两套复核表合并，以人工为准）；
     - 双 AI 情感/相关分歧且无人工判定 → 争议集 edge_set_v1_disputed.csv；
     - 其余字段以主标为准，人工填写则覆盖。

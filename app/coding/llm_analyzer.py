@@ -23,14 +23,38 @@ DEFAULT_MODEL = "gpt-4o-mini"
 CONFIDENCE_THRESHOLD = 0.8  # 预筛置信度低于此值才调用 LLM（0.8 更保守，送 LLM 占比更高）
 BATCH_SIZE = 10  # 单请求文本数（越小单请求越快、进度越平滑）
 NARRATIVE_BATCH_SIZE = 6  # 叙事/归因批大小（2026-08-16 由 10 调小：输出体量更小，降低截断与 index 漂移概率）
-PROMPT_VERSION = 11  # 情感分析提示词版本（v3.5：问句二分 + 报道细分 + 功能陈述评价色彩）
+PROMPT_VERSION = 12  # 情感分析提示词版本（v3.6：实物/3C 隐晦负面 few-shot）
 # 采用"整条情感跟锚定品牌"口径的领域（抽样规范 §十四：品牌口碑场景）。
 # 主集/边界集沿用"文本自身情感"口径，不在此列；评测与生产链路据此决定是否传 subject。
 SUBJECT_DOMAINS = frozenset({"digital3c"})
-# 校准 spike（2026-08-17）结论：3C 词典直判置信度不可信（conf≥0.8 直判 49% 错误率，
-# 贡献 29% 错误；LLM 同桶仅 6% 错）→ 这些领域全量送 LLM（词典只做预筛），
-# 费用仍受控（约 +15% LLM 调用）。评测与生产链路同口径。
-ALWAYS_LLM_DOMAINS = frozenset({"digital3c"})
+
+
+def uses_subject_domain(domain_id: str | None) -> bool:
+    """是否走「整条情感跟锚定品牌」口径。
+
+    2026-08-17 模块卷标注口径确认（对齐抽样规范 §十四）：
+    - digital3c 与 modules_physical / modules_service（及含实物/服务的组合）=
+      品牌口碑场景，情感锚定报告/计划主题品牌（比较/站队类文本对目标品牌判褒贬）；
+    - modules_content（纯数字内容产品）沿用主集游戏口径 = 文本自身情感。
+    生产 coder 与 benchmark 同口径。
+    """
+    return bool(domain_id) and (
+        domain_id in SUBJECT_DOMAINS
+        or (domain_id.startswith("modules_") and domain_id != "modules_content")
+    )
+# 校准 spike（2026-08-17）结论：词典直判置信度不可信（3C conf≥0.8 直判 49% 错误率，
+# 贡献 29% 错误；LLM 同桶仅 6% 错）→ 相关领域全量送 LLM（词典只做预筛），
+# 费用仍受控。评测与生产链路同口径。
+# 2026-08-17 模块化分类：数字产品/有形实物/服务内容对应 game/consumer/digital3c
+# 与全部 modules_* 合成领域，全部走全量 LLM（提准优先）。
+ALWAYS_LLM_DOMAINS = frozenset({"digital3c", "game", "consumer"})
+
+
+def is_always_llm_domain(domain_id: str | None) -> bool:
+    """模块化分类（2026-08-17）后的全量 LLM 判定：已评测领域 + 模块合成领域。"""
+    return bool(domain_id) and (
+        domain_id in ALWAYS_LLM_DOMAINS or domain_id.startswith("modules_")
+    )
 
 # v3.4 规则开关（拆分归因用）：SMS_V34_RULES 覆盖默认集；
 # 置空 = 回到 v3.3+B；单独指定子集 = 单规则消融。
@@ -44,9 +68,18 @@ _V34_RULES_DEFAULT = "12,13,14"
 #   正面报道）、negative→neutral 28（困扰问句被当 neutral）。
 _V35_RULES_DEFAULT = "15,16,17"
 
+# v3.6 规则开关（模块化分类 2026-08-17）：SMS_V36_RULES 覆盖默认集；
+# 置空 = 回到 v3.5。实物卷取证：negative 漏检 10 条全部为隐晦负面
+# （价格过高/功能缺陷/不实用/含蓄差评）→ 规则 18 few-shot 定向补召回。
+_V36_RULES_DEFAULT = "18"
+
 
 def _v35_enabled(rule: str) -> bool:
     return rule in os.environ.get("SMS_V35_RULES", _V35_RULES_DEFAULT).split(",")
+
+
+def _v36_enabled(rule: str) -> bool:
+    return rule in os.environ.get("SMS_V36_RULES", _V36_RULES_DEFAULT).split(",")
 
 
 def _v34_enabled(rule: str) -> bool:
@@ -113,8 +146,11 @@ class BaseAnalyzer:
         """验证配置可用性，返回 (ok, message)。"""
         return True, "词典模式无需连接"
 
-    def generate_insights(self, descriptors: dict) -> dict:
-        """基于统计描述生成图表解析与深度结论。"""
+    def generate_insights(
+        self, descriptors: dict, evidence: list[dict] | None = None,
+        summary: dict | None = None,
+    ) -> dict:
+        """基于统计描述（+证据清单）生成图表解析与核心发现。"""
         raise NotImplementedError
 
 
@@ -151,9 +187,22 @@ class MockAnalyzer(BaseAnalyzer):
     def ping(self) -> tuple[bool, str]:
         return True, "词典模式无需连接"
 
-    def generate_insights(self, descriptors: dict) -> dict:
+    def generate_insights(
+        self, descriptors: dict, evidence: list[dict] | None = None,
+        summary: dict | None = None,
+    ) -> dict:
+        """词典模式：有 summary/evidence 时直接走规则 findings（不再落静态模板）。"""
         from app.coding.insights import template_insights
 
+        if summary is not None:
+            from app.core.evidence import build_findings, findings_to_conclusion
+
+            findings = build_findings(evidence or [], summary, mode="lexicon")
+            return {
+                "chart_insights": template_insights(descriptors)["chart_insights"],
+                "conclusion": findings_to_conclusion(findings),
+                "findings": findings,
+            }
         return template_insights(descriptors)
 
 
@@ -581,6 +630,16 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "17. 功能/能力陈述的评价色彩（v3.5）：明确夸赞产品能力（'机身自带AI剪辑'"
                 "'AI自动剪辑很舒服''可玩性更高''100多G内存还没涨价,那选什么一目了然'）"
                 "→ positive；纯规格说明（'支持8K''1英寸传感器''10小时续航'）→ neutral。")
+        v36_blocks: list[str] = []
+        if _v36_enabled("18"):
+            v36_blocks.append(
+                "18. 实物/3C 隐晦负面（v3.6，2026-08-17 模块卷取证）：以下语境即使无"
+                "负面情绪词也判 negative——a) 价格过高/买不起/性价比犹豫后转向竞品"
+                "（'买不起的''价格直接干到三千出头,综合性价比我可能还是买XX的二代'）；"
+                "b) 功能缺陷/缺失吐槽（'都1寸底了,装个sm卡吧'（缺卡槽）"
+                "'模拟门禁卡消失了,重新录入也不行'）；c) 产品不实用/无价值"
+                "（'睡觉谁还带手表啊'）；d) 含蓄效果差评（'白天效果很好,晚上早点回家吧'"
+                "（暗光差）'属于是买家秀了'）。")
         system = (
             "你是中文社交媒体情感分析专家。对输入的每条文本输出情感判断（prompt v2.2）。"
             "注意：中文网络语境常有反讽/阴阳怪气/反话（表面褒义实为贬义，"
@@ -637,6 +696,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "竞品对比维度按文本内容标方向（夸某品牌=竞品对比 positive、贬=negative）。"
             + "".join(v34_blocks)
             + "".join(v35_blocks)
+            + "".join(v36_blocks)
             + dim_block
             + (
                 (
@@ -860,34 +920,97 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                     on_batch_progress(done_items, len(texts))
         return results
 
-    def generate_insights(self, descriptors: dict) -> dict:
-        """综合所有图表信息，生成解析文字与按叙事框架的深度结论。"""
+    def generate_insights(
+        self, descriptors: dict, evidence: list[dict] | None = None,
+        summary: dict | None = None,
+    ) -> dict:
+        """图表解析 + 发现驱动结论（P1.5）：LLM 只解读给定证据，不自行选材。"""
         from app.coding.insights import template_insights
+        from app.core.evidence import findings_to_conclusion
+
+        evidence = evidence or []
+        evidence_block = ""
+        if evidence:
+            lines = []
+            for i, c in enumerate(evidence):
+                parts = [
+                    c["id"],
+                    f"维度:{c.get('dimension_name') or '整体'}",
+                    f"平台:{c.get('platform') or '未知'}",
+                    f"日期:{c.get('date') or '未知'}",
+                    f"情感:{c['sentiment']}",
+                    f"n={c.get('n') or 0}",
+                    f"判定:{c['judge']}",
+                ]
+                if c.get("need_review"):
+                    parts.append("待复核")
+                meta = f"- {c['id']}（{'，'.join(parts[1:])}）"
+                # 统计卡全文始终给出（短、且统计结论必须引用）；原文卡只给前 20 条
+                if c.get("kind") == "stat" or i < 20:
+                    meta += f"：「{c['text']}」"
+                lines.append(meta)
+            evidence_block = "\n".join(lines)
 
         try:
             system = (
-                "你是资深的社交媒体舆情分析师。基于给定的统计描述，完成两件事：\n"
+                "你是资深的社交媒体舆情分析师。基于给定的统计描述与证据清单，完成两件事：\n"
                 "1) 为每个图表写一段 80~150 字的中文解析，解读数字含义、趋势变化和潜在风险；\n"
-                "2) 综合所有图表信息，按五种叙事框架（冲突/人情味/责任归因/经济后果/道德）"
-                "输出 300~500 字的深度结论与行动建议，每条建议要具体、可执行。\n"
+                "2) 写「核心发现」，最多 5 条。每条包含：\n"
+                "   - claim：一句话结论（必须来自统计描述或证据清单，不得虚构原文/数字）；\n"
+                "   - evidence_refs：引用证据清单中存在的编号（如 E1）；无合适证据则留空数组；\n"
+                "   - action：一条可执行建议，必须包含动作 + 对象 + 具体渠道（如微博/B站/"
+                "知乎/小红书/京东等，至少一个），建议末尾注明对应发现编号（如『（对应F1）』）；"
+                "禁止空泛公关话术（如『发布官方声明』『加强品牌建设』而无渠道、无对象）。\n"
+                "     正例：『由客服部联合法务部在微博、京东等渠道发布售后政策改进公告，"
+                "明确投诉处理流程，并设置专人跟进（对应F2）。』\n"
+                "证据引用规则（重要）：\n"
+                "   - 证据分两类：原文卡（kind=text，含原文引用）与统计卡（kind=stat，"
+                "如『维度「品牌形象」：讨论 28 条，负面 22 条，负面率 79%』『情感走势整体下降…』）；\n"
+                "   - 统计/聚合类结论（占比、走势、强度、平台平均分、维度负面率）必须引用"
+                "统计卡，禁止用单条原文支撑统计数字；\n"
+                "   - 具体文本现象类结论可引用原文卡；\n"
+                "   - 引用的证据必须直接支持结论；宁可留空 evidence_refs，"
+                "也不要引用不相关或仅沾边的原文。\n"
+                "   - narrative_label（可选）：归因视角标签，如 attribution: enterprise / "
+                "conflict / human_interest / economic / morality。\n"
                 '输出 JSON：{"chart_insights":{"overall":"...","platform":"...","trend":"...",'
                 '"dimensions":"...","heatmap":"...","words":"...","intensity":"...",'
                 '"radar":"...","platform_dim":"...","date_dim":"...","wordcloud":"...",'
-                '"cooccurrence":"..."},"conclusion":"..."}。'
+                '"cooccurrence":"..."},"findings":[{"id":"F1","claim":"...","evidence_refs":'
+                '["E1"],"action":"...","narrative_label":"..."}]}。'
                 "只输出 JSON，不要其他文字。"
             )
-            user = json.dumps({"统计描述": descriptors}, ensure_ascii=False)
-            content = self._chat(system, user, max_tokens=3500, timeout=120)
+            user = json.dumps(
+                {"统计描述": descriptors, "证据清单": evidence_block},
+                ensure_ascii=False,
+            )
+            content = self._chat(system, user, max_tokens=4000, timeout=120)
             data = json.loads(content)
             chart_insights = data.get("chart_insights", {})
-            conclusion = data.get("conclusion", "")
-            if not isinstance(chart_insights, dict) or not conclusion:
+            findings = data.get("findings", [])
+            if not isinstance(chart_insights, dict):
                 raise ValueError("深度洞察 JSON 解析失败")
-            return {"chart_insights": chart_insights, "conclusion": conclusion}
+            if not isinstance(findings, list):
+                findings = []
+            conclusion = findings_to_conclusion(findings) if findings else ""
+            return {
+                "chart_insights": chart_insights,
+                "conclusion": conclusion,
+                "findings": findings,
+            }
         except Exception as exc:
             self._errors.append(
-                f"深度洞察生成失败：{self._friendly_error(exc)}，已用模板兜底"
+                f"深度洞察生成失败：{self._friendly_error(exc)}，已用规则兜底"
             )
+            if summary is not None:
+                from app.core.evidence import build_findings, findings_to_conclusion
+
+                findings = build_findings(evidence, summary, mode="fallback")
+                return {
+                    "chart_insights": template_insights(descriptors)["chart_insights"],
+                    "conclusion": findings_to_conclusion(findings),
+                    "findings": findings,
+                }
             return template_insights(descriptors)
 
 

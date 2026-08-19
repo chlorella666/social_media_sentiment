@@ -60,7 +60,8 @@ def _schema_dims(domain_id: str, dims_json: Path | None = None) -> list:
 
 
 def gen_worksheet(domain_id: str, out: Path, samples: list[dict] | None = None,
-                  dims_json: Path | None = None) -> None:
+                  dims_json: Path | None = None,
+                  guide_extra: list[str] | None = None) -> None:
     dims = _schema_dims(domain_id, dims_json)
     headers = BASE_COLUMNS[:6] + [d.name for d in dims] + BASE_COLUMNS[6:]
     wb = Workbook()
@@ -86,7 +87,7 @@ def gen_worksheet(domain_id: str, out: Path, samples: list[dict] | None = None,
         "维度列：只填 positive/negative；无明确褒贬留空（对齐标注规范 §五）。",
         "是否相关：yes/no；no 的样本情感标 neutral、维度留空（不计入主评分）。",
         "定版：python tests/coldstart_annotation.py --finalize --sheet <本文件> --out <golden.csv>",
-    ]:
+    ] + (guide_extra or []):
         guide.append([line])
     guide.column_dimensions["A"].width = 110
     wb.save(out)
@@ -185,13 +186,26 @@ def demo_skeleton(domain_id: str, source: Path, n: int, out: Path,
     print(f"骨架 golden：{out}（{len(golden)} 条，{picked[0]['cat'] if picked else ''} 等数码类）")
 
 
-def extract_report_items(report_dir: Path, domain_id: str) -> list[dict]:
-    """从真实任务报告提取目标领域样本（含 pub_date，供 hold-out 时间窗分层）。"""
+def extract_report_items(report_dir: Path, domain_id: str,
+                         subjects: list[str] | None = None) -> list[dict]:
+    """从真实任务报告提取目标领域样本（含 pub_date，供 hold-out 时间窗分层）。
+
+    --subjects 指定时按「品牌/主题」精确过滤（模块化分类采样用，兼容
+    domain_id 缺失的旧报告）；否则按 domain_id 过滤。
+    """
     items = []
     for p in sorted(report_dir.glob("**/result.json")):
+        # 2026-08-17：采样池排除归档目录（lifecycle 自动归档的旧报告/重复批次），
+        # 避免旧时间窗与重复文本稀释模块卷（当前报告均在顶层目录）。
+        if any(part == "archive" for part in p.parts):
+            continue
         bundle = json.loads(p.read_text(encoding="utf-8"))
-        subject = (bundle.get("plan") or {}).get("subject", "")
-        if (bundle.get("plan") or {}).get("domain_id") != domain_id:
+        plan = bundle.get("plan") or {}
+        subject = plan.get("subject", "")
+        if subjects:
+            if subject not in subjects:
+                continue
+        elif plan.get("domain_id") != domain_id:
             continue  # 只采样目标领域的任务（目录可能混有其他领域报告）
         for it in bundle.get("coded_items", []):
             text = (it.get("text") or "").strip()
@@ -215,18 +229,67 @@ def extract_report_items(report_dir: Path, domain_id: str) -> list[dict]:
     return uniq
 
 
-def extract_report_items_many(report_dirs: list[Path], domain_id: str) -> list[dict]:
+def extract_report_items_many(report_dirs: list[Path], domain_id: str,
+                              subjects: list[str] | None = None) -> list[dict]:
     """跨任务聚合提取（养肥/难例回流多目录用）：按原文跨任务去重。"""
     seen: set[str] = set()
     pooled: list[dict] = []
     for rd in report_dirs:
-        for s in extract_report_items(rd, domain_id):
+        for s in extract_report_items(rd, domain_id, subjects):
             text = s.get("原文") or ""
             if text in seen:
                 continue
             seen.add(text)
             pooled.append(s)
     return pooled
+
+
+def cap_brand_share(items: list[dict], share: float | None) -> list[dict]:
+    """单品牌 ≤share 配额（模块化采样纪律 2026-08-17）：按品牌分桶洗牌后截断，
+    避免头部品牌语体主导模块卷。share=None 表示不限制。"""
+    if not share:
+        return items
+    cap = max(1, int(len(items) * share))
+    buckets: dict[str, list[dict]] = defaultdict(list)
+    for it in items:
+        buckets[it.get("品牌/主题") or "unknown"].append(it)
+    out: list[dict] = []
+    rng = random.Random(42)
+    for k in sorted(buckets):
+        vals = list(buckets[k])
+        rng.shuffle(vals)
+        out.extend(vals[:cap])
+    return out
+
+
+def stratify_brand_sample(items: list[dict], n: int, share: float | None,
+                          seed: int = 42) -> list[dict]:
+    """按品牌比例分层采样（2026-08-17 模块卷纪律）：各品牌配额 ∝ 池占比，
+    卷内上限 = share×n（默认 0.4），最大余数法补满；避免头部品牌语体主导。"""
+    buckets: dict[str, list[dict]] = defaultdict(list)
+    for it in items:
+        buckets[it.get("品牌/主题") or "unknown"].append(it)
+    total = len(items)
+    cap = max(1, int(n * share)) if share else n
+    alloc: dict[str, int] = {}
+    for k, v in buckets.items():
+        alloc[k] = min(cap, int(len(v) / total * n))
+    rem = n - sum(alloc.values())
+    for k in sorted(buckets, key=lambda k: -(len(buckets[k]) / total * n
+                                            - int(len(buckets[k]) / total * n))):
+        if rem <= 0:
+            break
+        if alloc[k] < min(cap, len(buckets[k])):
+            alloc[k] += 1
+            rem -= 1
+    rng = random.Random(seed)
+    out: list[dict] = []
+    for k, v in buckets.items():
+        vals = list(v)
+        rng.shuffle(vals)
+        out.extend(vals[:alloc[k]])
+    rng.shuffle(out)
+    return out
 
 
 def load_excluded_texts(paths: list[Path]) -> set[str]:
@@ -248,20 +311,27 @@ def load_excluded_texts(paths: list[Path]) -> set[str]:
 
 def from_report(report_dirs: list[Path], domain_id: str, n: int, out: Path,
                 dims_json: Path | None = None,
-                exclude_golden: list[Path] | None = None) -> None:
+                exclude_golden: list[Path] | None = None,
+                subjects: list[str] | None = None,
+                max_brand_share: float | None = None,
+                guide_extra: list[str] | None = None) -> None:
     """从真实任务报告（可多目录）采样生成独立标注表（情感/维度列留空）。"""
-    uniq = extract_report_items_many(report_dirs, domain_id)
+    uniq = extract_report_items_many(report_dirs, domain_id, subjects)
     if exclude_golden:
         excluded = load_excluded_texts(exclude_golden)
         before = len(uniq)
         uniq = [s for s in uniq if (s.get("原文") or "").strip() not in excluded]
         if len(uniq) < before:
             print(f"[排除] 剔除与 golden/hold-out 重叠文本 {before - len(uniq)} 条")
-    random.Random(42).shuffle(uniq)
-    samples = uniq[:n]
+    if max_brand_share:
+        # 2026-08-17：按品牌比例分层采样（单品牌 ≤40%），替代随机切片
+        samples = stratify_brand_sample(uniq, min(n, len(uniq)), max_brand_share)
+    else:
+        random.Random(42).shuffle(uniq)
+        samples = uniq[:n]
     if len(samples) < n:
         print(f"[提示] 报告内去重后仅 {len(samples)} 条（目标 {n}），可多品牌/多渠道补采")
-    gen_worksheet(domain_id, out, samples, dims_json)
+    gen_worksheet(domain_id, out, samples, dims_json, guide_extra=guide_extra)
     print(f"已从报告采样 {len(samples)} 条 → 独立标注表：{out}")
 
 
@@ -339,8 +409,12 @@ def split_holdout(items: list[dict], n: int, seed: int = 42) -> tuple[list[dict]
         pool_n = sum(len(v) for k, v in strata.items() if k[2] == b)
         hold_n = sum(1 for r in holdout
                      if _time_bucket(r.get("pub_date"), min_d, max_d) == b)
-        if pool_n >= 10 and hold_n == 0:
-            issues.append(f"时间桶 {b} 缺失（池 {pool_n} 条，hold-out 0 条）")
+        expected = pool_n / total * n if total else 0.0
+        # 2026-08-17：小样本模块 hold-out（n≈20）分层碎片化时，仅当该桶
+        # 期望配额 ≥1 仍缺失才判不合格（避免 n 过小的假失败；n≥40 卷行为不变）
+        if pool_n >= 10 and hold_n == 0 and expected >= 1.0:
+            issues.append(f"时间桶 {b} 缺失（池 {pool_n} 条、期望 {expected:.1f} 条，"
+                          f"hold-out 0 条）")
     report = {
         "seed": seed,
         "n_target": n,
@@ -353,7 +427,8 @@ def split_holdout(items: list[dict], n: int, seed: int = 42) -> tuple[list[dict]
                    for k, v in strata.items()},
         "shortfall": shortfall,
         "issues": issues,
-        "note": "同分布约束 = (平台, 品牌) 配额（容差 10pp）+ 时间窗三分桶覆盖",
+        "note": "同分布约束 = (平台, 品牌) 配额（容差 10pp）+ 时间窗三分桶覆盖"
+                "（期望配额 ≥1 的桶强制覆盖，2026-08-17 小样本卷放宽口径）",
     }
     if issues:
         raise ValueError("hold-out 切分未通过同分布校验：\n  " + "\n  ".join(issues))
@@ -696,6 +771,13 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--exclude-golden", type=Path, nargs="+",
                     help="切分/采样时排除的裁判集 CSV（原文匹配，防新卷混入旧样本）")
+    ap.add_argument("--subjects", nargs="+", default=None,
+                    help="按品牌/主题精确过滤报告样本（模块化分类采样用；"
+                         "不传则按 --domain 过滤）")
+    ap.add_argument("--max-brand-share", type=float, default=None,
+                    help="单品牌样本占比上限（模块卷纪律默认 0.4，2026-08-17）")
+    ap.add_argument("--guide-extra", nargs="+", default=None,
+                    help="标注表「填写说明」追加行（模块维度判例等）")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--source", type=Path)
     ap.add_argument("--sheet", type=Path)
@@ -715,19 +797,27 @@ def main() -> int:
     if args.holdout_split:
         if not (args.from_report and args.out_dir):
             ap.error("--holdout-split 需要 --from-report 与 --out-dir")
-        items = extract_report_items_many(args.from_report, args.domain)
+        items = extract_report_items_many(args.from_report, args.domain, args.subjects)
         if args.exclude_golden:
             excluded = load_excluded_texts(args.exclude_golden)
             before = len(items)
             items = [s for s in items if (s.get("原文") or "").strip() not in excluded]
             if len(items) < before:
                 print(f"[排除] 剔除与 golden/hold-out 重叠文本 {before - len(items)} 条")
+        if args.max_brand_share:
+            before = len(items)
+            items = cap_brand_share(items, args.max_brand_share)
+            if len(items) < before:
+                print(f"[品牌配额] 单品牌 ≤{args.max_brand_share:.0%} 截断后剩 {len(items)} 条"
+                      f"（原 {before} 条）")
         holdout, iteration, rep = split_holdout(items, args.n, args.seed)
         args.out_dir.mkdir(parents=True, exist_ok=True)
-        gen_worksheet(args.domain, args.out_dir / f"holdout_{args.domain}_worksheet.xlsx",
-                      holdout, args.dims_json)
-        gen_worksheet(args.domain, args.out_dir / f"iteration_{args.domain}_worksheet.xlsx",
-                      iteration, args.dims_json)
+        gen_worksheet(args.domain,
+                      args.out_dir / f"holdout_{args.domain}_worksheet.xlsx",
+                      holdout, args.dims_json, guide_extra=args.guide_extra)
+        gen_worksheet(args.domain,
+                      args.out_dir / f"iteration_{args.domain}_worksheet.xlsx",
+                      iteration, args.dims_json, guide_extra=args.guide_extra)
         manifest = {
             "kind": "holdout_split",
             "domain": args.domain,
@@ -747,7 +837,8 @@ def main() -> int:
         if not args.out:
             ap.error("--from-report 需要 --out")
         from_report(args.from_report, args.domain, args.n, args.out, args.dims_json,
-                    args.exclude_golden)
+                    args.exclude_golden, args.subjects, args.max_brand_share,
+                    args.guide_extra)
         return 0
     if args.freeze_holdout:
         if not args.golden:

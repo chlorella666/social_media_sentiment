@@ -11,6 +11,7 @@
 - 概览：一句话总结 + 概览指标（悬浮"？"解释）+ 准确率趋势
 - 哪里好哪里差：按渠道/领域/情感类别/类型/语言现象细分跑分 + 短板清单
 - 情感表现：情感类别 P/R/F1 + 混淆矩阵
+- 维度情感：逐维度 P/R/F1 + 分布图 + 两次对比 + 维度错误下钻（2026-08-18）
 - 运行对比：任选两次运行对比 + 错误样本下钻
 - 关键词效果：扫描 / 前后对照 / 按任务筛选漏斗 / 丢弃原因 / 后缀效果 / 候选确认
 - 运行历史：历史列表 + 一键重跑词典评测
@@ -42,6 +43,16 @@ MODE_LABEL = {
     "edge_hybrid": "边界集·混合流水线（词典+LLM）",
     "domain_digital3c_lexicon": "数码3C·词典直判（无 LLM）",
     "domain_digital3c_hybrid": "数码3C·混合流水线（词典+LLM）",
+    "module_content_hybrid": "数字产品·混合流水线",
+    "module_physical_hybrid": "有形实物·混合流水线",
+    "module_service_hybrid": "服务内容·混合流水线",
+    "module_content_holdout_hybrid": "数字产品·hold-out·混合",
+    "module_physical_holdout_hybrid": "有形实物·hold-out·混合",
+    "module_service_holdout_hybrid": "服务内容·hold-out·混合",
+    "holdout_digital3c_hybrid": "3C·hold-out·混合",
+    "holdout_digital3c_r2_hybrid": "3C·hold-out r2·混合",
+    "holdout_digital3c_r3_hybrid": "3C·hold-out r3·混合",
+    "holdout_digital3c_r4_hybrid": "3C·hold-out r4·混合",
 }
 GROUP_LABEL = {
     "by_channel": "渠道",
@@ -53,6 +64,9 @@ GROUP_LABEL = {
 }
 CLASS_ORDER = ["positive", "negative", "neutral"]
 CLASS_CN = {"positive": "正面", "negative": "负面", "neutral": "中性"}
+
+# 短板口径（P2-4 收敛，2026-08-18）：样本≥REF_N 且准确率<75%
+SHORTBOARD_ACC = 0.75
 
 # 术语 -> 大白话解释（悬浮"？"展示）
 TOOLTIPS = {
@@ -97,13 +111,43 @@ def _md_label(label: str, tip_key: str = "") -> str:
     return f"**{label}**{_tip(tip_key)}"
 
 
+def _is_shortboard(n: int, acc) -> bool:
+    return n >= eval_store.REF_N and acc is not None and acc < SHORTBOARD_ACC
+
+
+def _mode_options(history: list[dict]) -> list[str]:
+    """P1-1：模式 radio 从 history 动态发现（核心 4 模式优先，其余按出现顺序）。"""
+    base = ["lexicon", "hybrid", "edge_lexicon", "edge_hybrid"]
+    rest = [h.get("mode_key") for h in history
+            if h.get("mode_key") and h.get("mode_key") not in base]
+    return base + list(dict.fromkeys(rest))
+
+
+def _mode_label(m: str) -> str:
+    """模式中文名；未知 mode_key 兜底格式化（P1-1）。"""
+    if m in MODE_LABEL:
+        return MODE_LABEL[m]
+    label = (m.replace("module_", "模块 ")
+             .replace("domain_", "领域 ")
+             .replace("holdout", "hold-out")
+             .replace("_hybrid", "·混合")
+             .replace("_lexicon", "·词典")
+             .replace("_", "·"))
+    return label
+
+
+def _run_label(h: dict) -> str:
+    return (f"{(h.get('ts') or '')[:16]} · 准确率 {_fmt_acc(h.get('accuracy'))} · "
+            f"n={h.get('n_main') or '—'}")
+
+
 def _segment_rows(cmp: dict, group_key: str, shortboard_groups: set[str]) -> list[dict]:
     rows = []
     for seg, v in cmp.get(group_key, {}).items():
         short = ""
         n = v.get("n") or 0
         acc = v.get("accuracy")
-        if group_key in shortboard_groups and n >= eval_store.REF_N and acc is not None and acc < 0.75:
+        if group_key in shortboard_groups and _is_shortboard(n, acc):
             short = "短板"
         rows.append({
             "细分": seg,
@@ -147,7 +191,7 @@ def _plain_summary(history: list[dict], runs: list[dict], latest: dict,
                 trend = f"比上次下降 {abs(d):.1f} 个百分点"
         else:
             trend = "暂无上次可对比"
-        lines.append(f"「{MODE_LABEL.get(mode, mode)}」整体准确率 {acc:.1%}，{trend}。")
+        lines.append(f"「{_mode_label(mode)}」整体准确率 {acc:.1%}，{trend}。")
     neg = (latest.get("by_sentiment_class") or {}).get("negative") or {}
     if neg.get("recall") is not None:
         r = neg["recall"]
@@ -163,7 +207,7 @@ def _plain_summary(history: list[dict], runs: list[dict], latest: dict,
         for seg, v in (latest.get("groups") or {}).get(gk, {}).items():
             n = v.get("n") or 0
             a = v.get("accuracy")
-            if n >= eval_store.REF_N and a is not None and a < 0.75:
+            if _is_shortboard(n, a):
                 short.append(f"{gname}「{seg}」{a:.0%}（样本 {n}）")
     if short:
         lines.append("短板：" + "；".join(short[:3]) + (" 等" if len(short) > 3 else "") + "，建议优先优化。")
@@ -189,6 +233,182 @@ def _render_guide() -> None:
             st.rerun()
 
 
+def _flags_contain(flags: str, picked: list[str]) -> bool:
+    """P2-5：flags 为逗号分隔串，按拆分后子项匹配（修复单选筛不出）。"""
+    if not picked:
+        return True
+    parts = {x.strip() for x in (flags or "").split(",") if x.strip()}
+    return bool(parts & set(picked))
+
+
+def _render_error_drilldown(runs: list[dict], cur_id: str, key_prefix: str) -> None:
+    """错误样本下钻（P1-4 前置复用）：分组口径筛选 + by_flag 拆分匹配。"""
+    run_report = eval_store.load_run(cur_id) or {}
+    errors = run_report.get("errors") or []
+    if not errors:
+        st.caption("该运行没有错误样本（或报告未包含 errors）。")
+        return
+    err_df = pd.DataFrame(errors)
+    gk = st.selectbox(
+        "错误筛选维度", list(GROUP_LABEL), format_func=lambda k: GROUP_LABEL[k],
+        key=f"{key_prefix}_err_group",
+    )
+    if gk == "by_flag":
+        segs = sorted({f.strip() for r in errors
+                       for f in ((r.get("flags") or "").split(",")) if f.strip()})
+    else:
+        def _seg(r: dict) -> str:
+            return (r.get("platform") if gk == "by_channel" else
+                    r.get("domain") if gk == "by_domain" else
+                    r.get("gold") if gk == "by_gold_sentiment" else
+                    r.get("kind") if gk == "by_kind" else
+                    r.get("subset") if gk == "by_subset" else "")
+        segs = sorted({_seg(r) for r in errors if _seg(r)})
+    picked = st.multiselect("筛选段（留空=全部）", segs, key=f"{key_prefix}_err_segs")
+    if not picked:
+        sub = err_df
+    elif gk == "by_flag":
+        sub = err_df[err_df["flags"].apply(lambda s: _flags_contain(s, picked))]
+    elif gk == "by_gold_sentiment":
+        sub = err_df[err_df["gold"].isin(picked)]
+    elif gk == "by_kind":
+        sub = err_df[err_df["kind"].isin(picked)]
+    elif gk == "by_channel":
+        sub = err_df[err_df["platform"].isin(picked)]
+    elif gk == "by_domain":
+        sub = err_df[err_df["domain"].isin(picked)]
+    elif gk == "by_subset":
+        sub = err_df[err_df["subset"].isin(picked)]
+    else:
+        sub = err_df
+    st.dataframe(
+        sub[[c for c in ("text_id", "text", "gold", "pred", "platform",
+                         "domain", "kind", "flags", "llm_used") if c in sub.columns]],
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(f"共 {len(errors)} 条错误，当前筛选 {len(sub)} 条。原文仅本地查看。")
+
+
+def _brand_options_from_rules(strat: dict, channel: str, field: str) -> list[str]:
+    rules = (strat.get("rules") or {}).get(channel) or {}
+    return sorted((rules.get(field) or {}).keys())
+
+
+def _render_channel_query_panel(channel: str, title: str) -> None:
+    """B站/微博渠道面板：品牌 → 查询组合（每品牌 ≤5）。"""
+    st.markdown(f"**{title}**")
+    st.caption("策略内容按品牌配置查询组合；任务级开关在主应用④渠道设置区（默认关）。")
+    strat = ke.load_keyword_strategy()
+    brands = _brand_options_from_rules(strat, channel, "queries")
+    if brands:
+        opts = ["（新增品牌…）"] + brands
+        sel = st.selectbox("选择品牌", opts, key=f"strat_{channel}_brand")
+        new_brand = ""
+        if sel == "（新增品牌…）":
+            new_brand = st.text_input("新品牌名", key=f"strat_{channel}_new").strip()
+        brand = new_brand or (sel if sel != "（新增品牌…）" else "")
+    else:
+        # 尚无已配置品牌：直接输入品牌名开始，避免"空下拉无法选择"的困惑
+        st.caption(f"「{title}」尚未配置任何品牌，直接输入品牌名开始：")
+        brand = st.text_input("品牌名", key=f"strat_{channel}_new").strip()
+    qmap = ((strat.get("rules") or {}).get(channel) or {}).get("queries") or {}
+    words = st.text_area(
+        f"查询组合（每行一个，最多 {ke.MAX_EXTRA} 个；清空=删除该品牌）",
+        value="\n".join(qmap.get(brand, [])) if brand else "",
+        key=f"strat_{channel}_words", height=120,
+    )
+    c1, c2 = st.columns(2)
+    if c1.button("💾 保存", key=f"strat_{channel}_save"):
+        if not brand:
+            st.warning("请先选择或输入品牌名")
+        else:
+            res = ke.save_strategy_edit(
+                channel_queries_updates={channel: {brand: words.splitlines()}},
+            )
+            for w in res["warnings"]:
+                st.warning(w)
+            st.success("已保存（旧配置自动备份）")
+            st.rerun()
+    if c2.button("🗑 删除该品牌", key=f"strat_{channel}_del"):
+        if not brand or brand not in brands:
+            st.warning("只能删除已存在的品牌")
+        else:
+            ke.save_strategy_edit(channel_queries_updates={channel: {brand: []}})
+            st.success("已删除（旧配置自动备份）")
+            st.rerun()
+    _render_channel_candidates(channel)
+
+
+def _render_xhs_panel() -> None:
+    """小红书面板：preferred（精简，≤2 不扩量）+ avoid（低效词避免）。"""
+    st.markdown("**小红书（只精简/避免，不新增查询数量）**")
+    strat = ke.load_keyword_strategy()
+    rules = (strat.get("rules") or {}).get("xiaohongshu") or {}
+    brands = sorted(set(rules.get("preferred") or {}) | set(rules.get("avoid") or {}))
+    if brands:
+        opts = ["（新增品牌…）"] + brands
+        sel = st.selectbox("选择品牌", opts, key="strat_xhs_brand")
+        new_brand = ""
+        if sel == "（新增品牌…）":
+            new_brand = st.text_input("新品牌名", key="strat_xhs_new").strip()
+        brand = new_brand or (sel if sel != "（新增品牌…）" else "")
+    else:
+        st.caption("小红书策略尚未配置任何品牌，直接输入品牌名开始：")
+        brand = st.text_input("品牌名", key="strat_xhs_new").strip()
+    pr = (rules.get("preferred") or {}).get(brand, []) if brand else []
+    av = (rules.get("avoid") or {}).get(brand, []) if brand else []
+    pr_text = st.text_area(
+        f"精简词（每行一个，最多 {ke.MAX_XHS_PREFERRED} 个；开启优化时替换为该组词）",
+        value="\n".join(pr), key="strat_xhs_pref", height=80,
+    )
+    av_text = st.text_area(
+        f"避免词（每行一个，最多 {ke.MAX_AVOID} 个；人工确认后从关键词移除）",
+        value="\n".join(av), key="strat_xhs_avoid", height=100,
+    )
+    c1, c2 = st.columns(2)
+    if c1.button("💾 保存", key="strat_xhs_save"):
+        if not brand:
+            st.warning("请先选择或输入品牌名")
+        else:
+            res = ke.save_strategy_edit(
+                xhs_preferred_updates={brand: pr_text.splitlines()},
+                xhs_avoid_updates={brand: av_text.splitlines()},
+            )
+            for w in res["warnings"]:
+                st.warning(w)
+            st.success("已保存（旧配置自动备份）")
+            st.rerun()
+    if c2.button("🗑 删除该品牌", key="strat_xhs_del"):
+        if not brand or brand not in brands:
+            st.warning("只能删除已存在的品牌")
+        else:
+            ke.save_strategy_edit(
+                xhs_preferred_updates={brand: []}, xhs_avoid_updates={brand: []})
+            st.success("已删除（旧配置自动备份）")
+            st.rerun()
+    _render_channel_candidates("xiaohongshu")
+
+
+def _render_channel_candidates(channel: str) -> None:
+    """渠道级候选快捷写入（候选表带「渠道」列，写对地方）。"""
+    cand = ke.load_candidates()
+    rows = [c for c in cand if (c.get("渠道") or "websearch") == channel]
+    if not rows:
+        return
+    st.markdown(f"**{channel} 候选快捷写入**（来自关键词效果扫描）")
+    df_cand = pd.DataFrame(rows)
+    idx = st.multiselect(
+        "采纳候选（可多选）", df_cand.index.tolist(),
+        format_func=lambda i: f"{df_cand.loc[i, '类型']}｜{df_cand.loc[i, '候选']}"
+                              f"（n={df_cand.loc[i, '证据n']}）",
+        key=f"cand_{channel}_pick",
+    )
+    if idx and st.button("写入策略", key=f"cand_{channel}_apply"):
+        ke.apply_candidates(df_cand.loc[idx].to_dict("records"))
+        st.success("已写入策略配置（自动备份）")
+        st.rerun()
+
+
 def main() -> None:
     st.title("🎯 黄金集评测中心")
     st.caption(
@@ -206,11 +426,18 @@ def main() -> None:
 
     with st.sidebar:
         st.header("筛选")
+        mode_options = _mode_options(history)
+        last_mode = (st.session_state.get("eval_mode")
+                     or (history[-1].get("mode_key") if history else "hybrid")
+                     or "hybrid")
+        default_idx = mode_options.index(last_mode) if last_mode in mode_options else 0
         mode = st.radio(
             "评测模式",
-            ["lexicon", "hybrid", "edge_lexicon", "edge_hybrid"],
-            format_func=lambda m: MODE_LABEL.get(m, m),
+            mode_options,
+            index=default_idx,
+            format_func=_mode_label,
         )
+        st.session_state["eval_mode"] = mode
         st.markdown(_md_label("评测模式是什么", "mode"), unsafe_allow_html=True)
         st.caption("词典模式确定性可重复；混合模式受 LLM 温度影响，对比仅供参考。")
         st.divider()
@@ -220,7 +447,7 @@ def main() -> None:
     runs = [h for h in history if h.get("mode_key") == mode]
     runs.sort(key=lambda h: (h.get("ts") or "", h.get("run_id") or ""))
     if not runs:
-        st.warning(f"「{MODE_LABEL.get(mode, mode)}」暂无历史，请先跑一次评测。")
+        st.warning(f"「{_mode_label(mode)}」暂无历史，请先跑一次评测。")
         return
     latest = runs[-1]
     prev = runs[-2] if len(runs) >= 2 else None
@@ -229,10 +456,21 @@ def main() -> None:
     ke_history = ke.load_history()
     st.info(_plain_summary(history, runs, latest, prev, mode, ke_history))
 
-    tab_overview, tab_segments, tab_sentiment, tab_compare, tab_keywords, tab_strategy, tab_history = st.tabs(
-        ["📊 概览", "🎯 哪里好哪里差", "😊 情感表现", "🔁 运行对比",
-         "🔑 关键词效果", "🎛 关键词策略配置", "🕘 运行历史"]
-    )
+    tab_labels = [
+        "📊 概览", "🎯 哪里好哪里差", "😊 情感表现", "🧩 维度情感", "🔁 运行对比",
+        "🔑 关键词效果", "🎛 关键词策略配置", "🕘 运行历史",
+    ]
+    # 深链（2026-08-17）：主应用关键词确认页通过 ?tab=strategy 直达策略配置
+    default_tab = None
+    qtab = st.query_params.get("tab")
+    if qtab == "strategy":
+        default_tab = "🎛 关键词策略配置"
+    elif qtab == "keywords":
+        default_tab = "🔑 关键词效果"
+    elif qtab == "dimension":
+        default_tab = "🧩 维度情感"
+    (tab_overview, tab_segments, tab_sentiment, tab_dimension, tab_compare,
+     tab_keywords, tab_strategy, tab_history) = st.tabs(tab_labels, default=default_tab)
 
     # ---------- 概览 ----------
     with tab_overview:
@@ -261,6 +499,18 @@ def main() -> None:
                   label_visibility="collapsed")
         c6.markdown(_md_label("golden 指纹", "golden_fp"), unsafe_allow_html=True)
         c6.metric("golden 指纹", (latest.get("golden_fp") or "—")[:18], label_visibility="collapsed")
+        # P2-1：冻结基线 vs 本次（回归门槛这个"裁判"在 UI 可见）
+        base = eval_store.load_frozen_baseline(mode)
+        bc = eval_store.compare_baseline(latest, base)
+        if bc.get("baseline") is not None:
+            st.markdown(
+                f"**vs 冻结基线**：{_fmt_acc(bc['baseline'])} → 本次 "
+                f"{_fmt_acc(latest.get('accuracy'))}（{_fmt_pp(bc.get('delta_pp'))}）"
+                + (f" · {bc.get('status')}" if bc.get("status") else "")
+                + (f" · {bc.get('note')}" if bc.get("note") else "")
+            )
+        else:
+            st.caption("该模式暂无冻结基线（仅记录，不设门槛）。")
         if prev is None:
             st.caption("本次为「该模式 + 该黄金集」的首跑，无上次可对比。")
         elif prev.get("summary_only"):
@@ -303,8 +553,9 @@ def main() -> None:
             unsafe_allow_html=True,
         )
         group_key = st.selectbox(
-            "细分维度", list(GROUP_LABEL), format_func=lambda k: GROUP_LABEL[k]
+            "分组口径", list(GROUP_LABEL), format_func=lambda k: GROUP_LABEL[k]
         )
+        st.caption("此处是渠道/领域/情感类别等分组口径，不是分析维度。")
         cmp = eval_store.compare_segments(latest, prev)
         rows = _segment_rows(
             cmp, group_key,
@@ -320,7 +571,7 @@ def main() -> None:
             for seg, v in cmp.get(gk, {}).items():
                 n = v.get("n") or 0
                 acc = v.get("accuracy")
-                if n >= eval_store.REF_N and acc is not None and acc < 0.75:
+                if _is_shortboard(n, acc):
                     short_lines.append(f"{gname}「{seg}」：准确率 {acc:.0%}（样本 {n} 条）")
         st.markdown("**短板清单（样本≥30 且准确率<75%）**")
         if short_lines:
@@ -328,6 +579,11 @@ def main() -> None:
                 st.markdown(f"- ⚠️ {line}")
         else:
             st.caption("暂无短板。")
+
+        st.divider()
+        st.subheader("错误样本下钻（最新运行）")
+        st.markdown(_md_label("错误样本下钻是什么", "err_drill"), unsafe_allow_html=True)
+        _render_error_drilldown(runs, latest.get("run_id"), "seg")
 
     # ---------- 情感表现 ----------
     with tab_sentiment:
@@ -360,13 +616,116 @@ def main() -> None:
         with c_right:
             st.dataframe(cm_df.rename_axis("gold \\ pred"), use_container_width=True)
 
+    # ---------- 维度情感（P1-3，2026-08-18） ----------
+    with tab_dimension:
+        st.subheader("维度级情感（2.4 口径）")
+        dim = latest.get("dimension") or {}
+        per = dim.get("per_dimension") or {}
+        dist = dim.get("dimension_sentiment_dist") or {}
+        mention = dim.get("mention") or {}
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(_md_label("维度微平均 F1", "dim_f1"), unsafe_allow_html=True)
+        c1.metric("维度微平均 F1",
+                  "—" if dim.get("micro_f1") is None else f"{dim['micro_f1']:.2f}",
+                  label_visibility="collapsed")
+        c2.markdown(_md_label("精确命中率", "dim_f1"), unsafe_allow_html=True)
+        c2.metric("精确命中率",
+                  "—" if dim.get("exact_match_rate") is None else f"{dim['exact_match_rate']:.1%}",
+                  label_visibility="collapsed")
+        c3.markdown(_md_label("维度样本 n", "n"), unsafe_allow_html=True)
+        c3.metric("维度样本 n", dim.get("dimension_n") or 0, label_visibility="collapsed")
+        c4.markdown(_md_label("提及识别 F1（旧口径）", "dim_f1"), unsafe_allow_html=True)
+        c4.metric("提及识别 F1（旧口径）",
+                  "—" if mention.get("micro_f1") is None else f"{mention['micro_f1']:.2f}",
+                  label_visibility="collapsed")
+        if not per:
+            st.info("本次运行无维度数据（词典模式或报告缺维度字段）。")
+        else:
+            st.markdown("**逐维度 P/R/F1（n<30 参考；n≥30 且 F1<0.5 标短板，按 F1 升序）**")
+            dim_rows = [{
+                "维度": d,
+                "n_gold": v.get("n_gold"),
+                "精确率": f"{v.get('precision', 0):.2f}",
+                "召回率": f"{v.get('recall', 0):.2f}",
+                "F1": f"{v.get('f1', 0):.2f}",
+                "备注": "参考（n<30）" if (v.get("n_gold") or 0) < eval_store.REF_N
+                        else ("短板（F1<0.5）" if (v.get("f1") or 0) < 0.5 else ""),
+            } for d, v in per.items()]
+            dim_rows.sort(key=lambda x: (float(x["F1"]), x["维度"]))
+            st.dataframe(pd.DataFrame(dim_rows), use_container_width=True, hide_index=True)
+
+            if dist:
+                st.markdown("**维度情感分布（gold vs pred 正负计数）**")
+                dist_rows = [{
+                    "维度": d, "gold 正面": v["gold_positive"], "gold 负面": v["gold_negative"],
+                    "pred 正面": v["pred_positive"], "pred 负面": v["pred_negative"],
+                } for d, v in dist.items()]
+                df_dist = pd.DataFrame(dist_rows).melt(
+                    id_vars="维度", var_name="口径", value_name="条数")
+                fig = px.bar(df_dist, x="维度", y="条数", color="口径",
+                             barmode="group", height=380)
+                fig.update_layout(xaxis_tickangle=-30)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.caption(
+                    "本次运行报告未含维度情感分布（旧 run 无此字段；"
+                    "重跑评测后自动补齐，不做历史回填）。"
+                )
+
+            st.markdown("**任选两次运行·维度 F1 对比**")
+            run_ids = [h["run_id"] for h in runs]
+            d_base_id = st.selectbox("基准运行", run_ids, index=max(0, len(runs) - 2),
+                                     key="dim_base_run")
+            d_cur_id = st.selectbox("对比运行", run_ids, index=len(runs) - 1,
+                                    key="dim_cur_run")
+            b_rep = eval_store.load_run(d_base_id) or {}
+            c_rep = eval_store.load_run(d_cur_id) or {}
+            b_per = (b_rep.get("dimension") or {}).get("per_dimension") or {}
+            c_per = (c_rep.get("dimension") or {}).get("per_dimension") or {}
+            cmp_rows = [{
+                "维度": d,
+                "基准 F1": "—" if b_per.get(d) is None else f"{b_per[d]['f1']:.2f}",
+                "对比 F1": "—" if c_per.get(d) is None else f"{c_per[d]['f1']:.2f}",
+                "ΔF1": "—" if not (b_per.get(d) and c_per.get(d))
+                       else f"{c_per[d]['f1'] - b_per[d]['f1']:+.2f}",
+            } for d in sorted(set(b_per) | set(c_per))]
+            st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True, hide_index=True)
+
+            st.markdown("**维度错误下钻（对比运行）**")
+            dim_errors = c_rep.get("dimension_errors") or []
+            if not dim_errors:
+                st.caption("对比运行无维度错误明细（或报告未包含 dimension_errors）。")
+            else:
+                dim_names_list = sorted({
+                    d for e in dim_errors
+                    for d in list((e.get("gold") or {}).keys())
+                    + list((e.get("pred") or {}).keys())
+                })
+                pick_dim = st.selectbox("维度", dim_names_list, key="dim_err_dim")
+                derr = [e for e in dim_errors
+                        if pick_dim in (e.get("gold") or {})
+                        or pick_dim in (e.get("pred") or {})]
+                st.dataframe(pd.DataFrame([{
+                    "text_id": e.get("text_id"),
+                    "text": (e.get("text") or "")[:90],
+                    "gold": (e.get("gold") or {}).get(pick_dim, "—"),
+                    "pred": (e.get("pred") or {}).get(pick_dim, "—"),
+                    "platform": e.get("platform"),
+                    "domain": e.get("domain"),
+                } for e in derr]), use_container_width=True, hide_index=True)
+                st.caption(f"共 {len(dim_errors)} 条维度错误，当前维度筛选 {len(derr)} 条。")
+
     # ---------- 运行对比 ----------
     with tab_compare:
         st.subheader("任选两次运行对比")
         run_ids = [h["run_id"] for h in runs]
         idx_b = len(runs) - 2 if len(runs) >= 2 else 0
-        base_id = st.selectbox("基准运行（左侧）", run_ids, index=idx_b, key="base_run")
-        cur_id = st.selectbox("对比运行（右侧，即本次）", run_ids, index=len(runs) - 1, key="cur_run")
+        base_id = st.selectbox("基准运行（左侧）", run_ids, index=idx_b, key="base_run",
+                               format_func=lambda rid: _run_label(next(
+                                   h for h in runs if h["run_id"] == rid)))
+        cur_id = st.selectbox("对比运行（右侧，即本次）", run_ids, index=len(runs) - 1, key="cur_run",
+                              format_func=lambda rid: _run_label(next(
+                                  h for h in runs if h["run_id"] == rid)))
         base = next(h for h in runs if h["run_id"] == base_id)
         cur = next(h for h in runs if h["run_id"] == cur_id)
         rc = eval_store.compare_runs(cur, base)
@@ -385,42 +744,7 @@ def main() -> None:
 
         st.subheader("错误样本下钻（对比运行）")
         st.markdown(_md_label("错误样本下钻是什么", "err_drill"), unsafe_allow_html=True)
-        run_report = eval_store.load_run(cur_id) or {}
-        errors = run_report.get("errors") or []
-        if not errors:
-            st.caption("该运行没有错误样本（或报告未包含 errors）。")
-        else:
-            err_df = pd.DataFrame(errors)
-            gk = st.selectbox("错误筛选维度", list(GROUP_LABEL),
-                              format_func=lambda k: GROUP_LABEL[k], key="err_group")
-            segs = sorted({r.get("platform") if gk == "by_channel" else
-                           r.get("domain") if gk == "by_domain" else
-                           r.get("gold") if gk == "by_gold_sentiment" else
-                           r.get("kind") if gk == "by_kind" else
-                           r.get("subset") if gk == "by_subset" else
-                           (r.get("flags") or "")
-                           for r in errors})
-            picked = st.multiselect("筛选段（留空=全部）", segs, key="err_segs")
-            sub = err_df
-            if picked:
-                if gk == "by_gold_sentiment":
-                    sub = err_df[err_df["gold"].isin(picked)]
-                elif gk == "by_kind":
-                    sub = err_df[err_df["kind"].isin(picked)]
-                elif gk == "by_channel":
-                    sub = err_df[err_df["platform"].isin(picked)]
-                elif gk == "by_domain":
-                    sub = err_df[err_df["domain"].isin(picked)]
-                elif gk == "by_subset":
-                    sub = err_df[err_df["subset"].isin(picked)]
-                else:
-                    sub = err_df[err_df["flags"].isin(picked)]
-            st.dataframe(
-                sub[[c for c in ("text_id", "text", "gold", "pred", "platform",
-                                 "domain", "kind", "flags", "llm_used") if c in sub.columns]],
-                use_container_width=True, hide_index=True,
-            )
-            st.caption(f"共 {len(errors)} 条错误，当前筛选 {len(sub)} 条。原文仅本地查看。")
+        _render_error_drilldown(runs, cur_id, "cmp")
 
     # ---------- 关键词效果 ----------
     with tab_keywords:
@@ -429,12 +753,13 @@ def main() -> None:
                     + _tip("query") + " · " + _tip("candidate") + " · " + _tip("unattributed"),
                     unsafe_allow_html=True)
         if st.button("扫描 data/reports 并刷新", key="ke_scan"):
-            proc = subprocess.run(
-                [sys.executable, str(ROOT / "app" / "core" / "keyword_effects.py"),
-                 "--scan-dir", str(ROOT / "data" / "reports"), "--candidates"],
-                cwd=str(ROOT), capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=600,
-            )
+            with st.spinner("正在扫描历史报告并刷新关键词效果（可能需数分钟）…"):
+                proc = subprocess.run(
+                    [sys.executable, str(ROOT / "app" / "core" / "keyword_effects.py"),
+                     "--scan-dir", str(ROOT / "data" / "reports"), "--candidates"],
+                    cwd=str(ROOT), capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=600,
+                )
             out = (proc.stdout or "") + (proc.stderr or "")
             st.code("\n".join([ln for ln in out.splitlines() if ln.strip()][-20:]))
             if proc.returncode == 0:
@@ -472,6 +797,14 @@ def main() -> None:
                     h for h in ke_runs
                     if (h.get("subject") or "（无主题）") == subj_pick
                 ]
+                # 对照渠道（2026-08-18）：同一渠道内比；默认 WebSearch 全子渠道
+                chan_set = sorted({
+                    r.get("channel") for h in brand_runs
+                    for r in (h.get("funnel") or []) if r.get("channel")
+                })
+                chan_opts = ["全部（WebSearch）"] + chan_set
+                chan_pick = st.selectbox("对照渠道", chan_opts, key="ke_ba_channel")
+                ba_channel = None if chan_pick == "全部（WebSearch）" else chan_pick
                 klabels = [
                     f"{str(h.get('created_at') or '')[:16]} · {h.get('subject') or '（无主题）'} · "
                     f"{len(h.get('funnel') or [])} 查询"
@@ -484,11 +817,12 @@ def main() -> None:
                 cur = brand_runs[klabels.index(cur_label)]
 
                 brand_agg = ke.aggregate_unique(brand_runs)
-                m = ke.compare_runs_metrics(base, cur, agg_rows=brand_agg["funnel"])
+                m = ke.compare_runs_metrics(
+                    base, cur, agg_rows=brand_agg["funnel"], channel=ba_channel)
                 eff = m["effective"]
                 c1, c2, c3 = st.columns(3)
                 c1.metric(
-                    "有效供给率（WebSearch）",
+                    "有效供给率" + (f"（{ba_channel}）" if ba_channel else "（WebSearch）"),
                     f"{eff['after_pct']}%" if eff["after_pct"] is not None else "—",
                     f"{eff['delta_pp']:+.1f}pp" if eff["delta_pp"] is not None else None,
                     help="达标要求较基准提升 ≥5pp",
@@ -707,6 +1041,11 @@ def main() -> None:
     # ---------- 关键词策略配置 ----------
     with tab_strategy:
         st.subheader("关键词策略配置")
+        # 渠道策略面板（2026-08-18）：仅呈现已生效渠道。
+        # 微博 = 2 品牌达标已生效；B站 A4 修复后无需扩词、小红书暂无低效词数据，
+        # 均不展示，避免误导（机制与数据层保留，渠道重开后恢复）。
+        _render_channel_query_panel("weibo", "微博查询组合")
+        st.divider()
         st.caption(
             "查看/修改 WebSearch 查询策略：同义词与额外查询按品牌生效，后缀池全局生效；"
             "改动只影响之后含 WebSearch 的任务。每次保存/写入候选/还原前会自动备份，可一键回滚。"
@@ -798,17 +1137,23 @@ def main() -> None:
         st.markdown("**候选快捷写入**")
         cand = ke.load_candidates()
         if cand:
-            df_cand = pd.DataFrame(cand)
-            idx = st.multiselect(
-                "采纳候选（可多选）", df_cand.index.tolist(),
-                format_func=lambda i: f"{df_cand.loc[i, '类型']}｜"
-                                      f"{df_cand.loc[i, '候选']}（n={df_cand.loc[i, '证据n']}）",
-                key="strat_cand_pick",
+            df_cand = pd.DataFrame(
+                [c for c in cand if (c.get("渠道") or "websearch") == "websearch"]
             )
-            if idx and st.button("写入选中候选", key="strat_cand_apply"):
-                ke.apply_candidates(df_cand.loc[idx].to_dict("records"))
-                st.success("已写入（自动备份 + 去重 + 上限）")
-                st.rerun()
+            if df_cand.empty:
+                st.caption("暂无 WebSearch 候选；其他渠道候选请在对应渠道面板查看。")
+            else:
+                idx = st.multiselect(
+                    "采纳候选（可多选）", df_cand.index.tolist(),
+                    format_func=lambda i: f"{df_cand.loc[i, '类型']}｜"
+                                          f"{df_cand.loc[i, '候选']}"
+                                          f"（n={df_cand.loc[i, '证据n']}）",
+                    key="strat_cand_pick",
+                )
+                if idx and st.button("写入选中候选", key="strat_cand_apply"):
+                    ke.apply_candidates(df_cand.loc[idx].to_dict("records"))
+                    st.success("已写入（自动备份 + 去重 + 上限）")
+                    st.rerun()
         else:
             st.caption("候选清单为空：在「关键词效果」页点扫描生成。")
 
@@ -846,6 +1191,10 @@ def main() -> None:
     # ---------- 运行历史 ----------
     with tab_history:
         st.subheader("运行历史")
+        st.caption(
+            f"以下为「{_mode_label(mode)}」模式的历史；"
+            "全部模式趋势见概览页，关键词效果见「关键词效果」页。"
+        )
         hist_rows = [{
             "时间": (h.get("ts") or "")[:19],
             "run_id": h.get("run_id"),

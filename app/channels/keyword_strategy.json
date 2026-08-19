@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "synonyms": {},
   "extra_queries": {
     "世界之外": [
@@ -53,8 +53,30 @@
   "rules": {
     "websearch": {
       "prefer_suffix": []
+    },
+    "bilibili": {
+      "queries": {}
+    },
+    "weibo": {
+      "queries": {
+        "恋与深空": [
+          "恋与深空 祁煜",
+          "恋与深空 秦彻",
+          "恋与深空 联动",
+          "恋与深空 剧情",
+          "恋与深空 抽卡"
+        ],
+        "瑞幸": [
+          "瑞幸 联名",
+          "瑞幸 新品"
+        ]
+      }
+    },
+    "xiaohongshu": {
+      "preferred": {},
+      "avoid": {}
     }
   },
-  "updated_at": "2026-08-13T00:34:02",
-  "note": "2.2 关键词策略：由 app/core/keyword_effects.py 候选确认后写入；suffix_pool 默认仅「评价」保持旧行为"
+  "updated_at": "2026-08-19T00:57:21",
+  "note": "2.2 关键词策略（schema v2，2026-08-18）：v1 字段（synonyms/extra_queries/suffix_pool）仅 WebSearch；rules.<channel> 为渠道级查询策略（bilibili/weibo.queries 每品牌≤5；xiaohongshu.preferred ≤2 只精简不扩量 + avoid 低效词）。由 app/core/keyword_effects.py 候选确认后写入。"
 }

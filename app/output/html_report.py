@@ -15,8 +15,21 @@ from jinja2 import Environment, FileSystemLoader
 from plotly.io import to_html
 
 from app.core.models import ReportBundle
-from app.core.names import dimension_cn, platform_cn
+from app.core.names import (
+    ATTRIBUTION_ACTORS,
+    ATTRIBUTION_CN,
+    NARRATIVE_CN,
+    NARRATIVE_FRAMES,
+    dimension_cn,
+    platform_cn,
+)
 from app.core.keyword_effects import extract_funnel
+from app.core.evidence import (
+    dimension_evidence_label,
+    display_action,
+    display_finding_id,
+    findings_section_title,
+)
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 SENTIMENT_COLORS = {"positive": "#16a34a", "negative": "#dc2626", "neutral": "#94a3b8"}
@@ -327,90 +340,305 @@ def _wordcloud_data_uri(s: dict, which: str = "positive") -> str:
     return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
-def cooccurrence_fig(s: dict) -> go.Figure | None:
-    """关键词共现网络图（PMI 关联；节点颜色=情感，大小=度数，悬停看维度）。"""
-    edges = s.get("cooccurrence", [])
-    if not edges:
-        return None
+CLUSTER_PALETTE = ["#6366f1", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"]
+COOCCUR_MIN_TOTAL = 20
+COOCCUR_MIN_EDGES = 12
+COOCCUR_MIN_NODES = 15
+COOCCUR_MAX_CLUSTERS = 5
+COOCCUR_PAIRS_MAX = 10
+
+
+def _louvain_clusters(edges: list[dict], seed: int = 42) -> list[list[str]] | None:
+    """Louvain 社区划分（固定 seed 保证确定性；簇数截断为 3~5，
+    最小簇合并为"其他"；networkx 不可用返回 None）。"""
     try:
         import networkx as nx
-    except ImportError:
+    except Exception:
         return None
     g = nx.Graph()
     for e in edges:
         g.add_edge(
             e["source"], e["target"],
             weight=float(e.get("weight", 0)),
-            count=e.get("count", 0),
         )
-    if not g.nodes:
+    if g.number_of_nodes() == 0:
         return None
+    communities = list(
+        nx.community.louvain_communities(g, seed=seed, weight="weight")
+    )
+    clusters = [sorted(c) for c in communities]
+    clusters.sort(key=len, reverse=True)
+    if len(clusters) > COOCCUR_MAX_CLUSTERS:
+        kept = clusters[: COOCCUR_MAX_CLUSTERS - 1]
+        others = [n for c in clusters[COOCCUR_MAX_CLUSTERS - 1:] for n in c]
+        kept.append(sorted(others))
+        clusters = kept
+    return clusters
+
+
+def cooccurrence_plan(s: dict) -> dict:
+    """共现结构判定（三端共用，方案 §4.4）。
+    返回 {"kind": "network"|"pairs"|"skip", "reason": str}。"""
+    tc = s.get("topic_clusters")
+    if isinstance(tc, dict) and tc.get("kind"):
+        # 新 summary：判定与簇统计已在 build_summary 层完成（并集口径）
+        return {"kind": tc["kind"], "reason": tc.get("reason", "")}
+    # 旧 result.json 兜底：无 topic_clusters 时按边/节点/networkx 重判
+    total = int(s.get("total_items") or 0)
+    if total < COOCCUR_MIN_TOTAL:
+        return {"kind": "skip", "reason": f"有效文本不足（{total} < 20）"}
+    edges = s.get("cooccurrence") or []
+    if not edges:
+        return {"kind": "skip", "reason": "无共现数据"}
+    if len(edges) < COOCCUR_MIN_EDGES:
+        return {"kind": "pairs", "reason": f"共现边不足（{len(edges)} < 12），已显示话题词对"}
+    nodes = {e["source"] for e in edges} | {e["target"] for e in edges}
+    if len(nodes) < COOCCUR_MIN_NODES:
+        return {"kind": "pairs", "reason": f"话题节点不足（{len(nodes)} < 15），已显示话题词对"}
+    clusters = _louvain_clusters(edges)
+    if clusters is None:
+        return {"kind": "pairs", "reason": "networkx 不可用，已显示话题词对"}
+    if len(clusters[0]) / len(nodes) > 0.9:
+        return {"kind": "pairs", "reason": "讨论未形成明显话题簇，已显示话题词对"}
+    return {"kind": "network", "reason": ""}
+
+
+def topic_pairs(s: dict) -> list[dict]:
+    """话题词对榜（方案 Part B 修订 A）：词对 + 共现文本数 + PMI，
+    按共现数降序；小图不强行聚类时的诚实证据展示。"""
+    tc = s.get("topic_clusters")
+    if isinstance(tc, dict) and tc.get("pairs"):
+        return tc["pairs"]
+    edges = s.get("cooccurrence") or []
+    rows = [
+        {
+            "source": e["source"],
+            "target": e["target"],
+            "count": int(e.get("count", 0)),
+            "pmi": float(e.get("weight", 0)),
+        }
+        for e in edges
+    ]
+    rows.sort(key=lambda r: (-r["count"], r["source"], r["target"]))
+    return rows[:COOCCUR_PAIRS_MAX]
+
+
+def _hub_score(s: dict, node: str) -> int:
+    """hub 分 = 度数 × 文档频次（标签/代表词排序用）。"""
+    deg = sum(
+        1
+        for e in (s.get("cooccurrence") or [])
+        if node in (e["source"], e["target"])
+    )
+    return deg * int(_effective_node_count(s).get(node, 0))
+
+
+def _effective_node_count(s: dict) -> dict[str, float]:
+    """节点大小：优先 node_count（文档频次）；旧数据无该字段时
+    以边权求和估算（方案 §漏洞 4：向后兼容不报错）。"""
+    nc = dict(s.get("node_count") or {})
+    if nc:
+        return nc
+    for e in s.get("cooccurrence") or []:
+        w = float(e.get("weight", 0))
+        nc[e["source"]] = nc.get(e["source"], 0) + w
+        nc[e["target"]] = nc.get(e["target"], 0) + w
+    return nc
+
+
+def _cluster_name(s: dict, cluster: list[str]) -> str:
+    """簇名 = 簇内 node_count 最高的词。"""
+    nc = _effective_node_count(s)
+    return max(cluster, key=lambda n: (nc.get(n, 0), n))
+
+
+def topic_cluster_rows(s: dict) -> list[dict]:
+    """话题簇榜单（方案 §4.3）：簇名/代表词/文档数/负面率，按文档数降序。"""
+    tc = s.get("topic_clusters")
+    if isinstance(tc, dict) and tc.get("clusters"):
+        return [
+            {
+                "name": c["name"],
+                "words": "、".join(c["words"]),
+                "doc_count": c["doc_count"],
+                "negative_rate": (
+                    f"{c['negative_rate'] * 100:.0f}%"
+                    if c.get("negative_rate") is not None else "—"
+                ),
+            }
+            for c in tc["clusters"]
+        ]
+    # 旧数据兜底（词级求和口径，仅历史报告重出用）
+    plan = cooccurrence_plan(s)
+    if plan["kind"] != "network":
+        return []
+    clusters = _louvain_clusters(s.get("cooccurrence") or [])
+    if not clusters:
+        return []
+    nc = _effective_node_count(s)
+    neg_c = s.get("node_negative_count") or {}
+    pos_c = s.get("node_positive_count") or {}
+    rows = []
+    for c in clusters:
+        top3 = sorted(c, key=lambda n: (-_hub_score(s, n), n))[:3]
+        doc_count = sum(nc.get(n, 0) for n in c)
+        neg = sum(neg_c.get(n, 0) for n in c)
+        pos = sum(pos_c.get(n, 0) for n in c)
+        rate = neg / (neg + pos) if neg + pos else None
+        rows.append({
+            "name": _cluster_name(s, c),
+            "words": "、".join(top3),
+            "doc_count": doc_count,
+            "negative_rate": f"{rate * 100:.0f}%" if rate is not None else "—",
+        })
+    rows.sort(key=lambda r: -r["doc_count"])
+    return rows
+
+
+def cooccurrence_fig(s: dict) -> go.Figure | None:
+    """讨论话题共现网络（方案图 B-1）：颜色=话题簇，大小=讨论量，
+    边框=情感倾向；只画显著边；hub 标签避免 Word 静态图糊脸。"""
+    plan = cooccurrence_plan(s)
+    if plan["kind"] != "network":
+        return None
+    edges = s.get("cooccurrence") or []
+    tc = s.get("topic_clusters")
+    if isinstance(tc, dict) and tc.get("node_cluster"):
+        node_cluster: dict[str, int] = tc["node_cluster"]
+        clusters = [c["members"] for c in tc["clusters"]]
+        cluster_names = {
+            i: c["name"] for i, c in enumerate(tc["clusters"])
+        }
+    else:
+        clusters = _louvain_clusters(edges)
+        node_cluster = {}
+        cluster_names = {}
+    if not clusters:
+        return None
+    try:
+        import networkx as nx
+    except Exception:
+        return None
+    if not node_cluster:  # 旧数据兜底
+        for i, c in enumerate(clusters):
+            for n in c:
+                node_cluster[n] = i
+        cluster_names = {i: _cluster_name(s, c) for i, c in enumerate(clusters)}
+    g = nx.Graph()
+    for e in edges:
+        g.add_edge(
+            e["source"], e["target"],
+            weight=float(e.get("weight", 0)),
+        )
     pos = nx.spring_layout(g, seed=42, k=0.6)
+    node_count = _effective_node_count(s)
+    node_neg = s.get("node_negative_rate") or {}
+    word_dims = s.get("word_dims") or {}
+    max_nc = max(node_count.values()) or 1
     wmin = min((d["weight"] for _, _, d in g.edges(data=True)), default=0.0)
     wmax = max((d["weight"] for _, _, d in g.edges(data=True)), default=1.0)
     wspan = (wmax - wmin) or 1.0
-    word_dims = s.get("word_dims") or {}
-    node_neg = s.get("node_negative_rate") or {}
-    degree = dict(g.degree())
-    max_deg = max(degree.values()) or 1
 
-    def _node_color(n: str) -> str:
+    def _cluster_color(i: int) -> str:
+        return CLUSTER_PALETTE[i] if i < len(CLUSTER_PALETTE) else "#64748b"
+
+    def _border_color(n: str) -> str:
         share = node_neg.get(n)
         if share is None:
-            return "#94a3b8"  # 样本不足/中性
+            return "#64748b"  # 样本不足
         if share >= 0.6:
             return "#dc2626"  # 偏负面
         if share <= 0.4:
             return "#16a34a"  # 偏正面
         return "#94a3b8"  # 中性
 
-    node_colors = [_node_color(n) for n in g.nodes]
-    hover_texts = [
-        (
-            f"<b>{n}</b><br>负面倾向 {node_neg.get(n, 0.0) * 100:.0f}%"
-            f"<br>主要维度：{word_dims.get(n, '未标注')}"
-        )
-        for n in g.nodes
-    ]
     fig = go.Figure()
     for a, b, d in g.edges(data=True):
+        same = node_cluster[a] == node_cluster[b]
         wnorm = (d["weight"] - wmin) / wspan
         fig.add_trace(
             go.Scatter(
                 x=[pos[a][0], pos[b][0], None],
                 y=[pos[a][1], pos[b][1], None],
                 mode="lines",
-                line=dict(width=1 + wnorm * 6, color="#cbd5e1"),
+                line=dict(
+                    width=1 + wnorm * 4,
+                    color=_cluster_color(node_cluster[a]) if same else "#cbd5e1",
+                    dash="solid" if same else "dot",
+                ),
+                opacity=0.35 if same else 0.6,
                 hoverinfo="skip",
                 showlegend=False,
             )
         )
+    hover_texts = [
+        (
+            f"<b>{n}</b><br>簇：{cluster_names[node_cluster[n]]}"
+            f"<br>文档数：{node_count.get(n, 0)}"
+            f"<br>负面率：{node_neg[n] * 100:.0f}%"
+            if n in node_neg else
+            f"<b>{n}</b><br>簇：{cluster_names[node_cluster[n]]}"
+            f"<br>文档数：{node_count.get(n, 0)}<br>负面率：—"
+        )
+        + f"<br>主要维度：{word_dims.get(n, '未标注')}"
+        for n in g.nodes
+    ]
     fig.add_trace(
         go.Scatter(
             x=[pos[n][0] for n in g.nodes],
             y=[pos[n][1] for n in g.nodes],
-            mode="markers+text",
-            text=[n for n in g.nodes],
-            textposition="top center",
-            textfont=dict(size=10),
-            hovertext=hover_texts,
-            hoverinfo="text",
+            mode="markers",
             marker=dict(
-                size=[600 + degree[n] / max_deg * 2400 for n in g.nodes],
-                color=node_colors,
-                line=dict(width=1, color="#64748b"),
+                size=[20 + 46 * (node_count.get(n, 0) / max_nc) ** 0.5 for n in g.nodes],
+                color=[_cluster_color(node_cluster[n]) for n in g.nodes],
+                line=dict(width=2, color=[_border_color(n) for n in g.nodes]),
                 opacity=0.9,
             ),
-            name="关键词",
+            hovertext=hover_texts,
+            hoverinfo="text",
+            showlegend=False,
         )
     )
+    degree = dict(g.degree())
+    label_nodes = {}
+    for i, c in enumerate(clusters):
+        top = sorted(
+            c,
+            key=lambda n: (-degree[n] * node_count.get(n, 0), n),
+        )[: min(3, len(c))]
+        for n in top:
+            label_nodes[n] = n
+    if label_nodes:
+        fig.add_trace(
+            go.Scatter(
+                x=[pos[n][0] for n in label_nodes],
+                y=[pos[n][1] for n in label_nodes],
+                mode="text",
+                text=[label_nodes[n] for n in label_nodes],
+                textposition="top center",
+                textfont=dict(size=11),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+    for i, c in enumerate(clusters):
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=dict(size=12, color=_cluster_color(i)),
+                name=f"簇 {i + 1}：{cluster_names[i]}",
+                showlegend=True,
+            )
+        )
     fig.update_layout(
-        title="讨论话题共现网络（颜色=话题负面倾向：红负面 / 绿正面 / 灰中性）",
+        title="讨论话题共现网络（颜色=话题簇；节点大小=讨论量；边框=情感：红负面/绿正面/灰中性）",
         height=560,
-        showlegend=False,
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
         margin=dict(l=10, r=10, t=60, b=10),
+        legend=dict(orientation="h", y=1.08, x=0, xanchor="left"),
     )
     return fig
 
@@ -445,6 +673,188 @@ def sentiment_sources_fig(s: dict) -> go.Figure | None:
         margin=dict(l=20, r=20, t=50, b=20),
     )
     return fig
+
+
+def _narrative_stats(s: dict) -> dict:
+    return s.get("narrative_stats") or {}
+
+
+def narrative_actor_fig(s: dict) -> go.Figure | None:
+    """归因主体分布（方案图 A-1）：横向堆叠条形，颜色=情感；
+    count<3 灰化，柱端标注 n 与负面率（仅 count≥3）。"""
+    ns = _narrative_stats(s)
+    if not ns or ns.get("total", 0) < 10 or not ns.get("by_actor"):
+        return None
+    actors = ns["by_actor"]
+    labels = [ATTRIBUTION_CN.get(r["actor"], r["actor"]) for r in actors]
+    fig = go.Figure()
+    for sent in ("positive", "neutral", "negative"):
+        fig.add_trace(
+            go.Bar(
+                name=SENTIMENT_NAMES[sent],
+                orientation="h",
+                y=labels,
+                x=[r[sent] for r in actors],
+                marker=dict(
+                    color=[
+                        SENTIMENT_COLORS[sent] if r["count"] >= 3 else "rgba(148,163,184,0.45)"
+                        for r in actors
+                    ]
+                ),
+            )
+        )
+    for i, r in enumerate(actors):
+        if r["count"] >= 3:
+            fig.add_annotation(
+                x=r["count"],
+                y=labels[i],
+                text=f"n={r['count']} · 负面率 {r['negative_rate'] * 100:.0f}%",
+                showarrow=False,
+                xanchor="left",
+                font=dict(size=11),
+            )
+    fig.update_layout(
+        title="归因主体分布（用户主要把问题归给谁）",
+        barmode="stack",
+        height=60 + 34 * len(actors),
+        xaxis_title="文本数",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend_title="情感",
+    )
+    return fig
+
+
+def narrative_frame_actor_heatmap(s: dict) -> go.Figure | None:
+    """叙事框架 × 归因主体负面率热力图（方案图 A-2）。
+    格 = 条数（count≥3 显示 n · 负面率），颜色 = 负面率；含总计列/行。"""
+    ns = _narrative_stats(s)
+    if not ns or ns.get("total", 0) < 10 or not ns.get("frame_actor"):
+        return None
+    cols = [r["actor"] for r in ns["by_actor"]]
+    if not cols:
+        return None
+    rows = list(NARRATIVE_FRAMES)
+    z: list[list[float | None]] = []
+    text: list[list[str]] = []
+    for f in rows:
+        zrow: list[float | None] = []
+        trow: list[str] = []
+        cells = ns.get("frame_actor", {}).get(f, {})
+        for a in cols:
+            cell = cells.get(a)
+            if cell and cell["count"] >= 3:
+                zrow.append(cell["negative_rate"])
+                trow.append(f"{cell['count']} · {cell['negative_rate'] * 100:.0f}%")
+            else:
+                zrow.append(None)
+                trow.append("—")
+        fb = next((r for r in ns["by_frame"] if r["frame"] == f), None)
+        if fb:
+            zrow.append(fb["negative_rate"])
+            trow.append(f"{fb['count']} · {fb['negative_rate'] * 100:.0f}%")
+        else:
+            zrow.append(None)
+            trow.append("—")
+        z.append(zrow)
+        text.append(trow)
+    total_row: list[float | None] = []
+    total_text: list[str] = []
+    for a in cols:
+        ab = next((r for r in ns["by_actor"] if r["actor"] == a), None)
+        if ab:
+            total_row.append(ab["negative_rate"])
+            total_text.append(f"{ab['count']} · {ab['negative_rate'] * 100:.0f}%")
+        else:
+            total_row.append(None)
+            total_text.append("—")
+    gave_attr = ns.get("gave_attr") or 0
+    if gave_attr:
+        neg_all = sum(r["negative"] for r in ns["by_actor"])
+        total_row.append(round(neg_all / gave_attr, 3))
+        total_text.append(f"{gave_attr} · {neg_all / gave_attr * 100:.0f}%")
+    else:
+        total_row.append(None)
+        total_text.append("—")
+    z.append(total_row)
+    text.append(total_text)
+    x_labels = [ATTRIBUTION_CN.get(a, a) for a in cols] + ["总计"]
+    y_labels = [NARRATIVE_CN.get(f, f) for f in rows] + ["合计"]
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=x_labels,
+            y=y_labels,
+            zmin=0,
+            zmax=1,
+            colorscale=[[0, "#ffffff"], [1, "#dc2626"]],
+            colorbar=dict(title="负面率", tickformat=".0%"),
+            text=text,
+            texttemplate="%{text}",
+            hovertemplate="%{y} × %{x}：%{text}<extra>负面率 %{z:.0%}</extra>",
+        )
+    )
+    fig.update_layout(
+        title="叙事框架 × 归因主体负面率（颜色=负面率；数字=n · 负面率）",
+        height=60 + 34 * len(y_labels),
+        margin=dict(l=20, r=20, t=60, b=20),
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def narrative_insight_text(s: dict) -> list[str]:
+    """叙事/归因规则解读（零 LLM 成本，方案 §3.4）。
+    - "问题归因"措辞仅在 negative_rate≥50% 时使用；
+    - 风险热点：负面率≥60% 且 count≥10；
+    - unclear 占比 >30% 追加人工复核提示。"""
+    ns = _narrative_stats(s)
+    if not ns or ns.get("total", 0) < 10:
+        return []
+    lines: list[str] = []
+    candidates = [
+        r for r in ns["by_actor"]
+        if r["actor"] != "unclear"
+        and r["negative"] >= 3
+        and r["count"] >= 10
+        and r["negative_rate"] >= 0.5
+    ]
+    if candidates:
+        top = sorted(candidates, key=lambda r: (-r["negative"], r["actor"]))[:2]
+        parts = []
+        for i, r in enumerate(top):
+            name = ATTRIBUTION_CN.get(r["actor"], r["actor"])
+            body = f"（负面率 {r['negative_rate'] * 100:.0f}%，n={r['count']}）"
+            parts.append(
+                f"用户主要将问题归因于【{name}】{body}" if i == 0
+                else f"其次【{name}】{body}"
+            )
+        lines.append("；".join(parts) + "。")
+    else:
+        facts = [r for r in ns["by_actor"] if r["actor"] != "unclear"]
+        if facts:
+            top = max(facts, key=lambda r: (r["count"], r["negative"]))
+            name = ATTRIBUTION_CN.get(top["actor"], top["actor"])
+            lines.append(
+                f"讨论量最高的归因主体【{name}】"
+                f"（负面率 {top['negative_rate'] * 100:.0f}%，n={top['count']}）"
+            )
+    hotspots: list[tuple[str, str, dict]] = []
+    for f, cells in ns.get("frame_actor", {}).items():
+        for a, cell in cells.items():
+            if cell["count"] >= 10 and cell["negative_rate"] >= 0.6:
+                hotspots.append((f, a, cell))
+    if hotspots:
+        hotspots.sort(key=lambda t: (-t[2]["count"], t[0], t[1]))
+        parts = [
+            f"【{NARRATIVE_CN.get(f, f)} × {ATTRIBUTION_CN.get(a, a)}】类文本"
+            f"负面率 {c['negative_rate'] * 100:.0f}%（n={c['count']}）"
+            for f, a, c in hotspots[:2]
+        ]
+        lines.append("；".join(parts) + " 为风险热点。")
+    gave_attr = ns.get("gave_attr") or 0
+    if gave_attr and ns.get("unclear", 0) / gave_attr > 0.3:
+        lines.append("归因不明确的样本占比较高，建议人工复核样本。")
+    return lines
 
 
 def date_dim_heatmap_fig(s: dict) -> go.Figure | None:
@@ -558,6 +968,16 @@ def _chart_sources(s: dict) -> str:
     return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
 
 
+def _chart_narrative_actor(s: dict) -> str:
+    fig = narrative_actor_fig(s)
+    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+
+
+def _chart_narrative_heatmap(s: dict) -> str:
+    fig = narrative_frame_actor_heatmap(s)
+    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+
+
 def _chart_date_dim(s: dict) -> str:
     fig = date_dim_heatmap_fig(s)
     return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
@@ -608,17 +1028,14 @@ def keyword_rows(bundle: ReportBundle) -> tuple[list[dict], int]:
 
 
 def query_rows(bundle: ReportBundle) -> tuple[list[dict], int]:
-    """实际查询串粒度漏斗（仅 WebSearch，与评测中心口径一致）。
+    """实际查询串粒度漏斗（按渠道展示，2026-08-18 起覆盖全部渠道）。
 
     采集/保留/丢弃按 (渠道, 关键词, 查询串) 聚合；编码与负面数按
     (渠道, 关键词) 归因（与评测中心相同口径）；旧数据丢弃无 query 时
     按该关键词在渠道内的唯一查询串兜底。
     """
     report = bundle.model_dump(mode="json")
-    rows = [
-        r for r in extract_funnel(report).get("funnel", [])
-        if str(r.get("channel", "")).startswith("websearch")
-    ]
+    rows = extract_funnel(report).get("funnel", [])
     display = []
     for r in rows:
         er = r.get("effective_rate")
@@ -686,15 +1103,14 @@ def build_html(bundle: ReportBundle) -> str:
     }
     keyword_rows_out, unattributed_dropped = keyword_rows(bundle)
     query_rows_out, unattributed_query_dropped = query_rows(bundle)
-    narrative_rows = [
-        {
-            "text": it.text[:100],
-            "narrative": it.narrative.value if it.narrative else "",
-            "attribution": it.attribution or "",
-        }
-        for it in bundle.coded_items
-        if it.narrative or it.attribution
-    ]
+    co_plan = cooccurrence_plan(s)
+    cluster_rows = topic_cluster_rows(s)
+    pairs_rows = topic_pairs(s)
+    evidence_by_id = {c["id"]: c for c in bundle.evidence}
+    dim_evidence: dict[str, list[dict]] = {}
+    for c in bundle.evidence:
+        if c.get("dimension") and c.get("sentiment") == "negative":
+            dim_evidence.setdefault(c["dimension"], []).append(c)
     return template.render(
         subject=bundle.plan.subject,
         created_at=bundle.created_at.strftime("%Y-%m-%d %H:%M"),
@@ -724,14 +1140,29 @@ def build_html(bundle: ReportBundle) -> str:
         chart_wordcloud_worst=_wordcloud_data_uri(s, "worst_dim"),
         worst_dim_name=dimension_cn(s.get("worst_dim_id", "")),
         chart_cooccurrence=_chart_cooccurrence(s),
+        cooccurrence_kind=co_plan["kind"],
+        cooccurrence_reason=co_plan["reason"],
+        cluster_rows=cluster_rows,
+        topic_pairs=pairs_rows,
         chart_sources=_chart_sources(s),
         chart_date_dim=_chart_date_dim(s),
         top_words=s["top_words"],
         report_text=bundle.report_text,
         chart_insights=bundle.chart_insights,
         conclusion=bundle.conclusion,
+        insight_mode=bundle.insight_mode,
+        findings=bundle.findings,
+        evidence_by_id=evidence_by_id,
+        dim_evidence=dim_evidence,
+        conclusion_title=findings_section_title(bundle.insight_mode),
+        display_finding_id=display_finding_id,
+        display_action=display_action,
+        dimension_evidence_label=dimension_evidence_label,
         need_review_n=sum(1 for it in bundle.coded_items if it.need_review),
-        narrative_rows=narrative_rows,
+        narrative_total=(s.get("narrative_stats") or {}).get("total", 0),
+        narrative_insight=narrative_insight_text(s),
+        chart_narrative_actor=_chart_narrative_actor(s),
+        chart_narrative_heatmap=_chart_narrative_heatmap(s),
         trust=trust,
         keyword_rows=keyword_rows_out,
         unattributed_dropped=unattributed_dropped,
@@ -741,4 +1172,60 @@ def build_html(bundle: ReportBundle) -> str:
             "llm": sum(1 for it in bundle.coded_items if it.method == "llm"),
             "lexicon": sum(1 for it in bundle.coded_items if it.method == "lexicon"),
         },
+        collection_notes=_collection_notes(bundle),
     )
+
+
+def _collection_notes(bundle: ReportBundle) -> list[dict]:
+    """采集说明（2026-08-18 采集透明度）：实际保留 < 配置上限的渠道缺口。
+    只统计有 collection_stats 的渠道；采满或缺失 stats 不展示。"""
+    notes: list[dict] = []
+    for ch in bundle.channel_results:
+        st = ch.collection_stats or {}
+        if not st:
+            continue
+        requested = st.get("requested_limit")
+        kept = st.get("kept") or 0
+        if requested is None or kept >= requested:
+            continue
+        reasons: list[str] = []
+        tips: list[str] = []
+        oor = st.get("skipped_out_of_range") or 0
+        ad = st.get("skipped_ad") or 0
+        dup = st.get("skipped_dup") or 0
+        official = st.get("skipped_official") or 0
+        domain_filter = st.get("skipped_domain_filter") or 0
+        empty_q = st.get("empty_queries") or 0
+        risk_stop = st.get("risk_stop") or 0
+        mblog = st.get("mblog_cards")
+        if oor:
+            reasons.append(f"{oor} 条超出所选时间范围被过滤")
+            tips.append("放宽时间窗可多采")
+        if ad:
+            reasons.append(f"{ad} 条为广告被过滤")
+        if dup:
+            reasons.append(f"{dup} 条为重复返回")
+        if official:
+            reasons.append(f"{official} 条为官网域名黑名单被过滤")
+            tips.append("检查关键词策略中的官网域名黑名单")
+        if domain_filter:
+            reasons.append(f"{domain_filter} 条非目标子渠道域名被过滤")
+            tips.append("子渠道仅保留目标站点域名，可换全网渠道采集更多")
+        if empty_q:
+            reasons.append(f"{empty_q} 个查询词无有效结果")
+            tips.append("增加相关关键词扩展信息面")
+        if risk_stop:
+            reasons.append("检测到风控信号提前结束")
+            tips.append("冷却后减少关键词或分次运行")
+        if mblog is not None and mblog < requested:
+            reasons.append(f"该关键词搜索结果有限（API 正文 {mblog} 条 < 设置 {requested} 条）")
+            tips.append("增加相关关键词扩展信息面")
+        if not reasons:
+            reasons.append("平台搜索结果不足")
+        if not tips:
+            tips.append("增加相关关键词或更换渠道")
+        notes.append({
+            "channel": ch.channel_id, "requested": requested, "kept": kept,
+            "reasons": reasons, "tips": tips,
+        })
+    return notes

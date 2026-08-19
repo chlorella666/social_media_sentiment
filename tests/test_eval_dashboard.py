@@ -58,7 +58,24 @@ def _report(ts: str, accuracy: float, mode: str = "lexicon") -> dict:
         },
         "confusion_matrix": {"positive->positive": 1, "positive->negative": 1},
         "routing": {"direct_rate": 0.5},
-        "dimension": {"micro_f1": 0.2},
+        "dimension": {
+            "micro_f1": 0.2,
+            "exact_match_rate": 0.4,
+            "dimension_n": 5,
+            "per_dimension": {
+                "产品质量": {"n_gold": 3, "precision": 0.8, "recall": 0.6, "f1": 0.69},
+                "价格价值": {"n_gold": 2, "precision": 0.4, "recall": 0.4, "f1": 0.4},
+            },
+            "dimension_sentiment_dist": {
+                "产品质量": {"gold_positive": 2, "gold_negative": 1,
+                             "pred_positive": 2, "pred_negative": 0},
+            },
+            "mention": {"micro_f1": 0.5},
+        },
+        "dimension_errors": [
+            {"text_id": "d1", "text": "维度错误原文", "gold": {"产品质量": "negative"},
+             "pred": {"产品质量": "positive"}, "platform": "weibo", "domain": "game"},
+        ],
         "errors": [{"text_id": "x1", "text": "原文", "gold": "negative",
                     "pred": "positive", "platform": "weibo", "domain": "game",
                     "kind": "post", "flags": "",
@@ -94,8 +111,59 @@ def test_dashboard_with_data() -> None:
     assert "weibo" in text_all
     tabs = getattr(at, "tabs", None)
     if tabs is not None:
-        assert len(tabs) == 7, f"应含 7 个页签（含「关键词策略配置」），实际 {len(tabs)}"
-    print("✓ 有数据状态（概览/表/趋势/历史） 通过")
+        labels = [t.label for t in tabs]
+        for want in ("📊 概览", "🧩 维度情感", "🎛 关键词策略配置", "🕘 运行历史"):
+            assert want in labels, f"缺页签 {want}：{labels}"
+    subs = [s.value for s in at.subheader]
+    assert any("维度级情感" in s for s in subs), "维度情感视图未渲染"
+    print("✓ 有数据状态（概览/表/趋势/维度情感/历史） 通过")
+
+
+def test_dashboard_module_mode() -> None:
+    """P1-1：模块模式从 history 动态发现并可选。"""
+    mod_dir = Path(tempfile.mkdtemp(prefix="sms_dash_mod_")) / "benchmark"
+    rd = mod_dir / "runs"
+    hf = mod_dir / "history.jsonl"
+    eval_store.write_run(_report("2026-08-17T10:00:00", 0.85, mode="module_content_hybrid"),
+                         runs_dir_path=rd, history_file=hf)
+    eval_store.write_run(_report("2026-08-17T11:00:00", 0.87, mode="module_content_hybrid"),
+                         runs_dir_path=rd, history_file=hf)
+    old = os.environ.get("SMS_BENCHMARK_DIR")
+    os.environ["SMS_BENCHMARK_DIR"] = str(mod_dir)
+    try:
+        at = AppTest.from_file(str(DASH), default_timeout=30).run()
+        assert not at.exception, [str(e) for e in at.exception]
+        opts = at.radio[0].options or []
+        assert "数字产品·混合流水线" in opts, f"模块模式不可见: {opts}"
+        at.radio[0].set_value("数字产品·混合流水线").run()
+        assert not at.exception, [str(e) for e in at.exception]
+        subs = [s.value for s in at.subheader]
+        assert any("维度级情感" in s for s in subs), "模块模式维度情感视图未渲染"
+    finally:
+        if old is None:
+            os.environ.pop("SMS_BENCHMARK_DIR", None)
+        else:
+            os.environ["SMS_BENCHMARK_DIR"] = old
+    print("✓ 模块模式（动态发现/可选/维度情感渲染）通过")
+
+
+def test_helpers() -> None:
+    import app.eval_dashboard as d
+
+    assert d._flags_contain("反讽,黑话", ["反讽"])
+    assert not d._flags_contain("反讽,黑话", ["方言"])
+    assert d._flags_contain("", [])
+    opts = d._mode_options([
+        {"mode_key": "module_content_hybrid"},
+        {"mode_key": "hybrid"},
+        {"mode_key": "module_content_hybrid"},
+    ])
+    assert opts == ["lexicon", "hybrid", "edge_lexicon", "edge_hybrid",
+                    "module_content_hybrid"]
+    assert d._mode_label("module_content_hybrid") == "数字产品·混合流水线"
+    assert d._mode_label("holdout_digital3c_r4_hybrid") == "3C·hold-out r4·混合"
+    assert d._mode_label("未知_mode_key") == "未知·mode·key"
+    print("✓ helper（by_flag 拆分匹配 / 模式动态发现与标签）通过")
 
 
 def test_dashboard_edge_mode() -> None:
@@ -131,6 +199,8 @@ def main() -> None:
     test_dashboard_empty_state()
     test_dashboard_with_data()
     test_dashboard_edge_mode()
+    test_dashboard_module_mode()
+    test_helpers()
     print("评测仪表盘冒烟测试全部通过 ✅")
 
 

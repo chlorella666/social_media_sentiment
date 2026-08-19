@@ -136,6 +136,44 @@ def test_aggregate() -> None:
     print("✓ 跨任务聚合 通过")
 
 
+def test_aggregate_old_rows_quality_roundtrip() -> None:
+    """旧历史行（无 quality_dropped 字段）从 drop_reasons 兜底重算质量丢弃，
+    不得按 0 计（2026-08-19 修复：171 条旧行曾被虚高到 100%）。"""
+    old_entry = {
+        "subject": "恋与深空",
+        "funnel": [{
+            "channel": "websearch", "query": "恋与深空 评价", "keyword": "恋与深空",
+            "collected": 3, "kept": 0, "dropped": 3,
+            "drop_reasons": {"文本过短": 1, "样板/页面壳文本": 1, "官方页面": 1},
+            "coded": 0, "negative": 0, "effective_rate": 0.0,
+        }],
+        "hints": {}, "run_id": "old-run-1",
+    }
+    r = ke.aggregate([old_entry])["funnel"][0]
+    assert r["quality_dropped"] == 3            # 旧行也按原因重算，不得为 0
+    assert r["quality_effective_rate"] == 0.0   # 0/(0+3)，而非虚高 100%
+    print("✓ 旧历史行质量口径兜底重算（不虚高） 通过")
+
+
+def test_agg_rates_mixed_old_new() -> None:
+    """新旧行混合时质量口径不得漏算旧行（_row_quality_dropped 兜底）。"""
+    old_row = {
+        "collected": 5, "kept": 2, "dropped": 3,
+        "drop_reasons": {"超出时间范围": 2, "与品牌/关键词不相关": 1},
+        "effective_rate": 0.4,
+    }
+    new_row = {
+        "collected": 5, "kept": 3, "dropped": 2,
+        "quality_dropped": 1,
+        "drop_reasons": {"重复返回（同帖）": 1, "与品牌/关键词不相关": 1},
+        "effective_rate": 0.6,
+    }
+    a = ke._agg_rates([old_row, new_row])
+    assert a["quality_dropped"] == 2                 # 旧行 1 + 新行 1
+    assert abs(a["quality_effective_rate"] - 5 / 7) < 1e-9
+    print("✓ 新旧行混合质量口径 通过")
+
+
 def test_build_query_default_behavior() -> None:
     assert build_query("大疆") == "大疆 评价"
     assert build_query("大疆", strategy={}) == "大疆 评价"
@@ -216,6 +254,28 @@ def test_strategy_backup_edit_restore_history() -> None:
     assert strat3["synonyms"]["大疆"] == ["DJI"]
     assert strat3["suffix_pool"] == ["评价"]
     print("✓ 策略配置备份/编辑（超限警告不截断）/历史/删除品牌/回滚 通过")
+
+
+def test_expand_websearch_keywords_toggle() -> None:
+    """WebSearch 总开关语义（2026-08-18）：开关开 = 品牌词追加同义词/策略词；
+    关 = 完全按确认关键词原词（与确认页估算共用同一实现）。"""
+    strat = {
+        "synonyms": {"恋与深空": ["深空", "恋深"]},
+        "extra_queries": {"恋与深空": ["恋与深空 评价", "恋与深空 叠纸"]},
+    }
+    kws = ["恋与深空", "恋与深空 周边"]
+    on = ke.expand_websearch_keywords(kws, "恋与深空", enabled=True, strategy=strat)
+    assert on == [
+        "恋与深空", "深空", "恋深",
+        "恋与深空 评价", "恋与深空 叠纸",
+        "恋与深空 周边",
+    ], on
+    off = ke.expand_websearch_keywords(kws, "恋与深空", enabled=False, strategy=strat)
+    assert off == kws, off
+    # 非品牌词不展开（kw != subject）
+    other = ke.expand_websearch_keywords(["恋与深空 周边"], "恋与深空", strategy=strat)
+    assert other == ["恋与深空 周边"]
+    print("✓ expand_websearch_keywords 总开关（开=同义词/策略词，关=原词）通过")
 
 
 def _fr(channel: str, keyword: str, query: str, col: int, kept: int) -> dict:
@@ -461,9 +521,12 @@ def main() -> None:
     test_scan_dedupe()
     test_suffix_and_candidate_hints()
     test_aggregate()
+    test_aggregate_old_rows_quality_roundtrip()
+    test_agg_rates_mixed_old_new()
     test_build_query_default_behavior()
     test_apply_candidates_caps()
     test_strategy_backup_edit_restore_history()
+    test_expand_websearch_keywords_toggle()
     test_compare_runs_metrics_verdicts()
     test_compare_runs_metrics_no_pure_brand()
     test_compare_runs_metrics_pure_side_missing()

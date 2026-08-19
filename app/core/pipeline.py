@@ -15,7 +15,7 @@ from app.channels.registry import get_channel
 from app.channels.base import degraded_result
 from app.coding.cleaner import clean_posts
 from app.coding.coder import Coder
-from app.coding.insights import build_insights
+from app.coding.insights import build_report_content
 from app.coding.llm_analyzer import (
     BaseAnalyzer,
     MockAnalyzer,
@@ -38,11 +38,109 @@ from app.core.models import (
     SentimentLabel,
     TaskStatus,
 )
+from app.core.names import ATTRIBUTION_ACTORS, NARRATIVE_FRAMES
+from app.core.topics import build_topic_clusters
+from app.core.drops import is_quality_drop
+from app.core.evidence import (
+    MIN_DIM_NORMAL,
+    MIN_DIM_RATING,
+    build_evidence,
+    display_finding_id,
+)
+from app.core.names import dimension_cn, register_custom_dim_names
 from app.core.pricing import cost_from_usage
 from app.core.progress import ProgressTracker
-from app.domains.loader import load_domain
+from app.domains.loader import task_schema
 
 ProgressCallback = Callable[[TaskStatus, str, float, dict], None]
+
+
+VOICE_TIER_RATIO_DEFAULT = 0.1  # 默认渠道正/负最小条数 = 10% × E
+# 消费者声音分档按渠道校准（2026-08-18）：B站视频标题语体显式负面/正面占比
+# 天然低于评论型渠道（瑞幸×B站实测 E=18、neg=3、pos=1 却被判"不足"），
+# 该渠道正/负最小条数比率下调，避免"捕获充足却判不足"的误报。
+VOICE_TIER_CFG = {
+    "bilibili": {"neg_ratio": 0.05, "pos_ratio": 0.05},
+    "demo": {"neg_ratio": 0.05, "pos_ratio": 0.05},
+}
+
+
+def voice_tier(
+    effective: int, target: int, pos_n: int, neg_n: int,
+    neg_ratio: float = VOICE_TIER_RATIO_DEFAULT,
+    pos_ratio: float = VOICE_TIER_RATIO_DEFAULT,
+) -> str:
+    """消费者声音分档（2026-08-18，关键词优化与报告质量提升方案 §二）。
+
+    捕获量按 E 与目标 T 的比例判定；正/负最小条数按渠道语体比率校准
+    （默认 10%×E，bilibili/demo 降为 5%×E）。
+    """
+    tgt = max(target, 1)
+    neg_min = max(1, round(neg_ratio * effective))
+    pos_min = max(1, round(pos_ratio * effective))
+    if effective >= 0.6 * tgt and pos_n >= pos_min and neg_n >= neg_min:
+        return "充足"
+    if effective >= 0.3 * tgt and neg_n >= neg_min:
+        return "够用"
+    return "不足"
+
+
+def consumer_voice_summary(
+    plan: AnalysisPlan, items: list[CodedItem], channel_results: list[ChannelResult],
+) -> dict:
+    """消费者声音指标（2026-08-18）：E = 保留且非广告/官方；占比 E/N；分档。"""
+    collected_n = sum(
+        len(ch.posts) + sum(len(p.comments) for p in ch.posts) + len(ch.dropped)
+        for ch in channel_results if ch.ok
+    )
+    voice_items = [it for it in items if not it.ad_flag]
+    v_pos = sum(1 for it in voice_items if it.sentiment == SentimentLabel.positive)
+    v_neg = sum(1 for it in voice_items if it.sentiment == SentimentLabel.negative)
+    v_tgt = max(1, len(plan.keywords or [plan.subject])) * max(
+        1, plan.per_keyword_limit)
+    v_e = len(voice_items)
+    # 分档按主导渠道（采集量最大）的语体比率校准
+    ch_counts = Counter(ch.channel_id for ch in channel_results if ch.ok)
+    dominant_ch = ch_counts.most_common(1)[0][0] if ch_counts else ""
+    v_cfg = VOICE_TIER_CFG.get(dominant_ch, {})
+    v_tier = voice_tier(
+        v_e, v_tgt, v_pos, v_neg,
+        neg_ratio=v_cfg.get("neg_ratio", VOICE_TIER_RATIO_DEFAULT),
+        pos_ratio=v_cfg.get("pos_ratio", VOICE_TIER_RATIO_DEFAULT),
+    )
+    return {
+        "collected": collected_n,
+        "effective": v_e,
+        "ratio": round(v_e / collected_n, 4) if collected_n else None,
+        "tier": v_tier,
+        "positive": v_pos,
+        "negative": v_neg,
+        "tier_channel": dominant_ch,
+        "tier_ratios": {
+            "neg": v_cfg.get("neg_ratio", VOICE_TIER_RATIO_DEFAULT),
+            "pos": v_cfg.get("pos_ratio", VOICE_TIER_RATIO_DEFAULT),
+        },
+        "note": "E=保留且非广告/官方；相关性依赖 LLM 复核（未复核为近似）；"
+                "词典模式无 ad_flag 时为近似",
+    }
+
+
+def recompute_summary(
+    plan: AnalysisPlan, items: list[CodedItem],
+    channel_results: list[ChannelResult], posts: list[Post],
+) -> dict:
+    """重算 summary（2.11 方案 A 复用）：build_summary + llm_corrected + consumer_voice。"""
+    summary = build_summary(plan, items, posts)
+    summary["llm_corrected"] = sum(
+        1
+        for it in items
+        if it.method == "llm"
+        and it.lexicon_sentiment
+        and it.lexicon_sentiment != it.sentiment.value
+    )
+    summary["consumer_voice"] = consumer_voice_summary(plan, items, channel_results)
+    return summary
+
 
 # 补采收敛与收益门控（2026-08-16 调整，降无谓请求与风控暴露）
 TOPUP_MAX_ROUNDS = 2          # 补采轮数上限（原 3）
@@ -100,6 +198,7 @@ def _reconcile_channel_posts(
         extra = [d for d in dropped if d["url"] not in existing]
         if extra:
             for d in extra:
+                # 2026-08-19：仅改展示文案，kind 原样保留（包装不改决策语义）
                 d["reason"] = f"补采一致性清洗:{d['reason']}"
                 target = by_channel.get(d["platform"])
                 if target is None and channel_results:
@@ -127,6 +226,94 @@ def _subject_stopwords(plan: AnalysisPlan) -> set[str]:
         for tok in segment(phrase):
             extra.add(tok)
     return extra
+
+
+NARRATIVE_REF_N = 10  # 叙事/归因桶 count<10 标"样本有限"（方案 §3.5）
+
+
+def _build_narrative_stats(stat_items: list[CodedItem]) -> dict:
+    """叙事归因聚合（方案 Part A，2026-08-19）。
+
+    样本范围：stat_items 中 LLM 编码且 narrative/attribution 非空的文本；
+    分母各自取 gave_attr / gave_frame；unclear 单独计数并固定排最后。
+    """
+    narr_items = [
+        it for it in stat_items
+        if it.method == "llm" and (it.narrative or it.attribution)
+    ]
+    total = len(narr_items)
+    gave_attr = sum(1 for it in narr_items if it.attribution)
+    gave_frame = sum(1 for it in narr_items if it.narrative)
+    unclear = sum(1 for it in narr_items if it.attribution == "unclear")
+    empty = {
+        "total": total, "gave_attr": gave_attr, "gave_frame": gave_frame,
+        "unclear": unclear, "by_actor": [], "by_frame": [], "frame_actor": {},
+    }
+    if not total:
+        return empty
+
+    actor_stat: dict[str, dict[str, int]] = {
+        a: {"count": 0, "positive": 0, "neutral": 0, "negative": 0}
+        for a in ATTRIBUTION_ACTORS
+    }
+    frame_stat: dict[str, dict[str, int]] = {
+        f: {"count": 0, "positive": 0, "neutral": 0, "negative": 0}
+        for f in NARRATIVE_FRAMES
+    }
+    cross: dict[str, dict[str, dict[str, int]]] = {}
+    for it in narr_items:
+        sent = it.sentiment.value
+        if it.attribution:
+            b = actor_stat[it.attribution]
+            b["count"] += 1
+            b[sent] += 1
+        if it.narrative:
+            f = it.narrative.value
+            b = frame_stat[f]
+            b["count"] += 1
+            b[sent] += 1
+            if it.attribution:
+                cell = cross.setdefault(f, {}).setdefault(
+                    it.attribution, {"count": 0, "negative": 0}
+                )
+                cell["count"] += 1
+                if sent == "negative":
+                    cell["negative"] += 1
+
+    def _bucket(key: str, ident: str, st: dict[str, int]) -> dict:
+        return {
+            key: ident, "count": st["count"],
+            "positive": st["positive"], "neutral": st["neutral"],
+            "negative": st["negative"],
+            "negative_rate": round(st["negative"] / st["count"], 3) if st["count"] else 0,
+            "ref": st["count"] < NARRATIVE_REF_N,
+        }
+
+    by_actor = [
+        _bucket("actor", a, actor_stat[a])
+        for a in ATTRIBUTION_ACTORS if actor_stat[a]["count"]
+    ]
+    by_actor.sort(key=lambda r: (-r["negative"], r["actor"]))
+    by_actor = [r for r in by_actor if r["actor"] != "unclear"] + [
+        r for r in by_actor if r["actor"] == "unclear"
+    ]
+    by_frame = [
+        _bucket("frame", f, frame_stat[f])
+        for f in NARRATIVE_FRAMES if frame_stat[f]["count"]
+    ]
+    by_frame.sort(key=lambda r: (-r["count"], r["frame"]))
+    frame_actor = {
+        f: {
+            a: {**cell, "negative_rate": round(cell["negative"] / cell["count"], 3)}
+            for a, cell in sorted(cross[f].items())
+        }
+        for f in NARRATIVE_FRAMES if cross.get(f)
+    }
+    return {
+        "total": total, "gave_attr": gave_attr, "gave_frame": gave_frame,
+        "unclear": unclear, "by_actor": by_actor, "by_frame": by_frame,
+        "frame_actor": frame_actor,
+    }
 
 
 def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post]) -> dict:
@@ -310,14 +497,36 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     sentiment_sources = sentiment_sources[:12]
 
     # 共现网络（文档级去重后的讨论结构；PMI 加权 + 主题过滤）
-    cooccurrence = build_cooccurrence(
+    cooccurrence_raw, node_count = build_cooccurrence(
         content_texts,
         window=3,
         top_n=30,
         extra_stopwords=extra_stop,
         min_count=3,
+        return_counts=True,
     )
+    # 方案 Part B（2026-08-19）：节点 top20（按文档频次）+ 固定取 PMI 前 20 条边
+    # （不追节点数——门槛判定交给 build_topic_clusters：边≥12 且 节点≥15 才聚类，
+    #  否则走词对榜；追节点数会自相矛盾地把小图扩到门槛以上）。
+    top_nodes = set(
+        sorted(node_count, key=lambda n: (-node_count[n], n))[:20]
+    )
+    cooccurrence = [
+        e for e in cooccurrence_raw
+        if e["source"] in top_nodes and e["target"] in top_nodes
+    ]
+    cooccurrence = cooccurrence[:20]
     node_set = {e["source"] for e in cooccurrence} | {e["target"] for e in cooccurrence}
+    # 话题簇（2026-08-19 修订）：簇文档数 = 至少含簇内任一节点词的独立文本数
+    # （并集）。词频求和会重复计数（OPPO"数码"簇：29 vs 独立文本 12~13），
+    # 因此必须在有文本的 build_summary 层计算，渲染层只消费结果。
+    topic_clusters = build_topic_clusters(
+        cooccurrence,
+        node_count,
+        content_texts,
+        [it.sentiment.value for it in stat_items],
+        extra_stopwords=extra_stop,
+    )
     w_dims: dict[str, Counter] = defaultdict(Counter)
     for it in stat_items:
         for tok in segment(it.text, extra_stop):
@@ -337,6 +546,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         ks["comments"] += len(post.comments)
 
     avg = sum(it.sentiment_score for it in stat_items) / stat_n if stat_n else 0.0
+    narr_stats = _build_narrative_stats(stat_items)
     summary = {
         "total_items": total,
         "total_posts": len(posts),
@@ -415,6 +625,10 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
             content_texts, top_n=50, extra_stopwords=extra_stop
         ),
         "cooccurrence": cooccurrence,
+        "topic_clusters": topic_clusters,
+        "node_count": {n: node_count[n] for n in node_set},
+        "node_negative_count": {n: neg_docs[n] for n in node_set},
+        "node_positive_count": {n: pos_docs[n] for n in node_set},
         "sentiment_sources": sentiment_sources,
         "node_negative_rate": node_negative_rate,
         "positive_words": pos_w.most_common(10),
@@ -424,6 +638,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         "worst_dim_id": worst_dim,
         "worst_dim_wordcloud": worst_cloud.most_common(40),
         "word_dims": word_dims,
+        "narrative_stats": narr_stats,
         "keyword_stats": {
             kw: {
                 "posts": v["posts"],
@@ -445,8 +660,17 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     return summary
 
 
-def generate_report_text(plan: AnalysisPlan, summary: dict) -> str:
-    """结论与建议（模板兜底；LLM 深度解读在 V1 接入）。"""
+NO_DATA_REPORT_TEXT = (
+    "本次分析未采集到有效文本，无法生成情感结论。\n"
+    "建议：检查关键词是否过窄或拼写有误、增加渠道、放宽时间段后重试；"
+    "若仍无数据，可在任务详情查看各渠道的失败原因与采集日志。"
+)
+
+
+def generate_report_text(
+    plan: AnalysisPlan, summary: dict, findings: list[dict] | None = None
+) -> str:
+    """概览文案（数据驱动；结尾指向核心发现，不使用万能句）。"""
     lines = []
     lines.append(f"本次分析对象为「{plan.subject}」，共采集 {summary['total_posts']} 条内容，"
                  f"编码 {summary['total_items']} 条文本。")
@@ -470,12 +694,37 @@ def generate_report_text(plan: AnalysisPlan, summary: dict) -> str:
     )
     dims = summary["dimensions"]
     if dims:
-        worst = max(dims.items(), key=lambda kv: kv[1]["negative_rate"])
-        lines.append(f"负面率最高的维度是「{worst[0]}」（{worst[1]['negative_rate'] * 100:.1f}%），建议重点关注。")
+        valid = [(did, v) for did, v in dims.items() if v["count"] >= MIN_DIM_RATING]
+        if valid:
+            worst = max(valid, key=lambda kv: kv[1]["negative_rate"])
+            marker = "" if worst[1]["count"] >= MIN_DIM_NORMAL else "，样本有限"
+            lines.append(
+                f"负面率最高的维度是「{dimension_cn(worst[0])}」"
+                f"（{worst[1]['negative_rate'] * 100:.1f}%，n={worst[1]['count']}{marker}），"
+                "建议重点关注。"
+            )
+        else:
+            lines.append("各维度样本均不足（n<3），负面率最高维度未评级。")
+    sources = [
+        r
+        for r in (summary.get("sentiment_sources") or [])
+        if r["negative_rate"] > 0.5
+        and r["positive"] + r["negative"] >= MIN_DIM_RATING
+    ]
+    if sources:
+        top = "、".join(
+            f"{r['word']}（负面 {r['negative_rate'] * 100:.0f}%，n={r['positive'] + r['negative']}）"
+            for r in sources[:3]
+        )
+        lines.append(f"负面情绪来源话题：{top}。")
     if summary["top_words"]:
         top = "、".join(w for w, _ in summary["top_words"][:5])
         lines.append(f"高频情感词：{top}。")
-    lines.append("建议：结合负面率最高的维度定位问题，扩大采集范围后复测以验证趋势。")
+    if findings:
+        ids = "、".join(display_finding_id(f.get("id", "")) for f in findings[:3])
+        lines.append(f"具体证据与行动建议见下方「核心发现」（{ids} 等）。")
+    else:
+        lines.append("开启 LLM 精分析可获得可归因的结论与行动建议。")
     return "\n".join(lines)
 
 
@@ -704,6 +953,7 @@ class TaskRunner:
                                     "keyword": post.keyword,
                                     "query": (post.platform_specific or {}).get("query", ""),
                                     "reason": "LLM 相关性复核：不相关",
+                                    "kind": "quality",
                                 }
                             )
                     posts = kept2
@@ -730,7 +980,14 @@ class TaskRunner:
                 collected = len(ch.posts) + len(ch.dropped)
                 if collected <= 0:
                     continue
-                drop_rate = len(ch.dropped) / collected
+                # 2026-08-19（口径结构化）：补采触发只看 kind=quality——
+                # collection/duplicate（重复返回/超窗/广告/去重）重采同一池子
+                # 只会形成回路（瑞幸×B站实测 44 条重复触发补采后反复重判）。
+                quality_dropped = [
+                    d for d in (ch.dropped or [])
+                    if is_quality_drop(d)
+                ]
+                drop_rate = len(quality_dropped) / collected
                 limit = plan.per_keyword_limit
                 for cfg in plan.channels:
                     if cfg.channel_id == ch.channel_id:
@@ -840,6 +1097,19 @@ class TaskRunner:
                 "已在丢弃明细标注原因；"
                 "该渠道结果可能不完整，其余渠道不受影响"
             )
+        # 兜底遥测（2026-08-19）：统计无 kind 的丢弃记录（旧数据/漏标），
+        # 任务级单条汇总告警，避免字符串兜底路径静默无限期使用。
+        unkinded_drops = sum(
+            1
+            for ch in channel_results
+            for d in (ch.dropped or [])
+            if not str(d.get("kind") or "").strip()
+        )
+        if unkinded_drops:
+            warnings.append(
+                f"丢弃口径：{unkinded_drops} 条记录缺 kind"
+                "（旧任务数据或漏标），已按原因文案兜底判定"
+            )
         # 补采一致性收尾：最终清洗并统一写回，保证 posts 与 channel_results 同源
         # （修复补采原始帖残留导致"报告 0 帖但漏斗有数"）
         posts = _reconcile_channel_posts(channel_results, plan, warnings)
@@ -903,10 +1173,10 @@ class TaskRunner:
         coding_span = coding_end - coding_start
         self._progress(TaskStatus.coding, "正在情感编码（词典预筛 + LLM）", coding_start)
         schema = None
-        if plan.domain_id:
-            try:
-                schema = load_domain(plan.domain_id)
-            except FileNotFoundError:
+        if plan.domain_id or plan.custom_dimensions:
+            # 2.8：预置/模块 schema + 任务级自定义维度合并（id custom_ 前缀）
+            schema = task_schema(plan)
+            if schema is None and plan.domain_id:
                 warnings.append(f"领域 schema 不存在：{plan.domain_id}，跳过维度分析")
         coder = Coder(analyzer, schema=schema)
         items = coder.code_posts(
@@ -926,15 +1196,8 @@ class TaskRunner:
         # 4. 汇总与报告文本
         self.tracker.step("report", state="running", detail="正在生成统计与报告", frac=0.0)
         self._progress(TaskStatus.reporting, "正在生成统计与报告", self._phase_weights["reporting"][0])
-        summary = build_summary(plan, items, posts)
-        # LLM 修正条数与 token 用量（费用可见性）
-        summary["llm_corrected"] = sum(
-            1
-            for it in items
-            if it.method == "llm"
-            and it.lexicon_sentiment
-            and it.lexicon_sentiment != it.sentiment.value
-        )
+        register_custom_dim_names(plan)  # 2.8：任务级自定义维度显示名（图表/洞察共用）
+        summary = recompute_summary(plan, items, channel_results, posts)
         llm_usage: dict = {}
         if hasattr(analyzer, "usage"):
             u = analyzer.usage
@@ -948,10 +1211,26 @@ class TaskRunner:
             }
         warnings.extend(_quality_gate_warnings(summary["total_items"]))
         self.tracker.step(
-            "report", detail="正在生成图表解析与深度结论（LLM）", frac=0.5
+            "report", detail="正在生成证据链与报告内容", frac=0.5
         )
-        insights = build_insights(analyzer, plan, summary)
-        report_text = generate_report_text(plan, summary)
+        if summary["total_items"] == 0:
+            # 零数据短路：不调 LLM、不生成任何推断/建议（病灶 F）
+            evidence: list[dict] = []
+            report_content = {
+                "chart_insights": {},
+                "conclusion": "",
+                "findings": [],
+                "insight_mode": "no_data",
+            }
+            report_text = NO_DATA_REPORT_TEXT
+        else:
+            evidence = build_evidence(
+                items, summary, exclude_ad=bool(plan.exclude_ad_enabled)
+            )
+            report_content = build_report_content(analyzer, plan, summary, evidence)
+            report_text = generate_report_text(
+                plan, summary, report_content["findings"]
+            )
         self.tracker.step("report", state="done", detail="报告生成完毕", frac=1.0)
         self._progress(TaskStatus.reporting, "报告生成完毕", self._phase_weights["reporting"][1])
 
@@ -961,8 +1240,11 @@ class TaskRunner:
             coded_items=items,
             summary=summary,
             report_text=report_text,
-            chart_insights=insights["chart_insights"],
-            conclusion=insights["conclusion"],
+            chart_insights=report_content["chart_insights"],
+            conclusion=report_content["conclusion"],
+            findings=report_content["findings"],
+            evidence=evidence,
+            insight_mode=report_content["insight_mode"],
             llm_usage=llm_usage,
             warnings=warnings,
         )
@@ -1009,6 +1291,12 @@ def bundle_to_json(bundle: ReportBundle, path: str | Path) -> None:
         ],
         "summary": bundle.summary,
         "report_text": bundle.report_text,
+        "chart_insights": bundle.chart_insights,
+        "conclusion": bundle.conclusion,
+        "findings": bundle.findings,
+        "evidence": bundle.evidence,
+        "insight_mode": bundle.insight_mode,
+        "llm_usage": bundle.llm_usage,
         "warnings": bundle.warnings,
         "created_at": bundle.created_at.isoformat(),
         "coded_items": [it.model_dump(mode="json") for it in bundle.coded_items],

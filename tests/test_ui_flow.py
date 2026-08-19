@@ -47,13 +47,26 @@ _WORKER = threading.Thread(
 def click_button(at: AppTest, label: str, timeout: int = 60) -> None:
     matches = [b for b in at.button if b.label == label]
     assert matches, f"未找到按钮「{label}」；现有：{[b.label for b in at.button]}"
-    matches[0].click().run(timeout=timeout)
+    # AppTest 旧帧残留：st.rerun() 后同标签按钮可能在新旧帧各出现一次，
+    # 且顺序不稳定。向导导航按钮已加唯一 key（next_<stage>/prev_<stage>），
+    # 按当前 stage 定位，避免点到残留帧按钮（2026-08-18）。
+    try:
+        stage = at.session_state["stage"]
+    except Exception:
+        stage = None
+    target_key = {"下一步 →": f"next_{stage}", "← 上一步": f"prev_{stage}"}.get(label)
+    if target_key:
+        keyed = [b for b in at.button if b.key == target_key]
+        if keyed:
+            keyed[-1].click().run(timeout=timeout)
+            return
+    matches[-1].click().run(timeout=timeout)
 
 
 def click_button_key(at: AppTest, key: str, timeout: int = 60) -> None:
     matches = [b for b in at.button if b.key == key]
     assert matches, f"未找到按钮 key={key}；现有：{[b.key for b in at.button]}"
-    matches[0].click().run(timeout=timeout)
+    matches[-1].click().run(timeout=timeout)
 
 
 def confirm_usage_boundary(at: AppTest, timeout: int = 60) -> None:
@@ -91,6 +104,13 @@ def restore_stale_widget_states(at: AppTest) -> None:
         ("exclude_words", ""),
         ("ad_review_mode", "自动（广告/官方计入统计）"),
         ("websearch_eval_suffix", True),
+        ("websearch_eval_suffix_toggle", True),
+        ("kwopt_bilibili", False),
+        ("kwopt_bilibili_toggle", False),
+        ("kwopt_weibo", False),
+        ("kwopt_weibo_toggle", False),
+        ("kwopt_xiaohongshu", False),
+        ("kwopt_xiaohongshu_toggle", False),
         ("official_domains", ""),
     ):
         if key not in at.session_state:
@@ -105,7 +125,7 @@ def wait_completed(at: AppTest, max_seconds: int = 180) -> None:
             at.run(timeout=60)
         except (KeyError, TypeError):
             continue
-        if ss(at, "stage") == 6 and "bundle" in at.session_state:
+        if ss(at, "stage") == 5 and "bundle" in at.session_state:
             return
         time.sleep(0.3)
     raise AssertionError(
@@ -131,48 +151,44 @@ def main() -> None:
 
     print("✓ 应用启动正常（后台任务中心可见）")
 
-    # 阶段0：手动关键词模式
-    at.radio[0].set_value("手动输入关键词").run()
-    at.text_area[0].set_value("原神 抽卡\n原神 画质").run()
+    # 阶段0：手动关键词模式（不分类，无模块/维度）
+    at.radio[0].set_value("手动关键词（不分类）").run()
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 1
-    print("✓ 阶段0（输入对象）通过")
+    print("✓ 阶段0（品牌和维度，手动模式）通过")
 
-    # 阶段1：无领域 → 下一步
-    click_button(at, "下一步 →")
-    assert at.session_state["stage"] == 2
-    print("✓ 阶段1（维度）通过")
-
-    # 阶段2：关键词确认
+    # 阶段1：关键词确认（手填）
+    at.text_area[0].set_value("原神 抽卡\n原神 画质").run()
     keywords = at.session_state["keywords"]
     assert len(keywords) == 2 and keywords[0] == "原神 抽卡", keywords
+    restore_stale_widget_states(at)
     click_button(at, "下一步 →")
-    assert at.session_state["stage"] == 3
-    print("✓ 阶段2（关键词）通过")
+    assert at.session_state["stage"] == 2
+    print("✓ 阶段1（关键词）通过")
 
-    # 阶段3：默认演示渠道
+    # 阶段2：默认演示渠道
     assert at.session_state["channel_ids"] == ["demo"]
     marks = [m.value for m in at.markdown if m.value]
     assert any("渠道安全" in m for m in marks), "渠道安全设置区未渲染"
     click_button(at, "下一步 →")
-    assert at.session_state["stage"] == 4
+    assert at.session_state["stage"] == 3
     restore_stale_widget_states(at)
-    print("✓ 阶段3（渠道/时间 + 渠道安全设置区）通过")
+    print("✓ 阶段2（渠道/时间 + 渠道安全设置区）通过")
 
-    # 阶段4：提交后台任务
+    # 阶段3：提交后台任务
     click_button(at, "🚀 启动分析")
-    assert at.session_state["stage"] in (5, 6), at.session_state["stage"]
+    assert at.session_state["stage"] in (4, 5), at.session_state["stage"]
     task_id = at.session_state["task_id"]
     assert task_id, "未生成 task_id"
-    print(f"✓ 阶段4 提交任务成功：{task_id}")
+    print(f"✓ 阶段3 提交任务成功：{task_id}")
 
-    # 阶段5：轮询后台执行至完成
+    # 阶段4/5：轮询后台执行至完成
     wait_completed(at)
     assert not at.exception, f"运行异常: {at.exception}"
     bundle = at.session_state["bundle"]
     assert bundle.summary["total_posts"] > 0
     assert bundle.summary["total_items"] > 0
-    assert at.session_state["stage"] == 6
+    assert at.session_state["stage"] == 5
     print(
         f"✓ 后台任务完成：帖子 {bundle.summary['total_posts']} 条，"
         f"编码 {bundle.summary['total_items']} 条"
@@ -182,7 +198,7 @@ def main() -> None:
     # 2.11 起结果页可能多出「导出需复核清单」按钮 → 改为 ≥3
     assert len(at.get("download_button")) >= 3, "缺少即时下载按钮（Excel/HTML/JSON）"
     assert any("Word" in b.label for b in at.button), "缺少 Word 按需生成按钮"
-    assert len(at.metric) == 5
+    assert len(at.metric) == 6  # 2026-08-18：结果页新增「消费者声音占比」指标
     print("✓ 阶段6（结果与下载）通过：Excel / HTML / JSON 即时下载 + Word 按需生成")
 
     # 1.2 历史回看：任务详情 → 一键重跑
@@ -200,40 +216,53 @@ def main() -> None:
 
 
 def test_brand_mode() -> None:
-    """品牌名 + 领域模式：维度确认 → 关键词生成 → 后台分析。"""
+    """品牌 + 模块模式：模块多选 → 维度实时预览 → 关键词（品牌名）→ 后台分析。"""
     at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
     at.run()
     assert not at.exception
     confirm_usage_boundary(at)
 
-    # 阶段0：品牌名 + 游戏领域
-    at.radio[0].set_value("品牌名 + 领域（推荐）").run()
+    # 阶段0：品牌名 + 数字产品模块
+    at.radio[0].set_value("按品牌分析（推荐）").run()
     at.text_input[0].set_value("恋与深空").run()
-    at.selectbox[0].set_value("数字内容产品（如游戏）").run()
+    at.multiselect[0].set_value(["content"]).run()
+    assert at.session_state["domain_id"] == "modules_content", at.session_state.get("domain_id")
+    selected = at.session_state["selected_dims"]
+    assert len(selected) == 5, selected
+    assert "content_quality" in selected
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 1
-    print("✓ 品牌模式 阶段0 通过")
+    print("✓ 品牌模式 阶段0（模块→维度预览→物化组合 schema）通过")
 
-    # 阶段1：维度默认全选，直接下一步
-    selected = at.session_state["selected_dims"]
-    assert len(selected) == 7, selected
+    # 阶段1：关键词只预填品牌名（不生成维度建议词）
+    keywords = at.session_state["keywords"]
+    assert keywords == ["恋与深空"], keywords
+    # 关键词页不再含评测中心进阶入口（2026-08-18 已移至③渠道页）
+    marks = [m.value for m in at.markdown if m.value]
+    assert not any("关键词优化进阶" in m for m in marks), "进阶入口应已移至③渠道页"
+    restore_stale_widget_states(at)
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 2
-    print("✓ 品牌模式 阶段1（维度全选）通过")
+    print("✓ 品牌模式 阶段1（关键词=品牌名 + 评测中心入口）通过")
 
-    # 阶段2：按维度生成的关键词
-    keywords = at.session_state["keywords"]
-    assert len(keywords) >= 20, f"关键词过少: {len(keywords)}"
-    assert keywords[0].startswith("恋与深空"), keywords[0]
+    # 阶段2（渠道页）：选 WebSearch 后出现关键词优化开关（2026-08-18 移入③）
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["demo", "websearch"]).run()
+    toggles = [t.label for t in at.toggle]
+    assert any("WebSearch 关键词优化" in t for t in toggles), f"③页缺优化开关: {toggles}"
+    assert ss(at, "websearch_eval_suffix", True) is True
+    marks3 = [m.value for m in at.markdown if m.value]
+    assert any("关键词优化进阶" in m for m in marks3), "③页缺关键词优化进阶入口"
+    ms.set_value(["demo"]).run()  # 切回 demo，避免测试触发真实网络采集
+    restore_stale_widget_states(at)
+    print("✓ 品牌模式 阶段2（③渠道页含 WebSearch 关键词优化开关）通过")
+
+    # 阶段3/4：确认页并提交后台任务
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 3
-    print(f"✓ 品牌模式 阶段2 通过（自动生成 {len(keywords)} 个关键词）")
-
-    # 阶段3/4：默认演示渠道并提交后台任务
-    click_button(at, "下一步 →")
     restore_stale_widget_states(at)
     click_button(at, "🚀 启动分析")
-    assert at.session_state["stage"] in (5, 6)
+    assert at.session_state["stage"] in (4, 5)
     wait_completed(at)
     assert not at.exception
     bundle = at.session_state["bundle"]
@@ -243,6 +272,161 @@ def test_brand_mode() -> None:
         f"✓ 品牌模式 全流程通过：帖子 {bundle.summary['total_posts']} 条，"
         f"维度统计 {len(bundle.summary['dimensions'])} 个"
     )
+
+
+def test_module_combo_dim_cap() -> None:
+    """模块组合维度上限：实物+服务=11 维 → 阻塞下一步；裁剪到 ≤10 后放行。"""
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+
+    at.radio[0].set_value("按品牌分析（推荐）").run()
+    at.text_input[0].set_value("华润万家").run()
+    at.multiselect[0].set_value(["physical", "service"]).run()
+    assert at.session_state["domain_id"] == "modules_physical_service"
+    dims = at.session_state["selected_dims"]
+    assert len(dims) == 11, f"实物+服务组合应为 11 维: {len(dims)}"
+    # 超限：下一步被阻塞（stage 保持 0）
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 0, "超 10 维不应放行"
+    assert any("超过上限" in e.value for e in at.error), "缺少超限提示"
+    print("✓ 模块组合 11 维被阻塞（强制 ≤10）")
+
+    # 裁剪到 10 维后放行
+    dim_ms = next(m for m in at.multiselect if m.label.startswith("选择要分析的维度"))
+    dim_ms.set_value(dims[:10]).run()
+    assert len(at.session_state["selected_dims"]) == 10
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 1
+    print("✓ 模块组合裁剪到 10 维后放行")
+
+
+def test_custom_dimension_ui() -> None:
+    """2.8 UI 冒烟：① 自定义维度解析/校验拦截；侧边栏无相关性复核开关；确认页摘要。"""
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+
+    # 侧边栏：LLM 相关性复核独立开关已移除（随 LLM 自动开启）
+    toggles = [t.label for t in at.toggle]
+    assert not any("相关性复核" in t for t in toggles), f"相关性复核开关应移除: {toggles}"
+
+    # ① 品牌模式：非法自定义维度 → 校验错误 + 下一步拦截
+    at.radio[0].set_value("按品牌分析（推荐）").run()
+    at.text_input[0].set_value("华润万家").run()
+    at.multiselect[0].set_value(["physical"]).run()
+    at.text_area[0].set_value("没有冒号").run()
+    assert at.session_state["custom_dim_errors"], "非法格式应报错"
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 0, "非法自定义维度不应放行"
+    print("✓ 2.8 ① 页非法自定义维度拦截 通过")
+
+    # 合法格式 → 解析成功并放行
+    at.text_area[0].set_value("联名活动：联名,IP,周边\n物流体验：发货,快递,物流").run()
+    cds = at.session_state["custom_dimensions"]
+    assert len(cds) == 2 and cds[0].name == "联名活动" and cds[0].keywords[:2] == ["联名", "IP"]
+    assert cds[1].name == "物流体验"
+    assert not at.session_state["custom_dim_errors"]
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 1
+    print("✓ 2.8 ① 页自定义维度解析 + 放行 通过")
+
+    # ② 关键词 → ③ 渠道 → ④ 确认页：摘要含自定义维度行
+    restore_stale_widget_states(at)
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 2
+    restore_stale_widget_states(at)
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 3
+    tables = [str(t.value) for t in at.table]
+    assert any("自定义维度" in t and "联名活动" in t for t in tables), "确认页缺自定义维度行"
+    assert any("LLM 相关性复核" in t for t in tables), "确认页缺相关性复核行"
+    print("✓ 2.8 确认页摘要（自定义维度行）通过")
+
+
+def test_channel_strategy_ui() -> None:
+    """其他渠道关键词优化（Phase 0）：④渠道页开关 → 确认页渠道查询数行。"""
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+
+    at.radio[0].set_value("手动关键词（不分类）").run()
+    click_button(at, "下一步 →")
+    at.text_area[0].set_value("恋与深空 评价").run()
+    restore_stale_widget_states(at)
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 2
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["weibo"]).run()
+    # ④渠道页：仅微博关键词优化开关存在（B站/小红书不展示，2026-08-19）
+    toggles = [t.label for t in at.toggle]
+    assert any("微博 关键词优化" in t for t in toggles), f"缺微博优化开关: {toggles}"
+    assert not any(("B站 关键词优化" in t) or ("小红书 关键词优化" in t)
+                   for t in toggles), f"不应展示 B站/小红书优化开关: {toggles}"
+    wb = next(t for t in at.toggle if "微博 关键词优化" in t.label)
+    wb.set_value(True).run()
+    assert ss(at, "kwopt_weibo") is True
+    restore_stale_widget_states(at)
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 3
+    tables = [str(t.value) for t in at.table]
+    # 恋与深空命中微博策略 5 词 → 展开为 5 个查询串
+    assert any("渠道查询数（策略展开）" in t and "weibo 5" in t for t in tables), \
+        "确认页缺渠道查询数行"
+    print("✓ 其他渠道关键词优化：④开关 + 确认页渠道查询数 通过")
+
+
+def test_need_review_refresh_ui() -> None:
+    """2.11 方案 A：结果页需复核强提示 + 一键确认并刷新报告（summary 落盘）。"""
+    time.sleep(1.0)  # 等 worker 完成注册（避免空库首连竞态锁）
+    plan = build_plan(
+        subject="复核冒烟", domain_id=None, dimension_ids=[],
+        keyword_groups=[], manual_keywords=["复核 评价"],
+        channel_ids=["demo"], date_start=None, date_end=None,
+        per_keyword_limit=5, comments_enabled=False,
+        comments_per_post=0, llm_enabled=False, channel_params={},
+    )
+    tid = jobs.submit_task(plan)
+    deadline = time.time() + 120
+    t = None
+    while time.time() < deadline:
+        t = jobs.get_task(tid)
+        if t and t["status"] == jobs.STATUS_COMPLETED:
+            break
+        time.sleep(0.2)
+    assert t and t["status"] == jobs.STATUS_COMPLETED, (t or {}).get("error")
+    # 注入 2 条需复核标记（模拟难例），再打开结果页
+    rp = Path(t["output_dir"]) / "result.json"
+    data = json.loads(rp.read_text(encoding="utf-8"))
+    for it in data.get("coded_items", [])[:2]:
+        it["need_review"] = True
+        it["need_review_reason"] = "低置信(conf=0.30)"
+        it["reviewed_by"] = ""
+    rp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+    click_button_key(at, f"task_view_{tid}")
+    assert at.session_state["stage"] == 5
+    warns = [str(w.value) for w in at.warning]
+    assert any("需复核样本未确认" in w for w in warns), f"缺需复核强提示: {warns}"
+    click_button_key(at, f"nr_all_{tid}")
+    assert not at.exception, [str(e) for e in at.exception]
+    bundle = at.session_state["bundle"]
+    unreviewed = [
+        it for it in bundle.coded_items
+        if it.need_review and not it.reviewed_by
+    ]
+    assert not unreviewed, "一键确认后不应有未复核样本"
+    assert bundle.summary.get("consumer_voice"), "刷新后 summary 应含 consumer_voice"
+    data2 = json.loads(rp.read_text(encoding="utf-8"))
+    assert "consumer_voice" in data2.get("summary", {}), "result.json 未落盘新 summary"
+    print("✓ 结果页需复核强提示 + 一键确认并刷新报告 通过")
 
 
 def test_websearch_confirmation_page() -> None:
@@ -257,15 +441,14 @@ def test_websearch_confirmation_page() -> None:
     assert not at.exception
     confirm_usage_boundary(at)
 
-    # 手动关键词模式 → 阶段3（渠道选择）
-    at.radio[0].set_value("手动输入关键词").run()
-    at.text_area[0].set_value("华润万家 评价\n华润万家 服务").run()
+    # 手动关键词模式 → 阶段1（关键词）→ 阶段2（渠道选择）
+    at.radio[0].set_value("手动关键词（不分类）").run()
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 1
+    at.text_area[0].set_value("华润万家 评价\n华润万家 服务").run()
+    restore_stale_widget_states(at)
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 2
-    click_button(at, "下一步 →")
-    assert at.session_state["stage"] == 3
 
     # 勾选 WebSearch 渠道（multiselect 的 option 即渠道 id）
     ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
@@ -274,7 +457,7 @@ def test_websearch_confirmation_page() -> None:
 
     # 进入确认页：修复前此处抛 NameError（红屏）
     click_button(at, "下一步 →")
-    assert at.session_state["stage"] == 4
+    assert at.session_state["stage"] == 3
     assert not at.exception, f"确认页异常: {at.exception}"
     restore_stale_widget_states(at)
 
@@ -401,7 +584,7 @@ def test_review_ui_flow() -> None:
     assert target["url"] in t2["excluded_urls"], "剔除清单未保存"
     wait_completed(at)
     assert not at.exception
-    assert ss(at, "stage") == 6
+    assert ss(at, "stage") == 5
     print("✓ 人工筛选 UI：审核页 → 勾选 → 续跑完成 通过")
 
 
@@ -428,12 +611,12 @@ def test_channel_diag_panel() -> None:
         at.run()
         assert not at.exception
         confirm_usage_boundary(at)
-        at.radio[0].set_value("手动输入关键词").run()
+        at.radio[0].set_value("手动关键词（不分类）").run()
+        click_button(at, "下一步 →")
         at.text_area[0].set_value("大疆 评价").run()
+        restore_stale_widget_states(at)
         click_button(at, "下一步 →")
-        click_button(at, "下一步 →")
-        click_button(at, "下一步 →")
-        assert at.session_state["stage"] == 3
+        assert at.session_state["stage"] == 2
         ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
         ms.set_value([
             "demo", "websearch", "websearch_zhihu",
@@ -465,18 +648,18 @@ def test_ad_wizard_smoke() -> None:
     at.run()
     assert not at.exception
     confirm_usage_boundary(at)
-    at.radio[0].set_value("手动输入关键词").run()
+    at.radio[0].set_value("手动关键词（不分类）").run()
+    click_button(at, "下一步 →")
     at.text_area[0].set_value("大疆 评价").run()
+    restore_stale_widget_states(at)
     click_button(at, "下一步 →")
-    click_button(at, "下一步 →")
-    click_button(at, "下一步 →")
-    assert at.session_state["stage"] == 3
+    assert at.session_state["stage"] == 2
     ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
     ms.set_value(["demo"]).run()
     mode_radio = next(r for r in at.radio if r.key == "ad_review_mode")
     assert len(mode_radio.options) == 3, "缺少广告/官方与人工复核三选控件"
     click_button(at, "下一步 →")
-    assert at.session_state["stage"] == 4
+    assert at.session_state["stage"] == 3
     tables = [str(t.value) for t in at.table]
     assert any("广告/官方与人工复核" in t and "自动（广告计入统计）" in t for t in tables)
     assert not at.exception, f"确认页异常: {at.exception}"
@@ -488,6 +671,10 @@ if __name__ == "__main__":
     try:
         main()
         test_brand_mode()
+        test_module_combo_dim_cap()
+        test_custom_dimension_ui()
+        test_channel_strategy_ui()
+        test_need_review_refresh_ui()
         test_websearch_confirmation_page()
         test_failed_task_error_view()
         test_review_ui_flow()

@@ -63,6 +63,10 @@ def run_once(
 
 
 def report_aggregate(brand: str) -> None:
+    def _qeff(r: dict) -> float | None:
+        q = r.get("quality_effective_rate")
+        return q if q is not None else r["effective_rate"]
+
     hist = ke.load_history()
     agg = ke.aggregate_unique(hist)
     rows = [
@@ -77,11 +81,13 @@ def report_aggregate(brand: str) -> None:
         print(f"⚠ 去重口径：{len(agg['dedup_missing'])} 个旧任务无 URL 明细已排除"
               f"（运行 python app/core/keyword_effects.py --rescan 补齐）")
     print("（已按 URL 跨任务去重：同一内容只计一次，重复测量不放大样本）")
-    print(f"{'查询串':<22}{'采集':>5}{'保留':>5}{'丢弃':>5}{'有效供给率':>9}  样本")
+    print(f"{'查询串':<22}{'采集':>5}{'保留':>5}{'丢弃':>5}{'有效供给率':>9}  样本"
+          f"（有效供给率 = 质量口径：采集层丢弃不计）")
     bare = []
     extras = []
     for r in sorted(rows, key=lambda x: -x["collected"]):
-        eff = f"{r['effective_rate']:.1%}" if r["effective_rate"] is not None else "-"
+        eff_rate = _qeff(r)
+        eff = f"{eff_rate:.1%}" if eff_rate is not None else "-"
         ref = "参考" if r["collected"] < ke.REF_N else "OK"
         print(f"{r['query'][:20]:<22}{r['collected']:>5}{r['kept']:>5}"
               f"{r['dropped']:>5}{eff:>9}  {ref}")
@@ -91,20 +97,23 @@ def report_aggregate(brand: str) -> None:
             extras.append(r)
     if bare:
         b = bare[0]
+        beff = _qeff(b)
         print(f"\n同查询串「{brand} 评价」：采集 {b['collected']} / 保留 {b['kept']} / "
-              f"有效供给率 {b['effective_rate']:.1%} / 丢弃率 "
+              f"有效供给率（质量口径）{beff:.1%} / 丢弃率 "
               f"{b['dropped'] / b['collected']:.1%}"
               f"{'（n≥30，可用）' if b['collected'] >= ke.REF_N else '（n<30 参考）'}")
     if extras:
         c = sum(r["collected"] for r in extras)
         k = sum(r["kept"] for r in extras)
-        print(f"新增查询串合计：采集 {c} / 保留 {k} / 有效供给率 {k / c:.1%}"
+        print(f"新增查询串合计：采集 {c} / 保留 {k} / 有效供给率（质量口径）{k / c:.1%}"
               f"{'（n≥30，可用）' if c >= ke.REF_N else '（n<30 参考）'}")
-        below = [r for r in extras
-                 if r["effective_rate"] is not None and r["effective_rate"] < 0.80]
+        below = [
+            r for r in extras
+            if _qeff(r) is not None and _qeff(r) < 0.80
+        ]
         if below:
             print("  未达 80% 门槛的新增词：",
-                  "、".join(f"{r['query']}({r['effective_rate']:.0%})" for r in below))
+                  "、".join(f"{r['query']}({_qeff(r):.0%})" for r in below))
         low = [r for r in extras if r["collected"] < ke.REF_N]
         if low:
             print("  仍为参考级的单个新增词：",

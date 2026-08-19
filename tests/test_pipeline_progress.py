@@ -48,7 +48,7 @@ class FakeLLM(OpenAICompatibleAnalyzer):
             for _ in texts
         ]
 
-    def generate_insights(self, descriptors):
+    def generate_insights(self, descriptors, evidence=None, summary=None):
         return {
             "chart_insights": {
                 cid: f"{cid} 图表解析（测试）"
@@ -59,6 +59,14 @@ class FakeLLM(OpenAICompatibleAnalyzer):
                 ]
             },
             "conclusion": "测试深度结论：按责任归因与冲突框架给出行动建议。",
+            "findings": [
+                {
+                    "id": "F1",
+                    "claim": "测试发现：负面集中在价格维度（n=10）",
+                    "evidence_refs": [e["id"] for e in (evidence or [])][:1],
+                    "action": "建议品牌方在微博渠道核对价格相关反馈，详见 F1。",
+                }
+            ],
         }
 
 
@@ -377,6 +385,9 @@ def test_llm_and_narrative_progress() -> None:
     assert any(it.narrative for it in bundle.coded_items), "缺少叙事分析结果"
     assert bundle.chart_insights and len(bundle.chart_insights) == 12, "缺少图表解析"
     assert bundle.conclusion, "缺少深度结论"
+    assert bundle.findings, "LLM 模式应产出 findings"
+    assert bundle.insight_mode == "llm", f"LLM 模式 insight_mode 应为 llm，实际 {bundle.insight_mode}"
+    assert bundle.evidence, "LLM 模式应有证据卡供 findings 引用"
     print("✓ LLM + 叙事/归因双阶段进度单调，图表解析与深度结论完整")
 
 

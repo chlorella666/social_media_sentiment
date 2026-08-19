@@ -9,28 +9,11 @@ import re
 import pandas as pd
 
 from app.core.models import ReportBundle
-from app.core.names import dimension_cn
+from app.core.names import ATTRIBUTION_CN, NARRATIVE_CN, dimension_cn
 from app.coding.coder import display_confidence, display_confidence_tier
-from app.domains.loader import load_domain
+from app.core.names import register_custom_dim_names
+from app.domains.loader import task_schema
 from app.output.html_report import keyword_rows, query_rows
-
-NARRATIVE_CN = {
-    "conflict": "冲突",
-    "human_interest": "人情味",
-    "attribution": "归因",
-    "economic": "经济后果",
-    "morality": "道德",
-}
-ATTRIBUTION_CN = {
-    "government": "政府",
-    "enterprise": "企业",
-    "individual": "个人",
-    "system": "制度",
-    "technology": "技术",
-    "society": "社会",
-    "nature": "自然",
-    "unclear": "不明确",
-}
 
 SENTIMENT_CN = {
     "positive": "正面",
@@ -107,12 +90,10 @@ def _comments_rows(bundle: ReportBundle) -> list[dict]:
 def _simple_rows(bundle: ReportBundle) -> list[dict]:
     """小白视图：字段全部用中文人话，去掉内部加工痕迹，保留可溯源内容。"""
     dim_names: dict[str, str] = {}
-    if bundle.plan.domain_id:
-        try:
-            schema = load_domain(bundle.plan.domain_id)
-            dim_names = {d.id: d.name for d in schema.dimensions}
-        except FileNotFoundError:
-            pass
+    register_custom_dim_names(bundle.plan)
+    schema = task_schema(bundle.plan)
+    if schema:
+        dim_names = {d.id: d.name for d in schema.dimensions}
 
     def _norm(t: str) -> str:
         # 编码管道会把换行/空格规整为逗号，映射时按同样规则归一
@@ -181,12 +162,10 @@ def _simple_rows(bundle: ReportBundle) -> list[dict]:
 
 def _coded_rows(bundle: ReportBundle) -> list[dict]:
     dim_names: dict[str, str] = {}
-    if bundle.plan.domain_id:
-        try:
-            schema = load_domain(bundle.plan.domain_id)
-            dim_names = {d.id: d.name for d in schema.dimensions}
-        except FileNotFoundError:
-            pass
+    register_custom_dim_names(bundle.plan)
+    schema = task_schema(bundle.plan)
+    if schema:
+        dim_names = {d.id: d.name for d in schema.dimensions}
 
 def _note(it) -> str:
     notes = []
@@ -285,7 +264,7 @@ def _summary_frames(bundle: ReportBundle) -> list[tuple[str, pd.DataFrame]]:
                     {"字段": "已采集评论数", "说明": "原始数据中的平台评论总数来自平台字段；实际采集按每帖上限抓取热门评论"},
                     {"字段": "丢弃明细", "说明": "清洗阶段被排除的帖子及原因（官方页面/样板文本/重复/不相关等）"},
                     {"字段": "关键词效果", "说明": "按确认关键词统计采集/保留/丢弃/有效供给率（保留÷采集），与 HTML/Word 报告口径一致"},
-                    {"字段": "实际查询串（WebSearch）", "说明": "系统实际发给搜索引擎的查询词（确认词+子渠道提示+自动后缀），仅 WebSearch；可核对'实际搜了什么'"},
+                    {"字段": "实际查询串（按渠道）", "说明": "系统实际发给各渠道的查询词（WebSearch：确认词+子渠道提示+自动后缀；B站/微博/小红书：策略展开）；可核对'实际搜了什么'"},
                 ]
             ),
         )
@@ -318,7 +297,7 @@ def _summary_frames(bundle: ReportBundle) -> list[tuple[str, pd.DataFrame]]:
     if q_rows:
         frames.append(
             (
-                "实际查询串（WebSearch）",
+                "实际查询串（按渠道）",
                 pd.DataFrame(
                     [
                         {

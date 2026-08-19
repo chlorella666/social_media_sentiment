@@ -240,6 +240,10 @@ def _write_snapshot(task_id: str, plan, res: dict) -> Path:
         "step_snapshot": res["tracker_snapshot"],
         "posts": posts,
         "drops": drops,
+        "collection_stats": {
+            ch.channel_id: ch.collection_stats
+            for ch in res["channel_results"]
+        },
         "warnings": res["warnings"],
     }
     (out_dir / "collection_snapshot.json").write_text(
@@ -271,6 +275,7 @@ def _apply_exclusions(snapshot: dict, task: dict[str, Any]):
                     "url": p["url"],
                     "title": title,
                     "reason": f"人工筛选：帖子不相关（{len(comments)} 条评论随帖剔除）",
+                    "kind": "quality",
                 }
             )
             continue
@@ -282,6 +287,7 @@ def _apply_exclusions(snapshot: dict, task: dict[str, Any]):
                     "url": p["url"],
                     "title": title,
                     "reason": f"人工筛选：评论不相关（剔除 {len(comments) - len(kept_comments)} 条）",
+                    "kind": "quality",
                 }
             )
         kept_posts.append(
@@ -311,13 +317,17 @@ def _apply_exclusions(snapshot: dict, task: dict[str, Any]):
     for p in kept_posts:
         by_platform.setdefault(p.platform, []).append(p)
     base_drops = snapshot.get("drops") or []
+    stats_by_channel = snapshot.get("collection_stats") or {}
     channel_results: list[ChannelResult] = []
     for pid, plist in by_platform.items():
         kept_urls = {p.url for p in plist}
         drops = [d for d in base_drops if d.get("platform") == pid or d.get("url") in kept_urls]
         drops.extend(d for d in manual_drops if d["platform"] == pid)
         channel_results.append(
-            ChannelResult(channel_id=pid, ok=True, posts=plist, dropped=drops)
+            ChannelResult(
+                channel_id=pid, ok=True, posts=plist, dropped=drops,
+                collection_stats=stats_by_channel.get(pid) or {},
+            )
         )
     warnings = list(snapshot.get("warnings") or [])
     return kept_posts, channel_results, warnings

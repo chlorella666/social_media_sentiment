@@ -8,8 +8,14 @@
 from __future__ import annotations
 
 from app.coding.llm_analyzer import OpenAICompatibleAnalyzer
-from app.coding import lexicon_v2
 from app.core.models import AnalysisPlan
+from app.core.evidence import (
+    MIN_DIM_NORMAL,
+    MIN_DIM_RATING,
+    build_findings,
+    filter_llm_findings,
+    findings_to_conclusion,
+)
 from app.core.names import dimension_cn, platform_cn
 
 CHART_IDS = [
@@ -54,8 +60,7 @@ def build_descriptors(summary: dict) -> dict:
         "dimensions": (
             "各维度评价量与负面率："
             + "；".join(
-                f"{dimension_cn(did)} 讨论 {v['count']} 条、"
-                f"负面率 {v['negative_rate'] * 100:.1f}%"
+                _dimension_rate_text(did, v)
                 for did, v in sorted(dims.items(), key=lambda kv: -kv[1]["count"])
             )
             if dims
@@ -131,16 +136,35 @@ def _intensity_descriptor(intensity: dict) -> str:
     )
 
 
+def _dimension_rate_text(did: str, v: dict) -> str:
+    """n 守卫（两档）：n<3 不评级；3≤n<10 标样本有限。"""
+    count = v["count"]
+    if count < MIN_DIM_RATING:
+        return f"{dimension_cn(did)} 讨论 {count} 条（样本不足，不评级）"
+    rate = v["negative_rate"] * 100
+    marker = "" if count >= MIN_DIM_NORMAL else "，样本有限"
+    return f"{dimension_cn(did)} 讨论 {count} 条、负面率 {rate:.1f}%{marker}"
+
+
+def _valid_dims(dims: dict) -> list[tuple[str, dict]]:
+    """n>=MIN_DIM_RATING 的维度（用于"最差/最高"评选）。"""
+    return [(d, v) for d, v in dims.items() if v["count"] >= MIN_DIM_RATING]
+
+
 def _radar_descriptor(dims: dict) -> str:
     if not dims:
         return "无维度数据"
-    worst = max(dims.items(), key=lambda kv: kv[1]["negative_rate"])
-    best = min(dims.items(), key=lambda kv: kv[1]["negative_rate"])
+    valid = _valid_dims(dims)
+    if not valid:
+        return "各维度样本均不足（n<3），负面率最高/最低未评级"
+    worst = max(valid, key=lambda kv: kv[1]["negative_rate"])
+    best = min(valid, key=lambda kv: kv[1]["negative_rate"])
     return (
         f"维度负面率雷达显示：负面率最高为「{dimension_cn(worst[0])}」"
         f"（{worst[1]['negative_rate'] * 100:.1f}%），"
         f"最低为「{dimension_cn(best[0])}」（{best[1]['negative_rate'] * 100:.1f}%），"
-        f"共 {len(dims)} 个维度，分布{'失衡' if worst[1]['negative_rate'] > 0.5 else '相对均衡'}"
+        f"共 {len(valid)} 个可评级维度（n≥3），"
+        f"分布{'失衡' if worst[1]['negative_rate'] > 0.5 else '相对均衡'}"
     )
 
 
@@ -149,14 +173,14 @@ def _platform_dim_descriptor(pd_data: dict) -> str:
         return "无平台×维度数据"
     rows = []
     for platform, dims in pd_data.items():
-        valid = [(d, v) for d, v in dims.items() if v["count"] > 0]
+        valid = [(d, v) for d, v in dims.items() if v["count"] >= MIN_DIM_RATING]
         if valid:
             d, v = max(valid, key=lambda kv: kv[1]["negative_rate"])
             rows.append(
                 f"{platform_cn(platform)} 的「{dimension_cn(d)}」"
                 f"负面率 {v['negative_rate'] * 100:.1f}%"
             )
-    return "各平台负面率最高维度：" + "；".join(rows[:5]) if rows else "无数据"
+    return "各平台负面率最高维度：" + "；".join(rows[:5]) if rows else "各平台×维度样本均不足（n<3），未评级"
 
 
 def _date_dim_descriptor(dd_data: dict) -> str:
@@ -166,10 +190,10 @@ def _date_dim_descriptor(dd_data: dict) -> str:
         (d, dim, v)
         for d, dims in dd_data.items()
         for dim, v in dims.items()
-        if v["count"] > 0
+        if v["count"] >= MIN_DIM_RATING
     ]
     if not cells:
-        return "无数据"
+        return "日期×维度样本均不足（n<3），未评级"
     cells.sort(key=lambda c: -c[2]["negative_rate"])
     top = cells[:3]
     return "负面率最高的日期×维度：" + "；".join(
@@ -202,7 +226,10 @@ def _trend_descriptor(trend: dict) -> str:
 
 
 def _heatmap_descriptor(dims: dict) -> str:
-    worst = max(dims.items(), key=lambda kv: kv[1]["negative_rate"])
+    valid = _valid_dims(dims)
+    if not valid:
+        return "维度样本均不足（n<3），负面率最高维度未评级"
+    worst = max(valid, key=lambda kv: kv[1]["negative_rate"])
     return (
         f"负面率最高维度为「{dimension_cn(worst[0])}」"
         f"（{worst[1]['negative_rate'] * 100:.1f}%），"
@@ -210,30 +237,30 @@ def _heatmap_descriptor(dims: dict) -> str:
     )
 
 
-def template_insights(descriptors: dict) -> dict:
-    """无 LLM 时的模板解析与结论（数字驱动，逻辑清晰）。"""
+def template_chart_insights(descriptors: dict) -> dict:
+    """无 LLM / 兜底时的图表解析（数字驱动；不出现强动作建议措辞）。"""
     d = lambda key: descriptors.get(key, "暂无数据")  # noqa: E731
     ci = {
         "overall": (
             f"整体分布显示{d('overall')}。"
             "若负面占比明显偏高，说明当前口碑存在集中性问题；若以中性为主，"
-            "则话题讨论多处于观望阶段，需要更多有效内容驱动认知。"
+            "则话题讨论多处于观望阶段（开启 LLM 精分析可获得更具体归因）。"
         ),
         "platform": (
             f"平台对比显示：{d('platform')}。"
-            "内容量大的平台是舆论主阵地，平均分低的平台应优先排查口碑问题。"
+            "内容量大的平台是舆论主阵地，平均分低的平台可作为重点关注方向。"
         ),
         "trend": (
             f"时间趋势显示：{d('trend')}。"
-            "若后段情感分下滑或负面量抬升，需结合当时的营销/事件节点定位诱因。"
+            "若后段情感分下滑或负面量抬升，可结合当时的营销/事件节点排查诱因。"
         ),
         "dimensions": (
             f"维度分布显示：{d('dimensions')}。"
-            "评价量高且负面率高的维度是核心风险点，建议优先整改。"
+            "评价量高且负面率高的维度是核心风险点，建议作为后续关注重点。"
         ),
         "heatmap": (
             f"负面率热力显示：{d('heatmap')}。"
-            "该维度应作为下一阶段舆情跟踪与产品/服务改进的重点。"
+            "该维度可作为下一阶段舆情跟踪与产品/服务改进的重点方向。"
         ),
         "words": (
             f"高频词显示：{d('words')}。"
@@ -241,7 +268,7 @@ def template_insights(descriptors: dict) -> dict:
         ),
         "intensity": (
             f"强度分布显示：{d('intensity')}。"
-            "强情绪占比高说明讨论带有明确立场，事件烈度高，建议加快响应节奏；"
+            "强情绪占比高说明讨论带有明确立场，事件烈度高，可关注响应节奏；"
             "以温和情绪为主则更适合长效口碑建设。"
         ),
         "radar": (
@@ -250,37 +277,85 @@ def template_insights(descriptors: dict) -> dict:
         ),
         "platform_dim": (
             f"平台×维度显示：{d('platform_dim')}。"
-            "定位到具体平台的具体维度槽点后，可交由对应渠道运营团队定向处理。"
+            "可结合具体平台与维度的原文样本进一步确认问题场景"
+            "（开启 LLM 精分析可获得可归因的结论与建议）。"
         ),
         "date_dim": (
             f"日期×维度显示：{d('date_dim')}。"
-            "若负面集中在特定日期，说明与当时的营销/事件节点强相关，建议复盘该节点。"
+            "若负面集中在特定日期，说明与当时的营销/事件节点可能相关，可复盘该节点。"
         ),
         "wordcloud": (
             f"内容高频词显示：{d('wordcloud')}。"
             "主题词集中在产品/体验相关词时，说明讨论围绕实际使用；集中在营销词时说明认知主要来自传播。"
         ),
         "cooccurrence": (
-            f"共现网络显示：{d('cooccurrence')}。"
+            f"情绪来源与讨论结构显示：{d('cooccurrence')}。"
             "共现密集的词对构成核心讨论主题，可据此提炼用户最关心的话题组合。"
         ),
     }
+    return ci
+
+
+def template_insights(descriptors: dict) -> dict:
+    """兼容旧入口：图表解析 + 兜底结论（无 summary/evidence 时使用）。"""
+    ci = template_chart_insights(descriptors)
     conclusion = (
-        "综合各图表信息：整体舆论以中性/正面为主，但存在负面集中维度，"
-        "按叙事框架给出如下结论与建议：\n"
-        "1. 责任归因：负面率最高的维度最可能指向企业责任，建议尽快定位具体场景并给出官方回应；\n"
-        "2. 冲突框架：若负面评论涉及消费者与品牌对立，应避免争论，用事实与补偿方案化解；\n"
-        "3. 人情味框架：正面体验分享是稀缺的 UGC 素材，可筛选真实好评作为传播内容；\n"
-        "4. 经济后果：负面讨论集中在价格/价值维度时，需评估定价与促销策略对口碑的影响；\n"
-        "5. 道德框架：若出现安全/诚信类关键词（食品安全、虚假宣传等），属于最高优先级危机信号，需立即响应。\n"
-        "建议扩大采集范围复测，验证以上结论的稳定性。"
+        "结论基于词典/规则模板生成，仅供参考；"
+        "开启 LLM 精分析可获得可归因的结论与行动建议。"
     )
     return {"chart_insights": ci, "conclusion": conclusion}
 
 
-def build_insights(analyzer, plan: AnalysisPlan, summary: dict) -> dict:
-    """生成图表解析 + 深度结论：LLM 优先，模板兜底。"""
+def build_report_content(
+    analyzer,
+    plan: AnalysisPlan,
+    summary: dict,
+    evidence: list[dict] | None = None,
+) -> dict:
+    """统一报告内容入口：图表解析 + findings + conclusion + insight_mode。
+
+    - LLM 模式：LLM 在给定证据上写发现（P1.5），结构校验不过则规则兜底；
+    - 词典模式：规则 findings（不再尝试 LLM、不再落静态模板）。
+    """
+    evidence = evidence or []
     descriptors = build_descriptors(summary)
     if isinstance(analyzer, OpenAICompatibleAnalyzer):
-        return analyzer.generate_insights(descriptors)
-    return template_insights(descriptors)
+        try:
+            out = analyzer.generate_insights(descriptors, evidence, summary)
+        except TypeError:  # 兼容旧签名（测试 fake / 历史子类）
+            try:
+                out = analyzer.generate_insights(descriptors, evidence)
+            except TypeError:
+                out = analyzer.generate_insights(descriptors)
+        chart_insights = out.get("chart_insights") or {}
+        findings, dropped = filter_llm_findings(out.get("findings") or [], evidence)
+        if not findings:
+            findings = build_findings(evidence, summary, mode="fallback")
+            mode = "template_fallback"
+            conclusion = findings_to_conclusion(findings)
+        else:
+            mode = "llm"
+            if dropped:
+                conclusion = findings_to_conclusion(findings)
+            else:
+                conclusion = out.get("conclusion") or findings_to_conclusion(findings)
+        return {
+            "chart_insights": chart_insights,
+            "conclusion": conclusion,
+            "findings": findings,
+            "insight_mode": mode,
+        }
+    # 词典模式（MockAnalyzer / 无 Key）：规则 findings，零新增 LLM
+    ci = template_chart_insights(descriptors)
+    findings = build_findings(evidence, summary, mode="lexicon")
+    return {
+        "chart_insights": ci,
+        "conclusion": findings_to_conclusion(findings),
+        "findings": findings,
+        "insight_mode": "lexicon",
+    }
+
+
+def build_insights(analyzer, plan: AnalysisPlan, summary: dict) -> dict:
+    """兼容壳：旧调用方无 items/evidence 时退化为空证据。"""
+    return build_report_content(analyzer, plan, summary, [])

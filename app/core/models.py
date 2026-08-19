@@ -66,6 +66,7 @@ class AnalysisPlan(BaseModel):
     subject: str  # 品牌/产品名或核心主题
     domain_id: Optional[str] = None
     dimensions: list[str] = Field(default_factory=list)  # 选中的维度 id
+    custom_dimensions: list[Dimension] = Field(default_factory=list)  # 2.8 任务级自定义维度
     keyword_groups: list[KeywordGroup] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)  # 平铺关键词（含手输）
     channels: list[ChannelConfig] = Field(default_factory=list)
@@ -125,6 +126,9 @@ class ChannelResult(BaseModel):
     ok: bool
     posts: list[Post] = Field(default_factory=list)
     dropped: list[dict] = Field(default_factory=list)  # 清洗丢弃记录（含原因）
+    # 采集透明度（2026-08-18）：采集层统计（API 返回/各原因跳过/保留），
+    # 供报告"采集说明"解释"为什么没采满"；旧任务缺失时为空、向后兼容
+    collection_stats: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
     degraded: bool = False  # 自动降级标记
     risk: bool = False  # 2026-08-16：风控即停标记（保留已采部分，跳过补采，触发冷却）
@@ -202,6 +206,13 @@ class ReportBundle(BaseModel):
     report_text: str = ""  # 结论与建议（LLM 生成或模板兜底）
     chart_insights: dict[str, str] = Field(default_factory=dict)  # 每张图表的解析文字
     conclusion: str = ""  # 按叙事框架的深度结论与建议
+    # 报告证据链（v0.20.0，报告证据链优化方案）：均向后兼容，旧 result.json 缺失时为空
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    # 结论区数据源（LLM 或规则生成）：[{id, claim, evidence_refs, action, narrative_label?}]
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    # 证据卡数据源（规则抽取）：[{id, text, platform, date, keyword, dimension,
+    #   dimension_name, topic?, sentiment, judge, need_review, n, score, intensity, text_id}]
+    insight_mode: str = ""  # llm | lexicon | template_fallback | review_refresh | no_data
     llm_usage: dict = Field(default_factory=dict)  # {"prompt_tokens","completion_tokens","estimated_cost"}
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)

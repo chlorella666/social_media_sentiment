@@ -201,14 +201,23 @@ class XiaohongshuChannel(ChannelAdapter):
             return degraded_result(self.id, str(exc))
 
         posts: list[Post] = []
+        dropped_records: list[dict] = []  # 采集层丢弃（透明度，2026-08-18）
+        stats: dict[str, int] = {
+            "requested_limit": 0, "api_returned_cards": 0, "mblog_cards": 0,
+            "skipped_other_type": 0, "skipped_dup": 0, "skipped_ad": 0,
+            "skipped_out_of_range": 0, "kept": 0,
+        }
         seen_urls: set[str] = set(skip_urls or ())
         first_error = ""
-        keywords = plan.keywords or [plan.subject]
+        # 2026-08-18：渠道策略展开后的查询串优先（channel_params.queries）
+        cfg = next((c for c in plan.channels if c.channel_id == self.id), None)
+        keywords = (cfg.params.get("queries") if cfg else None) \
+            or plan.keywords or [plan.subject]
         limit = plan.per_keyword_limit
-        for channel in plan.channels:
-            if channel.channel_id == self.id:
-                limit = int(channel.params.get("limit") or limit)
+        if cfg:
+            limit = int(cfg.params.get("limit") or limit)
         limit = min(limit, MAX_LIMIT)
+        stats["requested_limit"] = limit
 
         for idx, keyword in enumerate(keywords):
             if cancel_event and cancel_event.is_set():
@@ -222,6 +231,7 @@ class XiaohongshuChannel(ChannelAdapter):
                     return ChannelResult(
                         channel_id=self.id, ok=False, posts=posts,
                         error=f"风控停止：{exc}", degraded=True, risk=True,
+                        dropped=dropped_records, collection_stats=stats,
                     )
                 first_error = first_error or f"关键词「{keyword}」搜索失败：{exc}"
                 if on_progress:
@@ -231,14 +241,43 @@ class XiaohongshuChannel(ChannelAdapter):
                     )
                 continue
 
+            stats["api_returned_cards"] += len(items)
+            stats["mblog_cards"] += len(items)
             for item in items:
                 url = str(item.get("url") or "")
-                if not url or url in seen_urls:
+                if not url:
+                    stats["skipped_other_type"] += 1
+                    dropped_records.append({
+                        "platform": self.id, "url": "",
+                        "title": str(item.get("title") or "")[:80],
+                        "keyword": keyword, "query": keyword,
+                        "reason": "缺少链接（无法去重/拉取详情）",
+                        "kind": "collection",
+                    })
+                    continue
+                if url in seen_urls:
+                    stats["skipped_dup"] += 1
+                    dropped_records.append({
+                        "platform": self.id, "url": url,
+                        "title": str(item.get("title") or "")[:80],
+                        "keyword": keyword, "query": keyword,
+                        "reason": "重复返回（同帖）",
+                        "kind": "collection",
+                    })
                     continue
                 seen_urls.add(url)
                 pub_date = str(item.get("published_at") or "")[:10]
                 if not _in_date_range(pub_date, plan):
+                    stats["skipped_out_of_range"] += 1
+                    dropped_records.append({
+                        "platform": self.id, "url": url,
+                        "title": str(item.get("title") or "")[:80],
+                        "keyword": keyword, "query": keyword,
+                        "reason": "超出时间范围",
+                        "kind": "collection",
+                    })
                     continue
+                stats["kept"] += 1
                 keyword_posts.append(
                     Post(
                         id=_note_id_from_url(url),
@@ -255,6 +294,7 @@ class XiaohongshuChannel(ChannelAdapter):
                             "author_url": str(item.get("author_url") or ""),
                             "collects": 0,
                             "tags": "",
+                            "query": keyword,  # 2.9：实际查询串（渠道级）
                         },
                     )
                 )
@@ -268,11 +308,12 @@ class XiaohongshuChannel(ChannelAdapter):
                     break
                 try:
                     detail = _note_detail(post.url)
-                except (subprocess.TimeoutExpired, RuntimeError):
+                except (subprocess.TimeoutExpired, RuntimeError) as exc:
                     if is_ratelimit(str(exc)):
                         return ChannelResult(
                             channel_id=self.id, ok=False, posts=posts,
                             error=f"风控停止：{exc}", degraded=True, risk=True,
+                            dropped=dropped_records, collection_stats=stats,
                         )
                     continue
                 if detail.get("content"):
@@ -303,11 +344,12 @@ class XiaohongshuChannel(ChannelAdapter):
                         post.comments = _note_comments(
                             post.url, plan.comments_per_post
                         )
-                    except (subprocess.TimeoutExpired, RuntimeError):
+                    except (subprocess.TimeoutExpired, RuntimeError) as exc:
                         if is_ratelimit(str(exc)):
                             return ChannelResult(
                                 channel_id=self.id, ok=False, posts=posts,
                                 error=f"风控停止：{exc}", degraded=True, risk=True,
+                                dropped=dropped_records, collection_stats=stats,
                             )
                         pass
                     jittered_sleep(OPERATION_INTERVAL, 0.3)
@@ -320,7 +362,15 @@ class XiaohongshuChannel(ChannelAdapter):
                 )
 
         if not posts:
-            return degraded_result(self.id, first_error or "小红书未采集到任何内容")
+            return ChannelResult(
+                channel_id=self.id, ok=False, posts=posts,
+                error=first_error
+                or "小红书未采集到任何内容（关键词无结果或全部超出时间范围）",
+                degraded=True, dropped=dropped_records, collection_stats=stats,
+            )
         if on_progress:
             on_progress(f"小红书采集完成，共 {len(posts)} 条", 1.0)
-        return ChannelResult(channel_id=self.id, ok=True, posts=posts)
+        return ChannelResult(
+            channel_id=self.id, ok=True, posts=posts,
+            dropped=dropped_records, collection_stats=stats,
+        )

@@ -6,7 +6,7 @@
     python tests/finalize_edge_set.py --compare      # 合并双 AI 结果：一致性报告 + 两张复核表
     python tests/finalize_edge_set.py                # 打印用法
 
-流程（docs/边界样本专项集方案.md §四）：
+流程（docs/archive/边界样本专项集方案.md §四）：
     工作表生成 → 双 AI 标注（workbuddy 主标 / trae-GLM-5.2 副标）→
     本脚本 --compare 输出一致性报告与复核表 → 人工填复核表 →
     tests/apply_edge_review.py 定版。

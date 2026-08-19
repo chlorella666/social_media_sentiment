@@ -11,6 +11,7 @@ hotflow 评论接口返回 HTML，不可用，使用 comments/show。
 from __future__ import annotations
 
 import html
+import os
 import re
 import time
 from datetime import datetime
@@ -230,14 +231,23 @@ class WeiboChannel(ChannelAdapter):
         session = requests.Session()
         headers = _build_headers(cookie)
         posts: list[Post] = []
+        dropped_records: list[dict] = []  # 采集层丢弃（透明度，2026-08-18）
+        stats: dict[str, int] = {
+            "requested_limit": 0, "api_returned_cards": 0, "mblog_cards": 0,
+            "skipped_other_type": 0, "skipped_dup": 0, "skipped_ad": 0,
+            "skipped_out_of_range": 0, "kept": 0,
+        }
         seen_ids: set[str] = set(skip_urls or ())
         first_error = ""
-        keywords = plan.keywords or [plan.subject]
+        # 2026-08-18：渠道策略展开后的查询串优先（channel_params.queries）
+        cfg = next((c for c in plan.channels if c.channel_id == self.id), None)
+        keywords = (cfg.params.get("queries") if cfg else None) \
+            or plan.keywords or [plan.subject]
         limit = plan.per_keyword_limit
-        for channel in plan.channels:
-            if channel.channel_id == self.id:
-                limit = int(channel.params.get("limit") or limit)
+        if cfg:
+            limit = int(cfg.params.get("limit") or limit)
         limit = min(limit, MAX_LIMIT)
+        stats["requested_limit"] = limit
 
         for idx, keyword in enumerate(keywords):
             if cancel_event and cancel_event.is_set():
@@ -275,21 +285,58 @@ class WeiboChannel(ChannelAdapter):
                         return ChannelResult(
                             channel_id=self.id, ok=False, posts=posts,
                             error=f"风控停止：{exc}", degraded=True, risk=True,
+                            dropped=dropped_records, collection_stats=stats,
                         )
                     first_error = first_error or f"关键词「{keyword}」失败：{exc}"
                     break
                 cards = (data.get("data") or {}).get("cards") or []
+                # 诊断插桩（SMS_DEBUG_WEIBO=1 时输出逐页分流，正常采集不受影响）
+                debug = os.environ.get("SMS_DEBUG_WEIBO") == "1"
+                if debug:
+                    _dbg = {"cards": len(cards), "type9": 0, "other_type": 0,
+                            "dup": 0, "ad": 0, "out_of_range": 0, "kept": 0}
+                stats["api_returned_cards"] += len(cards)
                 for card in cards:
                     if card.get("card_type") != 9:
+                        stats["skipped_other_type"] += 1
+                        if debug:
+                            _dbg["other_type"] += 1
                         continue
                     mblog = card.get("mblog") or {}
+                    stats["mblog_cards"] += 1
+                    if debug:
+                        _dbg["type9"] += 1
                     bid = str(mblog.get("bid") or "")
                     if not bid or bid in seen_ids:
+                        stats["skipped_dup"] += 1
+                        if debug:
+                            _dbg["dup"] += 1
+                        if bid:
+                            dropped_records.append({
+                                "platform": self.id,
+                                "url": f"https://m.weibo.cn/detail/{bid}",
+                                "title": str(mblog.get("text") or "")[:80],
+                                "keyword": keyword, "query": keyword,
+                                "reason": "重复返回（同帖）",
+                                "kind": "collection",
+                            })
                         continue
                     if mblog.get("ad_marked"):
+                        stats["skipped_ad"] += 1
+                        if debug:
+                            _dbg["ad"] += 1
+                        dropped_records.append({
+                            "platform": self.id,
+                            "url": f"https://m.weibo.cn/detail/{bid}",
+                            "title": str(mblog.get("text") or "")[:80],
+                            "keyword": keyword, "query": keyword,
+                            "reason": "广告（ad_marked）",
+                            "kind": "collection",
+                        })
                         continue  # 过滤广告
                     seen_ids.add(bid)
                     post = _to_post(mblog, keyword)
+                    post.platform_specific["query"] = keyword  # 2.9：实际查询串（渠道级）
                     if mblog.get("isLongText"):
                         long_text = _fetch_long_text(
                             session, headers, int(mblog.get("id") or 0)
@@ -297,10 +344,31 @@ class WeiboChannel(ChannelAdapter):
                         if long_text:
                             post.content = long_text
                     if not _in_date_range(post, plan):
+                        stats["skipped_out_of_range"] += 1
+                        if debug:
+                            _dbg["out_of_range"] += 1
+                        dropped_records.append({
+                            "platform": self.id, "url": post.url,
+                            "title": (post.title or post.content or "")[:80],
+                            "keyword": keyword, "query": keyword,
+                            "reason": "超出时间范围",
+                            "kind": "collection",
+                        })
                         continue
+                    stats["kept"] += 1
+                    if debug:
+                        _dbg["kept"] += 1
                     keyword_posts.append(post)
                     if len(keyword_posts) >= limit:
                         break
+                if debug:
+                    print(
+                        f"[weibo-debug] kw={keyword} page={page} "
+                        f"cards={_dbg['cards']} type9={_dbg['type9']} "
+                        f"other_type={_dbg['other_type']} dup={_dbg['dup']} "
+                        f"ad={_dbg['ad']} out_of_range={_dbg['out_of_range']} "
+                        f"kept={_dbg['kept']}"
+                    )
                 jittered_sleep(REQUEST_INTERVAL, 0.4)
                 if len(keyword_posts) >= limit:
                     break
@@ -329,11 +397,15 @@ class WeiboChannel(ChannelAdapter):
                 )
 
         if not posts:
-            return degraded_result(
-                self.id,
-                first_error
+            return ChannelResult(
+                channel_id=self.id, ok=False, posts=posts,
+                error=first_error
                 or "微博未采集到任何内容（关键词无结果或全部超出时间范围）",
+                degraded=True, dropped=dropped_records, collection_stats=stats,
             )
         if on_progress:
             on_progress(f"微博采集完成，共 {len(posts)} 条", 1.0)
-        return ChannelResult(channel_id=self.id, ok=True, posts=posts)
+        return ChannelResult(
+            channel_id=self.id, ok=True, posts=posts,
+            dropped=dropped_records, collection_stats=stats,
+        )

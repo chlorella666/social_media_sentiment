@@ -236,7 +236,15 @@ def clean_posts(
 
         if not reasons:
             title_key = title[:50]
-            content_key = content[:50]
+            # 2026-08-18（关键词优化 Phase 0·A4）：正文去重键仅对"真实正文"生效
+            # （长度 ≥20 且 ≠ 标题）——B站视频 content 常为空/等于标题/短简介，
+            # 曾把大量唯一视频误丢为「重复（相同正文）」（瑞幸×B站 44/50 条）。
+            # 标题键已覆盖同标题判重；长正文仍判重（WebSearch 页面正文）。
+            content_key = (
+                content[:50]
+                if content != title and len(content) >= 20
+                else ""
+            )
             if post.id in seen_ids:
                 reasons.append("重复（相同ID）")
             elif post.url in seen_urls:
@@ -263,6 +271,13 @@ def clean_posts(
                     "keyword": post.keyword,
                     "query": (post.platform_specific or {}).get("query", ""),
                     "reason": "；".join(reasons),
+                    # 2026-08-19（口径结构化）：去重原因只在无质量原因时出现，
+                    # 按首条是否「重复」判定 duplicate/quality
+                    "kind": (
+                        "duplicate"
+                        if reasons[0].startswith("重复")
+                        else "quality"
+                    ),
                 }
             )
     return kept, dropped

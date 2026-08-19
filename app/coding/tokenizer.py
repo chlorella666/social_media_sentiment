@@ -45,6 +45,15 @@ GENERIC_NOUNS = set(
     显示 自动 超卡 超级 还是 还有 其实 非常 比较 有点 一些 这样 那样""".split()
 )
 
+# 2026-08-19（方案 Part B 修订）：平台/媒介词 + 无信息社交动作词。
+# 分享—数码 这类"低频强相关"PMI 边会把泛词带进话题簇，从源头过滤；
+# 注意：内容词（视频/屏幕/电池等）保留，避免过度过滤。
+GENERIC_NOUNS.update(
+    """微博 微信 抖音 快手 小红书 知乎 贴吧 B站 头条 搜狐 网易 公众号
+    视频号 直播间 直播 链接 网址 二维码
+    分享 转发 点赞 收藏 关注 订阅 留言 回复""".split()
+)
+
 
 def segment(text: str, extra_stopwords: set[str] | None = None) -> list[str]:
     """jieba 分词 + 停用词/噪声过滤。"""
@@ -77,12 +86,16 @@ def build_cooccurrence(
     extra_stopwords: set[str] | None = None,
     min_count: int = 1,
     metric: str = "pmi",
+    return_counts: bool = False,
 ) -> list[dict]:
     """句子窗口内关键词共现统计（文档级去重）。
 
     metric="pmi"：用点互信息（log(p_ab / p_a*p_b)）衡量关联强度，
     突出有信息量的搭配而非必然共现（如品牌名拆词）；原始次数在 count 字段。
     同一词对在单条文本内只计 1 次，避免长帖重复词灌水统计。
+
+    return_counts=True：返回 (edges, node_count)，node_count = 每词文档频次
+    （方案 Part B，2026-08-19；默认签名/返回值保持不变，向后兼容）。
     """
     pair_counter: Counter[tuple[str, str]] = Counter()
     word_counter: Counter[str] = Counter()
@@ -114,11 +127,19 @@ def build_cooccurrence(
             if pa > 0 and pb > 0:
                 scored.append((a, b, c, math.log(pab / (pa * pb))))
         scored.sort(key=lambda x: -x[3])
-        return [
+        edges = [
             {"source": a, "target": b, "count": c, "weight": round(pmi, 3)}
             for a, b, c, pmi in scored[:top_n]
         ]
-    return [
+        if return_counts:
+            nodes = {n for e in edges for n in (e["source"], e["target"])}
+            return edges, {n: word_counter[n] for n in nodes}
+        return edges
+    edges = [
         {"source": a, "target": b, "count": c, "weight": c}
         for (a, b), c in pair_counter.most_common(top_n)
     ]
+    if return_counts:
+        nodes = {n for e in edges for n in (e["source"], e["target"])}
+        return edges, {n: word_counter[n] for n in nodes}
+    return edges

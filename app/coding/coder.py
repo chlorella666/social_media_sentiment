@@ -20,10 +20,10 @@ from app.coding import ad_rules
 from app.coding.cleaner import clean_text, desensitize_text, normalize_pub_date
 from app.coding.dimensions import match_dimension_sentiments, match_dimensions
 from app.coding.llm_analyzer import (
-    ALWAYS_LLM_DOMAINS,
     CONFIDENCE_THRESHOLD,
-    SUBJECT_DOMAINS,
     OpenAICompatibleAnalyzer,
+    is_always_llm_domain,
+    uses_subject_domain,
 )
 
 # 2.11 需复核：最终置信度低于该值（或命中反讽/黑话/问句/短句等难例候选）→ 结果页人工复核
@@ -150,7 +150,7 @@ class Coder:
         self.analyzer = analyzer
         self.schema = schema
         self.domain_id = getattr(schema, "domain_id", "") if schema else ""
-        self._force_llm = self.domain_id in ALWAYS_LLM_DOMAINS
+        self._force_llm = is_always_llm_domain(self.domain_id)
 
     def code_posts(
         self,
@@ -184,7 +184,10 @@ class Coder:
             if content:
                 pre = lexicon.score_text(content)
                 need_llm = llm_available and (
-                    self._force_llm or pre["confidence"] < CONFIDENCE_THRESHOLD
+                    self._force_llm
+                    or plan.llm_enabled
+                    or plan.custom_dimensions
+                    or pre["confidence"] < CONFIDENCE_THRESHOLD
                 )
                 llm_indices.append((len(items), content))
                 items.append(
@@ -235,7 +238,10 @@ class Coder:
                 )
                 items.append(item)
                 if llm_available and (
-                    self._force_llm or pre["confidence"] < CONFIDENCE_THRESHOLD
+                    self._force_llm
+                    or plan.llm_enabled
+                    or plan.custom_dimensions
+                    or pre["confidence"] < CONFIDENCE_THRESHOLD
                 ):
                     llm_indices.append((len(items) - 1, ctext))
                 _tick()
@@ -259,7 +265,8 @@ class Coder:
                 dimension_schema=self.schema,
                 subject=(
                     (plan.subject or "").strip()
-                    if plan.domain_id in SUBJECT_DOMAINS and (plan.subject or "").strip()
+                    if uses_subject_domain(plan.domain_id)
+                    and (plan.subject or "").strip()
                     else None
                 ),
                 on_batch_progress=(

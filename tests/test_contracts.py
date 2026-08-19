@@ -101,7 +101,8 @@ def test_domain_schema_contract() -> None:
 def test_domain_templates_contract() -> None:
     assert TEMPLATES_FILE.exists(), f"模板库不存在：{TEMPLATES_FILE}"
     raw = json.loads(TEMPLATES_FILE.read_text(encoding="utf-8"))
-    assert raw.get("version") and raw.get("status") == "draft", "模板库缺 version/status"
+    assert raw.get("version") and raw.get("status") in ("draft", "production"), \
+        "模板库缺 version/status"
     templates = raw.get("templates", [])
     assert len(templates) == len(VALID_TEMPLATES), f"模板数量应为 {len(VALID_TEMPLATES)}"
     ids = []
@@ -114,11 +115,12 @@ def test_domain_templates_contract() -> None:
         dim_ids = []
         for d in dims:
             assert d.get("id") and d.get("name") and d.get("description"), f"模板 {tid} 维度缺字段"
+            assert d.get("keywords"), f"模板 {tid} 维度 {d.get('id')} 缺关键词（2026-08-17 回填）"
             dim_ids.append(d["id"])
         assert len(dim_ids) == len(set(dim_ids)), f"模板 {tid} 维度 id 重复"
         ids.append(tid)
     assert len(ids) == len(set(ids)), "模板 id 重复"
-    print(f"✓ 模板库契约：{len(templates)} 套草案（content/physical/service）结构合法")
+    print(f"✓ 模板库契约：{len(templates)} 套模板（content/physical/service）结构合法、关键词齐备")
 
 
 def main() -> None:

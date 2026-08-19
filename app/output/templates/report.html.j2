@@ -40,6 +40,38 @@
     </div>
     {% endif %}
 
+    {% if collection_notes %}
+    <div class="section">
+      <h2>采集说明（为什么没采满）</h2>
+      {% for note in collection_notes %}
+      <div class="warning" style="margin-bottom:10px;">
+        <b>{{ note.channel }}：目标 {{ note.requested }} 条，实际保留 {{ note.kept }} 条。</b>
+        {{ note.reasons | join('；') }}。建议：{{ note.tips | join('、') }}。
+      </div>
+      {% endfor %}
+      <p style="color:#6b7280;font-size:12px">说明：采集量受平台搜索结果量、时间范围与广告/重复过滤影响；
+      "每关键词上限"是上限而非保证。</p>
+    </div>
+    {% endif %}
+
+    {% if insight_mode == 'lexicon' %}
+    <div class="warning" style="background:#eff6ff;border-color:#3b82f6;color:#1e3a8a;">
+      ⚠ 本次为词典模式，维度情感与结论仅供参考；开启 LLM 精分析可获得可归因的结论与行动建议。
+    </div>
+    {% elif insight_mode == 'template_fallback' %}
+    <div class="warning" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;">
+      ⚠ 本次深度结论由规则模板生成（LLM 兜底），仅供参考；建议检查 LLM 配置后重新生成。
+    </div>
+    {% elif insight_mode == 'no_data' %}
+    <div class="warning" style="background:#fee2e2;border-color:#ef4444;color:#991b1b;">
+      ⚠ 本次未采集到有效文本，未生成情感结论。
+    </div>
+    {% elif insight_mode == 'review_refresh' %}
+    <div class="warning" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;">
+      ⚠ 报告已按人工复核结果用规则重新生成，结论仅供参考；如需 LLM 深度结论，请重新生成。
+    </div>
+    {% endif %}
+
     <div class="cards">
       <div class="card"><div class="label">整体倾向</div><div class="value">{{ overall_sentiment }}</div></div>
       <div class="card"><div class="label">平均情感分</div><div class="value">{{ avg_score }}</div></div>
@@ -78,59 +110,37 @@
       {% if need_review_n > 0 %}<p style="color:#d97706;font-size:12px">🔍 需复核：{{ need_review_n }} 条低置信/疑似反讽样本，建议在应用结果页「需复核样本」区人工确认后再下结论。</p>{% endif %}
     </div>
 
-    {% if keyword_rows %}
+    {% if findings %}
     <div class="section">
-      <h2>关键词效果（按搜索关键词）</h2>
-      <table>
-        <tr>
-          <th>关键词</th><th>采集</th><th>保留</th><th>丢弃</th><th>有效供给率</th>
-          <th>编码文本</th><th>正面</th><th>负面</th><th>中性</th><th>负面率</th>
-        </tr>
-        {% for r in keyword_rows %}
-        <tr>
-          <td>{{ r.keyword }}</td>
-          <td>{{ r.collected }}</td>
-          <td>{{ r.kept }}</td>
-          <td>{{ r.dropped }}</td>
-          <td>{{ r.effective_rate }}</td>
-          <td>{{ r.coded }}</td>
-          <td>{{ r.positive }}</td>
-          <td>{{ r.negative }}</td>
-          <td>{{ r.neutral }}</td>
-          <td>{{ r.negative_rate }}</td>
-        </tr>
-        {% endfor %}
-      </table>
-      {% if unattributed_dropped %}
-      <p style="color:#6b7280;font-size:12px">另有 {{ unattributed_dropped }} 条丢弃记录未归属到关键词（旧版数据），不计入上表。</p>
-      {% endif %}
-      <p style="color:#6b7280;font-size:12px">说明：采集=该关键词采回的帖子数（含清洗丢弃）；有效供给率=保留/采集；样本少的行仅供参考。</p>
-      {% if query_rows %}
-      <h3>实际查询串（WebSearch）</h3>
-      <p style="color:#6b7280;font-size:12px">说明：实际查询串是系统实际发给搜索引擎的查询词，可能在确认关键词基础上自动追加后缀（如"评价"）、子渠道提示（如"知乎"）或策略词；同一确认关键词可能对应多个实际查询串。本表按实际查询串统计。</p>
-      <table>
-        <tr>
-          <th>实际查询串</th><th>渠道</th><th>采集</th><th>保留</th><th>丢弃</th>
-          <th>有效供给率</th><th>编码文本</th><th>负面</th><th>负面率</th>
-        </tr>
-        {% for r in query_rows %}
-        <tr>
-          <td>{{ r.query }}</td>
-          <td>{{ r.channel }}</td>
-          <td>{{ r.collected }}</td>
-          <td>{{ r.kept }}</td>
-          <td>{{ r.dropped }}</td>
-          <td>{{ r.effective_rate }}</td>
-          <td>{{ r.coded }}</td>
-          <td>{{ r.negative }}</td>
-          <td>{{ r.negative_rate }}</td>
-        </tr>
-        {% endfor %}
-      </table>
-      {% if unattributed_query_dropped %}
-      <p style="color:#6b7280;font-size:12px">另有 {{ unattributed_query_dropped }} 条 WebSearch 丢弃记录未归属到查询串（旧版数据），不计入上表。</p>
-      {% endif %}
-      {% endif %}
+      <h2>{{ conclusion_title }}</h2>
+      {% for f in findings %}
+      <details>
+        <summary><b>{{ display_finding_id(f.id) }} {{ f.claim }}</b></summary>
+        <div style="margin:8px 0 4px;">
+          {% for rid in (f.evidence_refs or []) %}
+          {% set c = evidence_by_id.get(rid) %}
+          {% if c %}
+          {% if c.kind == 'stat' %}
+          <div class="insight" style="margin:4px 0; background:#f0fdf4; border-left-color:#16a34a;">
+            📊 {{ c.text }}
+            <div style="color:#6b7280;font-size:12px;">来源：报告统计 · n={{ c.n }}</div>
+          </div>
+          {% else %}
+          <div class="insight" style="margin:4px 0;">
+            「{{ c.text }}」
+            <div style="color:#6b7280;font-size:12px;">
+              来源：{{ c.platform }} · {{ c.date or '日期未知' }} ·
+              {{ 'LLM 判定' if c.judge == 'llm' else '词典判定 · 仅供参考' }}
+              {% if c.need_review %} · 待复核{% endif %}
+            </div>
+          </div>
+          {% endif %}
+          {% endif %}
+          {% endfor %}
+        </div>
+        {% if f.action %}<p style="margin:6px 0;"><b>建议：</b>{{ display_action(f.action) }}</p>{% endif %}
+      </details>
+      {% endfor %}
     </div>
     {% endif %}
 
@@ -170,6 +180,25 @@
       <div class="chart">{{ chart_date_dim }}</div>
       <p class="insight">{{ chart_insights.get('date_dim', '') }}</p>
       {% endif %}
+      {% if dim_evidence %}
+      <h3>各维度负面原文 Top 3（规则抽取）</h3>
+      {% for dim, cards in dim_evidence.items() %}
+      <div style="margin-bottom:10px;">
+        <b>{{ cards[0].dimension_name }}</b>（{{ dimension_evidence_label(cards) }}）
+        <ul style="margin:4px 0 10px; padding-left:20px;">
+          {% for c in cards %}
+          <li>
+            「{{ c.text }}」
+            <span style="color:#6b7280;font-size:12px;">
+              — {{ c.platform }} · {{ c.date or '日期未知' }}
+              {% if c.need_review %} · 待复核{% endif %}
+            </span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+      {% endif %}
     </div>
     {% endif %}
 
@@ -203,29 +232,52 @@
       {% endif %}
     </div>
 
-    {% if chart_sources or chart_cooccurrence %}
+    {% if chart_sources or chart_cooccurrence or cooccurrence_kind == 'pairs' %}
     <div class="section">
       <h2>情绪来源与讨论结构</h2>
       {% if chart_sources %}
       <div class="chart">{{ chart_sources }}</div>
       <p class="insight">{{ chart_insights.get('cooccurrence', '') }}</p>
       {% endif %}
-      {% if chart_cooccurrence %}
-      <h3>讨论话题共现网络（颜色=话题负面倾向：红负面 / 绿正面 / 灰中性）</h3>
+      {% if cooccurrence_kind == 'network' and chart_cooccurrence %}
+      <h3>讨论话题共现网络（颜色=话题簇；节点大小=讨论量；边框=情感倾向）</h3>
       <div class="chart">{{ chart_cooccurrence }}</div>
+      <h3>话题簇榜单</h3>
+      <table>
+        <tr><th>簇名</th><th>代表词</th><th>涉及文本数</th><th>负面率</th></tr>
+        {% for r in cluster_rows %}
+        <tr><td>{{ r.name }}</td><td>{{ r.words }}</td><td>{{ r.doc_count }}</td><td>{{ r.negative_rate }}</td></tr>
+        {% endfor %}
+      </table>
+      {% elif cooccurrence_kind == 'pairs' %}
+      <h3>话题词对榜（讨论结构样本不足，未聚类）</h3>
+      <p style="color:#d97706;font-size:12px">{{ cooccurrence_reason }}。</p>
+      <table>
+        <tr><th>词对</th><th>共现文本数</th><th>PMI</th></tr>
+        {% for r in topic_pairs %}
+        <tr><td>{{ r.source }} — {{ r.target }}</td><td>{{ r.count }}</td><td>{{ "%.2f"|format(r.pmi) }}</td></tr>
+        {% endfor %}
+      </table>
       {% endif %}
     </div>
     {% endif %}
 
-    {% if narrative_rows %}
+    {% if narrative_total and narrative_total >= 10 %}
     <div class="section">
       <h2>叙事框架与归因（LLM 高级分析）</h2>
-      <table>
-        <tr><th>文本</th><th>叙事框架</th><th>归因主体</th></tr>
-        {% for r in narrative_rows %}
-        <tr><td>{{ r.text }}</td><td>{{ r.narrative }}</td><td>{{ r.attribution }}</td></tr>
-        {% endfor %}
-      </table>
+      <p style="color:#6b7280;font-size:12px">仅对 LLM 精分析过的文本执行（成本控制设计）；归因/框架为固定词表。</p>
+      {% if narrative_insight or chart_narrative_actor or chart_narrative_heatmap %}
+      {% for line in narrative_insight %}<p class="insight">{{ line }}</p>{% endfor %}
+      <div class="chart">{{ chart_narrative_actor }}</div>
+      <div class="chart">{{ chart_narrative_heatmap }}</div>
+      {% else %}
+      <p style="color:#6b7280;font-size:12px">归因/框架样本不足，未生成聚合图。</p>
+      {% endif %}
+    </div>
+    {% elif narrative_total and narrative_total > 0 %}
+    <div class="section">
+      <h2>叙事框架与归因（LLM 高级分析）</h2>
+      <p style="color:#6b7280;font-size:12px">叙事/归因样本仅 {{ narrative_total }} 条，样本不足，未生成聚合图。</p>
     </div>
     {% endif %}
 
@@ -234,16 +286,75 @@
       <div class="conclusion">{{ report_text }}</div>
     </div>
 
+    {% if not findings %}
     <div class="section">
       <h2>深度结论与建议（按叙事框架）</h2>
       <div class="conclusion">{{ conclusion }}</div>
     </div>
+    {% endif %}
 
     <div class="section">
       <h2>方法与数据说明</h2>
       <p>情感分析采用「词典预筛 + 大模型精分析」混合策略（本次：词典 {{ method_counts.lexicon }} 条，LLM {{ method_counts.llm }} 条）；综合评分 = 主帖 40% + 评论均值 60%。</p>
       <p>样本量不足时图表与结论仅供参考。原始数据请下载 Excel 查看。</p>
     </div>
+
+    {% if keyword_rows %}
+    <div class="section">
+      <h2>附录：关键词效果与采集明细</h2>
+      <p style="color:#6b7280;font-size:12px">以下为方法与数据说明：记录系统实际搜了什么、每个词/查询串采了多少、留了多少、丢了多少。</p>
+      <table>
+        <tr>
+          <th>关键词</th><th>采集</th><th>保留</th><th>丢弃</th><th>有效供给率</th>
+          <th>编码文本</th><th>正面</th><th>负面</th><th>中性</th><th>负面率</th>
+        </tr>
+        {% for r in keyword_rows %}
+        <tr>
+          <td>{{ r.keyword }}</td>
+          <td>{{ r.collected }}</td>
+          <td>{{ r.kept }}</td>
+          <td>{{ r.dropped }}</td>
+          <td>{{ r.effective_rate }}</td>
+          <td>{{ r.coded }}</td>
+          <td>{{ r.positive }}</td>
+          <td>{{ r.negative }}</td>
+          <td>{{ r.neutral }}</td>
+          <td>{{ r.negative_rate }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% if unattributed_dropped %}
+      <p style="color:#6b7280;font-size:12px">另有 {{ unattributed_dropped }} 条丢弃记录未归属到关键词（旧版数据），不计入上表。</p>
+      {% endif %}
+      <p style="color:#6b7280;font-size:12px">说明：采集=该关键词采回的帖子数（含清洗丢弃）；有效供给率=保留/采集；样本少的行仅供参考。</p>
+      {% if query_rows %}
+      <h3>实际查询串（按渠道）</h3>
+      <p style="color:#6b7280;font-size:12px">说明：实际查询串是系统实际发给各渠道的查询词（WebSearch 可能在确认关键词基础上追加后缀/子渠道提示/策略词；B站/微博/小红书启用渠道关键词优化时按策略展开）。同一确认关键词可能对应多个实际查询串。本表按渠道×实际查询串统计。</p>
+      <table>
+        <tr>
+          <th>实际查询串</th><th>渠道</th><th>采集</th><th>保留</th><th>丢弃</th>
+          <th>有效供给率</th><th>编码文本</th><th>负面</th><th>负面率</th>
+        </tr>
+        {% for r in query_rows %}
+        <tr>
+          <td>{{ r.query }}</td>
+          <td>{{ r.channel }}</td>
+          <td>{{ r.collected }}</td>
+          <td>{{ r.kept }}</td>
+          <td>{{ r.dropped }}</td>
+          <td>{{ r.effective_rate }}</td>
+          <td>{{ r.coded }}</td>
+          <td>{{ r.negative }}</td>
+          <td>{{ r.negative_rate }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% if unattributed_query_dropped %}
+      <p style="color:#6b7280;font-size:12px">另有 {{ unattributed_query_dropped }} 条 WebSearch 丢弃记录未归属到查询串（旧版数据），不计入上表。</p>
+      {% endif %}
+      {% endif %}
+    </div>
+    {% endif %}
 
     <footer>由社交媒体情感分析器自动生成</footer>
   </div>

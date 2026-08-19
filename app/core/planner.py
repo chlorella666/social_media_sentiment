@@ -2,9 +2,65 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
-from app.core.models import AnalysisPlan, ChannelConfig, DomainSchema, KeywordGroup
+from app.core.models import AnalysisPlan, ChannelConfig, Dimension, DomainSchema, KeywordGroup
+
+# 2.8 自定义维度约束（2026-08-18 定版）
+MAX_CUSTOM_DIMENSIONS = 4
+MAX_CUSTOM_NAME_LEN = 8
+MIN_CUSTOM_KEYWORDS = 2
+MAX_CUSTOM_KEYWORDS = 5
+
+
+def parse_custom_dimensions(text: str) -> tuple[list[Dimension], list[str]]:
+    """解析「维度名：关键词1,关键词2,…」（每行一个维度，2.8 定版）。
+
+    返回 (维度列表, 错误列表)；id 为 custom_<序号>（任务级，防与预置维度冲突）。
+    约束：≤4 个维度、名称 1~8 字、关键词 2~5 个（去重）。
+    """
+    dims: list[Dimension] = []
+    errors: list[str] = []
+    for i, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        if "：" in line:
+            name, kw_part = line.split("：", 1)
+        elif ":" in line:
+            name, kw_part = line.split(":", 1)
+        else:
+            errors.append(f"第 {i} 行缺少「：」分隔，格式应为「维度名：关键词1,关键词2,…」")
+            continue
+        name = name.strip()
+        kws = [k.strip() for k in re.split(r"[,，、\s]+", kw_part) if k.strip()]
+        seen: set[str] = set()
+        kws_uniq = [k for k in kws if not (k in seen or seen.add(k))]
+        problems: list[str] = []
+        if not name:
+            problems.append("维度名为空")
+        elif len(name) > MAX_CUSTOM_NAME_LEN:
+            problems.append(f"维度名超过 {MAX_CUSTOM_NAME_LEN} 字（当前 {len(name)} 字）")
+        if len(kws_uniq) < MIN_CUSTOM_KEYWORDS:
+            problems.append(f"关键词少于 {MIN_CUSTOM_KEYWORDS} 个（当前 {len(kws_uniq)} 个）")
+        elif len(kws_uniq) > MAX_CUSTOM_KEYWORDS:
+            problems.append(f"关键词超过 {MAX_CUSTOM_KEYWORDS} 个（当前 {len(kws_uniq)} 个）")
+        if problems:
+            errors.append(f"第 {i} 行「{name or line[:12]}」：" + "；".join(problems))
+            continue
+        dims.append(Dimension(
+            id=f"custom_{i:02d}",
+            name=name,
+            description=f"自定义维度（{name}）",
+            source="custom",
+            keywords=kws_uniq,
+            origin="custom",
+        ))
+    if len(dims) > MAX_CUSTOM_DIMENSIONS:
+        errors.append(f"自定义维度最多 {MAX_CUSTOM_DIMENSIONS} 个（当前 {len(dims)} 个）")
+        dims = dims[:MAX_CUSTOM_DIMENSIONS]
+    return dims, errors
 
 
 def generate_keyword_groups(subject: str, schema: DomainSchema, dimension_ids: list[str]) -> list[KeywordGroup]:
@@ -62,6 +118,7 @@ def build_plan(
     llm_enabled: bool = False,
     llm_base_url: str = "",
     llm_model: str = "",
+    custom_dimensions: list[Dimension] | None = None,
     narrative_enabled: bool = False,
     relevance_check_enabled: bool = False,
     channel_params: dict[str, dict] | None = None,
@@ -91,6 +148,7 @@ def build_plan(
         subject=subject,
         domain_id=domain_id,
         dimensions=dimension_ids,
+        custom_dimensions=custom_dimensions or [],
         keyword_groups=groups,
         keywords=keywords,
         channels=channels,

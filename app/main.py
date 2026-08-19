@@ -28,8 +28,14 @@ from app.core import jobs
 from app.core import errors
 from app.core import lifecycle
 from app.core import usage_boundary
-from app.core.models import KeywordGroup, ReportBundle
-from app.core.planner import build_plan, flatten_keywords, generate_keyword_groups
+from app.core.models import ReportBundle
+from app.core.planner import MAX_CUSTOM_DIMENSIONS, build_plan, parse_custom_dimensions
+from app.core.keyword_effects import expand_channel_queries, expand_websearch_keywords
+from app.core.pipeline import (
+    bundle_to_json,
+    generate_report_text,
+    recompute_summary,
+)
 from app.core.pricing import estimate_cost
 from app.core.secrets import (
     clear_api_key,
@@ -41,16 +47,44 @@ from app.core.secrets import (
     save_cookie,
 )
 from app.coding.llm_analyzer import create_analyzer
+from app.coding.insights import (
+    build_descriptors,
+    build_report_content,
+    template_chart_insights,
+)
+from app.core.evidence import (
+    dimension_evidence_label,
+    display_action,
+    display_finding_id,
+    build_evidence,
+    build_findings,
+    findings_to_conclusion,
+    findings_section_title,
+)
 from app.coding.coder import display_confidence
-from app.domains.loader import load_domain, list_domains
-from app.core.names import platform_cn
+from app.domains.composer import (
+    MAX_DIMENSIONS,
+    MODULE_DESC,
+    compose_schema,
+    filter_schema_dims,
+    module_name,
+)
+from app.domains.loader import save_cached_schema
+from app.core.names import dimension_cn, platform_cn, register_custom_dim_names
 from app.output.html_report import (
+    _collection_notes,
     cooccurrence_fig,
+    cooccurrence_plan,
     sentiment_sources_fig,
+    topic_cluster_rows,
+    topic_pairs,
     date_dim_heatmap_fig,
     dimensions_fig,
     heatmap_fig,
     intensity_fig,
+    narrative_actor_fig,
+    narrative_frame_actor_heatmap,
+    narrative_insight_text,
     overall_fig,
     platform_dim_fig,
     platform_fig,
@@ -59,6 +93,8 @@ from app.output.html_report import (
     words_fig,
     wordcloud_png_bytes,
 )
+from app.output.html_report import build_html
+from app.output.excel_writer import build_excel
 from app.output.word_report import build_word
 
 st.set_page_config(page_title="社交媒体情感分析器", page_icon="📊", layout="wide")
@@ -370,6 +406,66 @@ def apply_need_review_feedback(task_id: str, text_id: str, sentiment: str) -> bo
         return False
 
 
+def rebuild_report_after_review(
+    task_id: str, bundle: ReportBundle, regenerate_insights: bool = False,
+) -> tuple[ReportBundle, dict] | None:
+    """2.11 方案 A：复核后重算 summary/证据/发现/图表（可选重生成 LLM 深度结论），
+    并落盘 result.json + result.xlsx + report.html，返回新 bundle + 可下载文件。
+
+    修复（报告证据链）：复核改动了情感 → summary 数字变化 → 旧证据卡与旧发现
+    全部过期。因此**总是**重建证据并重生成结论（规则路径，确定性、零费用）；
+    原为 LLM 模式时置 review_refresh 标记（banner 明示"按复核结果用规则重新
+    生成"），需要 LLM 深度结论时由调用方传 regenerate_insights=True。"""
+    task = jobs.get_task(task_id)
+    if not task or not task.get("output_dir"):
+        return None
+    out_dir = Path(task["output_dir"])
+    channel_results = bundle.channel_results
+    posts = [p for ch in channel_results for p in ch.posts]
+    new_summary = recompute_summary(
+        bundle.plan, bundle.coded_items, channel_results, posts)
+    evidence = build_evidence(
+        bundle.coded_items, new_summary,
+        exclude_ad=bool(bundle.plan.exclude_ad_enabled),
+    )
+    if regenerate_insights and bundle.plan.llm_enabled:
+        analyzer = create_analyzer(api_key=api_key, base_url=base_url, model=model_name)
+        report_content = build_report_content(
+            analyzer, bundle.plan, new_summary, evidence)
+    else:
+        # 规则路径：证据/图表解析/发现全部按复核结果重建（确定性、零费用）
+        if bundle.insight_mode in ("llm", "template_fallback"):
+            rule_mode, new_mode = "review", "review_refresh"
+        else:
+            rule_mode, new_mode = "lexicon", "lexicon"
+        findings = build_findings(evidence, new_summary, mode=rule_mode)
+        report_content = {
+            "chart_insights": template_chart_insights(build_descriptors(new_summary)),
+            "findings": findings,
+            "conclusion": findings_to_conclusion(findings),
+            "insight_mode": new_mode,
+        }
+    new_bundle = bundle.model_copy(update={
+        "summary": new_summary,
+        "evidence": evidence,
+        "chart_insights": report_content["chart_insights"],
+        "conclusion": report_content["conclusion"],
+        "findings": report_content["findings"],
+        "insight_mode": report_content["insight_mode"],
+        "report_text": generate_report_text(
+            bundle.plan, new_summary, report_content["findings"]),
+    })
+    try:
+        bundle_to_json(new_bundle, out_dir / "result.json")
+        excel_bytes = build_excel(new_bundle).getvalue()
+        (out_dir / "result.xlsx").write_bytes(excel_bytes)
+        html_content = build_html(new_bundle)
+        (out_dir / "report.html").write_text(html_content, encoding="utf-8")
+    except Exception:
+        return None
+    return new_bundle, {"excel": excel_bytes, "html": html_content}
+
+
 def render_task_center() -> None:
     """后台任务中心：运行中 + 历史任务（列表 → 详情 → 打开旧报告 / 一键重跑）。"""
     show_all = st.session_state.get("task_center_show_all", False)
@@ -424,16 +520,16 @@ def render_task_center() -> None:
             c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
             c1.caption(f"{icon} {t['subject'] or '未命名任务'}（{t['created_at']}）— {state_txt}")
             if c2.button("查看", key=f"task_view_{t['id']}"):
+                st.session_state.task_id = t["id"]
                 if t["status"] == jobs.STATUS_COMPLETED:
                     res = open_task_result(t["id"])
                     if res is None:
                         st.error("结果文件缺失，无法打开")
                         st.stop()
                     st.session_state.bundle, st.session_state.output_files = res
-                    st.session_state.stage = 6
-                else:
-                    st.session_state.task_id = t["id"]
                     st.session_state.stage = 5
+                else:
+                    st.session_state.stage = 4
                 st.rerun()
             if c3.button("详情", key=f"task_detail_{t['id']}"):
                 st.session_state.task_detail = t["id"]
@@ -573,7 +669,7 @@ def _render_task_detail(t: dict) -> None:
             st.error("结果文件缺失，无法打开")
             st.stop()
         st.session_state.bundle, st.session_state.output_files = res
-        st.session_state.stage = 6
+        st.session_state.stage = 5
         st.rerun()
     if t["status"] != jobs.STATUS_RUNNING and d2.button(
         "🔁 一键重跑", key=f"task_rerun_{t['id']}"
@@ -584,7 +680,7 @@ def _render_task_detail(t: dict) -> None:
             st.stop()
         st.session_state.task_id = new_id
         st.session_state.rerun_notice = f"已用原计划重新提交任务：{new_id}"
-        st.session_state.stage = 5
+        st.session_state.stage = 4
         st.rerun()
     if t["status"] != jobs.STATUS_RUNNING and d3.button(
         "🗑 删除", key=f"task_detail_del_{t['id']}"
@@ -834,6 +930,7 @@ def estimate_collection(
     limits: dict[str, int],
     comments_per_post: int,
     comments_enabled: bool = True,
+    channel_queries: dict[str, list[str]] | None = None,
 ) -> tuple[int, int, float]:
     """粗估（链接数, 评论数, 分钟）；实际受网络与平台频率限制影响。
 
@@ -845,7 +942,8 @@ def estimate_collection(
     seconds = 0.0
     for cid in channel_ids:
         n = int(limits.get(cid, CHANNEL_LIMIT_DEFAULTS.get(cid, 10)))
-        k = max(len(keywords), 1)
+        qs = (channel_queries or {}).get(cid)
+        k = max(len(qs) if qs is not None else len(keywords), 1)
         if cid == "bilibili":
             eff = n
             per_k = (n / 20) * 1.5
@@ -878,7 +976,11 @@ if "stage" not in st.session_state:
 
 def reset_wizard() -> None:
     for key in [
-        "stage", "mode", "subject", "domain_id", "selected_dims", "keywords",
+        "stage", "mode", "subject", "domain_id", "selected_dims", "selected_modules",
+        "schema", "custom_dim", "custom_dimensions", "custom_dim_errors",
+        "manual_keywords", "keyword_groups",
+        "websearch_eval_suffix", "keywords",
+        "kwopt_bilibili", "kwopt_weibo", "kwopt_xiaohongshu",
         "channel_ids", "date_range", "plan", "bundle", "output_files", "task_id",
         "exclude_words", "exclude_words_opt",
     ]:
@@ -967,17 +1069,8 @@ with st.sidebar:
         )
     narrative_enabled = st.toggle("叙事框架/归因分析", value=False,
                                   help="高级模式：分析文本的叙事框架与责任归因（默认关）")
-    relevance_check_enabled = st.toggle(
-        "LLM 相关性复核（可选）",
-        value=False,
-        help="用大模型判断每条内容是否与品牌相关，剔除无关信息；"
-        "会增加 LLM 费用并延长分析耗时，默认关闭",
-    )
-    if relevance_check_enabled:
-        st.warning(
-            "⚠️ LLM 相关性复核会增加大模型调用量与费用（按文本数计费），"
-            "分析耗时也会变长，请确认可接受后再开启。"
-        )
+    # 2.8（2026-08-18）：LLM 相关性复核随 LLM 自动开启，不再提供独立开关
+    relevance_check_enabled = llm_enabled
     st.caption(
         "提示：环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 仅用于"
         "开发/评测脚本，应用内 Key 只存本机 DPAPI。"
@@ -1116,142 +1209,148 @@ render_task_center()
 stage = st.session_state.stage
 
 if stage == 0:
-    st.subheader("① 输入分析对象")
-    mode = st.radio("输入方式", ["品牌名 + 领域（推荐）", "手动输入关键词"], horizontal=True)
+    st.subheader("① 品牌和分析维度确认")
+    mode = st.radio(
+        "分析方式", ["按品牌分析（推荐）", "手动关键词（不分类）"], horizontal=True
+    )
     st.session_state.mode = mode
 
-    if mode.startswith("品牌名"):
-        subject = st.text_input("品牌 / 产品 / 事件名称", placeholder="例如：华润万家、恋与深空、iPhone")
-        domains = list_domains()
-        # 领域配方模型（2026-08-14）：主导对象模板优先 + 领域示例，帮助用户理解
-        template_cn = {"content": "数字内容产品", "physical": "实物产品", "service": "服务过程"}
-        options = ["不使用领域"] + [
-            f"{template_cn.get(d.get('template_id'), d['name'])}（如{d['name']}）"
-            for d in domains
-        ]
-        domain_choice = st.selectbox("所属领域", options, index=0)
+    if mode.startswith("按品牌"):
+        subject = st.text_input(
+            "品牌 / 产品 / 事件名称", placeholder="例如：华润万家、恋与深空、iPhone"
+        )
         st.session_state.subject = subject.strip()
-        st.session_state.domain_id = "" if domain_choice.startswith("不使用") else domains[options.index(domain_choice) - 1]["id"]
+        st.markdown("**选择品牌模块（可多选）**——模块决定分析维度组合：")
+        mods = st.multiselect(
+            "模块（可多选，例如零售商 = 有形实物 + 服务内容）",
+            options=["content", "physical", "service"],
+            format_func=lambda m: f"{module_name(m)}（{MODULE_DESC[m]}）",
+        )
+        st.session_state.selected_modules = mods
+        schema = None
+        if mods:
+            try:
+                schema = compose_schema(mods)
+            except ValueError as exc:
+                st.warning(str(exc))
+        if schema:
+            st.session_state.schema = schema
+            names = {d.id: f"{d.name} — {d.description}" for d in schema.dimensions}
+            selected = st.multiselect(
+                "选择要分析的维度（默认全选；组合最多 10 个，报告按维度统计）",
+                options=[d.id for d in schema.dimensions],
+                format_func=lambda k: names[k],
+                default=[d.id for d in schema.dimensions],
+            )
+            st.session_state.selected_dims = selected
+            st.session_state.domain_id = schema.domain_id
+            if len(selected) > MAX_DIMENSIONS:
+                st.error(
+                    f"已选 {len(selected)} 个维度，超过上限 {MAX_DIMENSIONS}，"
+                    "请取消部分维度后再继续"
+                )
+        else:
+            st.session_state.schema = None
+            st.session_state.selected_dims = []
+            st.session_state.domain_id = ""
+            st.info("未选择模块，将按整体情感分析（不区分维度）")
+        custom = st.text_area(
+            "添加自定义维度（可选，参与分析统计）",
+            placeholder="例如：\n联名活动：联名,IP,周边\n物流体验：发货,快递,物流",
+            height=100,
+            help="格式：维度名：关键词1,关键词2,…（每行一个维度，最多 4 个；"
+            "名称 ≤8 字、关键词 2~5 个）。自定义维度由 LLM 判定并参与维度统计，"
+            "本任务将强制全量 LLM（费用/耗时上升）；未配置 API Key 时降级为"
+            "词典兜底，分析仅供参考。",
+        )
+        custom_dims, custom_errors = parse_custom_dimensions(custom or "")
+        st.session_state.custom_dim = custom.strip()
+        st.session_state.custom_dimensions = custom_dims
+        st.session_state.custom_dim_errors = custom_errors
+        if custom_errors:
+            st.error("自定义维度校验未通过：\n" + "\n".join(f"- {e}" for e in custom_errors))
+        if custom_dims:
+            st.info(
+                "自定义维度将参与维度统计："
+                + "、".join(f"{d.name}（{len(d.keywords)} 关键词）" for d in custom_dims)
+                + "。本任务将强制全量 LLM。"
+            )
     else:
-        manual = st.text_area("关键词（每行一个）", placeholder="例如：\n原神 画质\n原神 抽卡")
+        st.caption("手动关键词模式：不进行模块/维度分类，在下一步直接输入关键词。")
         st.session_state.subject = "手动关键词"
         st.session_state.domain_id = ""
-        st.session_state.manual_keywords = [k.strip() for k in manual.splitlines() if k.strip()]
+        st.session_state.selected_dims = []
+        st.session_state.schema = None
+        st.session_state.selected_modules = []
 
     col1, _ = st.columns([1, 3])
-    if col1.button("下一步 →", type="primary", width="stretch"):
-        if mode.startswith("品牌名") and not st.session_state.get("subject"):
+    if col1.button("下一步 →", type="primary", width="stretch", key="next_0"):
+        if mode.startswith("按品牌") and not st.session_state.get("subject"):
             st.error("请输入品牌/产品名称")
-        elif not mode.startswith("品牌名") and not st.session_state.get("manual_keywords"):
-            st.error("请输入至少一个关键词")
+        elif (
+            mode.startswith("按品牌")
+            and st.session_state.get("selected_modules")
+            and len(st.session_state.get("selected_dims", [])) > MAX_DIMENSIONS
+        ):
+            st.error(f"维度超过上限 {MAX_DIMENSIONS}，请精简后再继续")
+        elif (
+            mode.startswith("按品牌")
+            and st.session_state.get("selected_modules")
+            and not st.session_state.get("selected_dims")
+        ):
+            st.error("请至少选择一个分析维度")
+        elif st.session_state.get("custom_dim_errors"):
+            st.error("自定义维度校验未通过，请修正后再继续")
         else:
+            # 物化组合 schema（只保留用户勾选的维度），worker 按 domain_id 加载
+            schema = st.session_state.get("schema")
+            if schema and st.session_state.get("domain_id"):
+                try:
+                    save_cached_schema(
+                        filter_schema_dims(
+                            schema, st.session_state.get("selected_dims", [])
+                        )
+                    )
+                except Exception:
+                    pass  # 物化失败不阻塞向导，worker 将按领域缺失降级提示
             next_stage()
             st.rerun()
 
 elif stage == 1:
-    st.subheader("② 确认分析维度")
-    if st.session_state.get("domain_id"):
-        schema = load_domain(st.session_state.domain_id)
-        st.session_state.schema = schema
-        names = {d.id: f"{d.name} — {d.description}" for d in schema.dimensions}
-        selected = st.multiselect(
-            "选择要分析的维度（可全选/单选，报告将按维度统计）",
-            options=list(names.keys()),
-            format_func=lambda k: names[k],
-            default=list(names.keys()),
-        )
-        st.session_state.selected_dims = selected
-        custom = st.text_input(
-            "添加自定义维度（可选）",
-            placeholder="运营服务、联名活动",
-            help="多个维度用逗号/顿号分隔；每个维度会生成一条「品牌+维度」采集关键词。"
-            "自定义维度仅用于补充采集，不参与维度统计",
-        )
-        st.session_state.custom_dim = custom.strip()
-    else:
-        st.info("未选择领域，将按整体情感分析（不区分维度）")
-        st.session_state.selected_dims = []
-
-    col1, col2 = st.columns(2)
-    if col1.button("← 上一步", width="stretch"):
-        prev_stage()
-        st.rerun()
-    if col2.button("下一步 →", type="primary", width="stretch"):
-        next_stage()
-        st.rerun()
-
-elif stage == 2:
-    st.subheader("③ 确认关键词")
-    subject = st.session_state.get("subject", "")
-    domain_id = st.session_state.get("domain_id")
+    st.subheader("② 确认关键词")
     mode = st.session_state.get("mode", "")
-
-    if domain_id and st.session_state.get("selected_dims"):
-        schema = st.session_state.schema
-        groups = generate_keyword_groups(subject, schema, st.session_state.selected_dims)
-        custom_dim = st.session_state.get("custom_dim")
-        if custom_dim:
-            custom_dims = [
-                d.strip()
-                for d in re.split(r"[,，、\s]+", custom_dim)
-                if d.strip()
-            ]
-            if custom_dims:
-                groups.append(
-                    KeywordGroup(
-                        dimension_id="custom",
-                        dimension_name="自定义",
-                        keywords=[f"{subject} {d}" for d in custom_dims],
-                    )
-                )
-        st.session_state.keyword_groups = groups
-        with st.expander("按维度查看建议关键词", expanded=True):
-            for g in groups:
-                st.markdown(f"**{g.dimension_name}**：" + "、".join(g.keywords))
-        default_text = "\n".join(flatten_keywords(groups))
-    elif domain_id:
-        st.info("未选择任何维度，将以品牌名为关键词，可补充输入")
-        default_text = subject
-    elif mode.startswith("品牌名"):
-        st.info("未选择领域，将以品牌名为关键词，可补充输入")
-        default_text = subject
-    else:
-        st.info("手动关键词模式：将直接使用以下关键词采集")
-        default_text = "\n".join(st.session_state.get("manual_keywords", []))
-
-    if domain_id and st.session_state.get("selected_dims"):
-        editable = st.text_area(
-            "编辑关键词（每行一个，可增删改）",
-            value=default_text,
-            height=220,
-            help="建议保留 10~30 个关键词；短词搜索范围更广，长词更精准",
-        )
-    else:
-        editable = st.text_area(
-            "关键词（每行一个）",
-            value=default_text,
-            height=160,
-            help="多关键词会叠加搜索结果；短词搜索范围更广",
-        )
+    subject = st.session_state.get("subject", "")
+    default_text = subject if mode.startswith("按品牌") else ""
+    editable = st.text_area(
+        "关键词（每行一个，可编辑）",
+        value=default_text,
+        height=160,
+        help="关键词 = 实际搜索词；数量越多采集越广，但风控风险与费用也越高",
+    )
     st.session_state.keywords = [k.strip() for k in editable.splitlines() if k.strip()]
     st.caption(
-        f"当前将采集 **{len(st.session_state.get('keywords', []))}** 个关键词，"
-        "以本框内容为准（可增删改）。"
+        f"当前将采集 **{len(st.session_state.get('keywords', []))}** 个关键词。"
+        "建议从 1~10 个关键词起步；WebSearch 每日关键词总量上限 24，"
+        "超限提交将被拦截。"
+    )
+    st.caption(
+        "💡 关键词优化（自动加后缀/按策略展开）的开关与进阶策略配置，"
+        "在下一步「渠道/时间」页设置；实际查询串可在报告「实际查询串（按渠道）」表核对。"
     )
 
     col1, col2 = st.columns(2)
-    if col1.button("← 上一步", width="stretch"):
+    if col1.button("← 上一步", width="stretch", key="prev_1"):
         prev_stage()
         st.rerun()
-    if col2.button("下一步 →", type="primary", width="stretch"):
+    if col2.button("下一步 →", type="primary", width="stretch", key="next_1"):
         if not st.session_state.get("keywords"):
             st.error("关键词列表不能为空")
         else:
             next_stage()
             st.rerun()
 
-elif stage == 3:
-    st.subheader("④ 选择采集渠道与时间段")
+elif stage == 2:
+    st.subheader("③ 选择采集渠道与时间段")
     infos = list_channel_infos()
     default_channels = ["demo"]
     selected = st.multiselect(
@@ -1475,7 +1574,7 @@ elif stage == 3:
             "估算随关键词数、渠道上限与评论设置变化）"
         )
 
-        # ── 渠道诊断（体检 × 一键探针融合，docs/渠道诊断融合方案.md）──
+        # ── 渠道诊断（体检 × 一键探针融合，docs/archive/渠道诊断融合方案.md）──
         st.markdown("**🔍 渠道诊断**")
         st.caption(
             "轻量层并行真实探测各渠道（WebSearch = 360 单引擎出数探测，含风控/降级"
@@ -1514,17 +1613,70 @@ elif stage == 3:
                         "（解除冷却 / 恢复 / 调整每日上限）。"
                     )
 
-        if any(cid.startswith("websearch") for cid in selected):
-            st.session_state.websearch_eval_suffix = st.toggle(
-                "WebSearch 关键词优化（自动追加『评价』等后缀）",
-                value=st.session_state.get("websearch_eval_suffix", True),
-                help="纯品牌词（如『恋与深空』）容易命中官网/壳页面，自动加『评价』等后缀"
-                     "更易搜到真实用户讨论；关闭后完全按原词搜索",
-            )
-            st.caption(
-                "说明：开启后实际查询串可能与确认关键词不同（如『恋与深空』→"
-                "『恋与深空 评价』）；实际查询串可在报告「实际查询串（WebSearch）」表核对。"
-            )
+        # ── 关键词优化模块（2026-08-18）──
+        # 仅展示已实际生效的渠道：微博（2 品牌达标）。B站经 A4 修复后单关键词
+        # 有效率 100% 无需扩词、小红书暂无低效词数据——都不呈现开关，避免误导。
+        opt_channels = ["weibo"] if "weibo" in selected else []
+        has_ws = any(cid.startswith("websearch") for cid in selected)
+        if has_ws or opt_channels:
+            with st.container(border=True):
+                st.markdown("**⚙️ 关键词优化**")
+                st.caption(
+                    "开启后系统会按策略自动加后缀/展开查询，降低纯品牌词命中官网/壳页的"
+                    "丢弃率。"
+                )
+                if has_ws:
+                    # WebSearch 关键词优化总开关（2026-08-18：后缀/同义词/策略词）
+                    st.session_state.websearch_eval_suffix = st.toggle(
+                        "WebSearch 关键词优化（自动加后缀/同义词/策略词）",
+                        value=st.session_state.get("websearch_eval_suffix", True),
+                        key="websearch_eval_suffix_toggle",
+                        help="开启后按关键词策略自动加『评价』等后缀、同义词与策略查询"
+                        "（如『恋与深空』→『恋与深空 评价』『深空 评价』），更容易搜到"
+                        "真实用户讨论；关闭后完全按确认关键词原词搜索",
+                    )
+                    st.caption(
+                        "说明：开启后实际查询串可能与确认关键词不同（如『恋与深空』→"
+                        "『恋与深空 评价』『深空 评价』）；实际查询串可在报告"
+                        "「实际查询串（按渠道）」表核对。"
+                    )
+                if opt_channels:
+                    for cid in opt_channels:
+                        on = st.toggle(
+                            f"{info_map.get(cid, cid)} 关键词优化（按策略展开查询）",
+                            value=bool(st.session_state.get(f"kwopt_{cid}", False)),
+                            key=f"kwopt_{cid}_toggle",
+                            help="开启后按该渠道策略把品牌词展开为查询组合（默认关）；"
+                            "展开数量计入配额估算。",
+                        )
+                        st.session_state[f"kwopt_{cid}"] = on
+                    st.caption(
+                        "策略按渠道配置：开启后按该渠道已确认的策略展开查询（进阶入口见下方）。"
+                    )
+                st.markdown("**🔑 关键词优化进阶**")
+                if _eval_running():
+                    st.link_button(
+                        "打开评测中心「关键词策略配置」",
+                        f"{EVAL_URL}/?tab=strategy",
+                        type="secondary",
+                    )
+                else:
+                    if st.button("启动评测中心（关键词策略配置）", key="kw_strategy_start"):
+                        _start_eval_dashboard()
+                        st.info(
+                            f"正在后台启动评测中心（{EVAL_URL}/?tab=strategy），"
+                            "首次启动需几秒；启动后请点击上方链接进入策略配置页。"
+                        )
+                st.caption(
+                    "怎么用：在评测中心「关键词效果」页扫描历史任务 → 勾选候选词写入关键词策略 → "
+                    "回到本页保持上方各渠道「关键词优化」开启，系统会按策略自动加词，降低纯品牌词"
+                    "命中官网/壳页的丢弃率。"
+                )
+
+        # WebSearch 采集过滤（非关键词优化，独立分组避免模块名不符）
+        if has_ws:
+            st.markdown("**WebSearch 采集设置**")
+            st.caption("官方域名不会提供有效的社交媒体情感信息，命中这些域名的搜索结果将被排除。")
             st.session_state.official_domains = st.text_input(
                 "排除的官方域名（逗号分隔，可选）",
                 placeholder="例如：dji.com,crv.com.cn",
@@ -1533,18 +1685,29 @@ elif stage == 3:
             )
 
     col1, col2 = st.columns(2)
-    if col1.button("← 上一步", width="stretch"):
+    if col1.button("← 上一步", width="stretch", key="prev_2"):
         prev_stage()
         st.rerun()
-    if col2.button("下一步 →", type="primary", width="stretch"):
+    if col2.button("下一步 →", type="primary", width="stretch", key="next_2"):
         if not selected:
             st.error("请至少选择一个渠道")
         else:
             next_stage()
             st.rerun()
 
-elif stage == 4:
-    st.subheader("⑤ 确认采集计划并启动")
+elif stage == 3:
+    st.subheader("④ 确认采集计划并启动")
+    custom_dims = st.session_state.get("custom_dimensions", [])
+    if custom_dims:
+        # 2.8：含自定义维度 → 有 Key 强制全量 LLM；无 Key 降级词典并显著提示
+        if api_key:
+            llm_enabled = True
+        else:
+            st.warning(
+                "⚠️ 已添加自定义维度但未配置 API Key：将使用词典兜底模式，"
+                "自定义维度判定可能大量缺失，分析结果仅供参考。"
+            )
+    relevance_check_enabled = llm_enabled  # 与侧边栏口径一致（随 LLM 自动开启）
     keywords = st.session_state.get("keywords", [])
     channel_ids = st.session_state.get("channel_ids", ["demo"])
     date_range = st.session_state.get("date_range", (dt.date.today() - dt.timedelta(days=30), dt.date.today()))
@@ -1565,38 +1728,94 @@ elif stage == 4:
             if cid.startswith("websearch"):
                 channel_params.setdefault(cid, {})["eval_suffix"] = "0"
 
+    # 其他渠道关键词展开（Phase 0，2026-08-18）：任务级开关 → 渠道查询串
+    # 仅微博生效（B站/小红书暂无策略内容，不展示开关）
+    channel_queries = {}
+    for cid in ("weibo",):
+        if cid in channel_ids and st.session_state.get(f"kwopt_{cid}"):
+            qs = expand_channel_queries(keywords, cid)
+            channel_queries[cid] = qs
+            channel_params.setdefault(cid, {})["queries"] = qs
+    # WebSearch 查询串展开（2026-08-18 总开关语义）：与采集共用
+    # expand_websearch_keywords，确认页估算与真实采集一致
+    ws_channels = [c for c in channel_ids if c.startswith("websearch")]
+    ws_queries: list[str] = []
+    if ws_channels:
+        ws_queries = expand_websearch_keywords(
+            keywords,
+            st.session_state.get("subject", ""),
+            enabled=bool(st.session_state.get("websearch_eval_suffix", True)),
+        )
+        for cid in ws_channels:
+            channel_queries[cid] = ws_queries
+
     st.markdown("### 计划摘要")
     est_items, est_comments, est_min = estimate_collection(
         keywords, channel_ids, st.session_state.get("channel_limits", {}),
         st.session_state.get("comments_per_post_opt", 20),
         st.session_state.get("comments_enabled_opt", True),
+        channel_queries=channel_queries,
     )
     cost_est = estimate_cost(
         est_items + est_comments, narrative_enabled, relevance_check_enabled
     )
-    # WebSearch 关键词总量（关键词数 × WebSearch 渠道数）：
+    # WebSearch 关键词总量（展开后查询串数 × WebSearch 渠道数）：
     # 必须在 summary_rows 构建前计算，否则确认页引用未定义变量抛 NameError
     # （回归见 commit 22454ed：ws_total 赋值曾误放在 st.table 之后）。
-    ws_channels = [c for c in channel_ids if c.startswith("websearch")]
-    ws_total = len(keywords) * len(ws_channels)
+    ws_total = len(ws_queries) * len(ws_channels)
     summary_rows = [
         ("分析对象", st.session_state.get("subject", "")),
-        ("领域", st.session_state.get("domain_id") or "不使用"),
+        (
+            "模块",
+            "、".join(
+                module_name(m)
+                for m in st.session_state.get("selected_modules", [])
+            )
+            or "不分类",
+        ),
+        (
+            "分析维度",
+            (
+                f"{len(st.session_state.get('selected_dims', []))} 个"
+                if st.session_state.get("selected_dims")
+                else "整体情感（不区分维度）"
+            ),
+        ),
+        *(
+            [(
+                "自定义维度",
+                "、".join(f"{d.name}（{len(d.keywords)} 关键词）" for d in custom_dims),
+            )]
+            if custom_dims
+            else []
+        ),
         ("关键词数", str(len(keywords))),
         ("渠道", "、".join(channel_ids)),
+        *(
+            [(
+                "渠道查询数（策略展开）",
+                "、".join(f"{cid} {len(qs)}" for cid, qs in channel_queries.items()),
+            )]
+            if channel_queries
+            else []
+        ),
         ("官方域名排除", official_domains or "未配置"),
-        ("WebSearch 关键词优化", "开（自动加评价等后缀）" if st.session_state.get("websearch_eval_suffix", True) else "关（按原词搜索）"),
+        ("WebSearch 关键词优化", "开（按策略加后缀/同义词/策略词）" if st.session_state.get("websearch_eval_suffix", True) else "关（按原词搜索）"),
         *(
             [(
                 "WebSearch 关键词总量（今日上限 24）",
                 f"{ws_total} 次查询"
-                + (f"（{len(ws_channels)} 个 WebSearch 渠道 × {len(keywords)} 关键词）")
+                + (
+                    f"（{len(ws_channels)} 个 WebSearch 渠道 × {len(ws_queries)} 个查询串"
+                    + ("，含策略展开" if len(ws_queries) > len(keywords) else "")
+                    + "）"
+                )
                 + ("，超限提交将被拦截" if ws_total > 24 else ""),
             )]
             if ws_channels
             else []
         ),
-        ("LLM 相关性复核", "开（费用与耗时增加）" if relevance_check_enabled else "关"),
+        ("LLM 相关性复核", "开（随 LLM 自动开启）" if relevance_check_enabled else "关"),
         ("广告/官方与人工复核", AD_REVIEW_SHORT.get(
             st.session_state.get("ad_review_mode", ""),
             AD_REVIEW_SHORT[AD_REVIEW_MODES[0]])),
@@ -1627,7 +1846,7 @@ elif stage == 4:
             st.markdown(f"{i}. {k}")
 
     col1, col2 = st.columns(2)
-    if col1.button("← 上一步", width="stretch"):
+    if col1.button("← 上一步", width="stretch", key="prev_3"):
         prev_stage()
         st.rerun()
 
@@ -1661,6 +1880,7 @@ elif stage == 4:
             llm_enabled=llm_enabled,
             llm_base_url=base_url,
             llm_model=model_name,
+            custom_dimensions=st.session_state.get("custom_dimensions", []),
             narrative_enabled=narrative_enabled,
             relevance_check_enabled=relevance_check_enabled,
             channel_params=channel_params,
@@ -1683,17 +1903,17 @@ elif stage == 4:
                 + "；".join(blocked)
             )
             if st.button("← 返回渠道设置", key="stage4_quota_back"):
-                st.session_state.stage = 3
+                st.session_state.stage = 2
                 st.rerun()
             st.stop()
         # 任务提交后台队列：关页面/刷新不中断，由常驻 worker 执行
         task_id = jobs.submit_task(plan)
         st.session_state.task_id = task_id
-        st.session_state.stage = 5
+        st.session_state.stage = 4
         st.rerun()
 
-elif stage == 5:
-    st.subheader("⑥ 后台执行")
+elif stage == 4:
+    st.subheader("⑤ 后台执行")
     if st.session_state.get("rerun_notice"):
         st.success(st.session_state.pop("rerun_notice"))
     task_id = st.session_state.get("task_id")
@@ -1701,7 +1921,7 @@ elif stage == 5:
     if not task:
         st.warning("没有正在执行的任务，请重新提交")
         if st.button("返回确认页", key="stage5_back"):
-            st.session_state.stage = 4
+            st.session_state.stage = 3
             st.rerun()
         st.stop()
 
@@ -1712,7 +1932,7 @@ elif stage == 5:
             st.error("任务已完成，但结果文件缺失，无法打开")
             st.stop()
         st.session_state.bundle, st.session_state.output_files = res
-        st.session_state.stage = 6
+        st.session_state.stage = 5
         st.rerun()
 
     if status == jobs.STATUS_REVIEWING:
@@ -1778,7 +1998,7 @@ elif stage == 5:
         _render_task_logs(task_id, max_entries=30)
         c1, c2 = st.columns(2)
         if c1.button("← 返回确认页重试", key="stage5_retry"):
-            st.session_state.stage = 4
+            st.session_state.stage = 3
             st.rerun()
         if c2.button("🔄 开始新的分析", key="stage5_restart"):
             reset_wizard()
@@ -1790,9 +2010,11 @@ elif stage == 5:
             reset_wizard()
             st.rerun()
 
-elif stage == 6:
+elif stage == 5:
     bundle = st.session_state.get("bundle")
     files = st.session_state.get("output_files", {})
+    if bundle:
+        register_custom_dim_names(bundle.plan)  # 2.8：结果页渲染前注册自定义维度名
     if not bundle:
         st.warning("没有可展示的结果，请重新开始")
         if st.button("重新开始"):
@@ -1802,7 +2024,7 @@ elif stage == 6:
 
     s = bundle.summary
     dist = s["sentiment_distribution"]
-    st.subheader("⑦ 分析结果")
+    st.subheader("⑥ 分析结果")
 
     for w in bundle.warnings:
         st.warning(w)
@@ -1829,17 +2051,83 @@ elif stage == 6:
             if st.button("保存并返回确认页重试"):
                 if new_cookie.strip():
                     st.session_state.weibo_cookie = new_cookie.strip()
-                    st.session_state.stage = 4
+                    st.session_state.stage = 3
                     st.rerun()
                 else:
                     st.error("请先粘贴新的 Cookie")
 
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("整体倾向", s["overall_sentiment"])
     m2.metric("平均情感分", f"{s['avg_score']:.2f}")
     m3.metric("帖子数", s["total_posts"])
     m4.metric("编码文本数", s["total_items"])
     m5.metric("正面占比", f"{dist['positive']['ratio'] * 100:.1f}%")
+    cv = s.get("consumer_voice") or {}
+    m6.metric(
+        "消费者声音占比",
+        "—" if cv.get("ratio") is None else f"{cv['ratio'] * 100:.1f}%",
+        cv.get("tier"),
+        help="E=保留且非广告/官方文本；占比=E/采集量。分档：充足/够用/不足"
+             "（不足说明消费者声音样本偏少，建议检查关键词与广告/官方剔除）",
+    )
+
+    # 采集说明（2026-08-18 采集透明度）：实际保留 < 配置上限时解释缺口
+    _notes = _collection_notes(bundle)
+    if _notes:
+        with st.expander(f"采集说明：{len(_notes)} 个渠道未采满（实际保留 < 设置上限）"):
+            for _n in _notes:
+                st.markdown(
+                    f"**{_n['channel']}**：目标 {_n['requested']} 条，"
+                    f"实际保留 {_n['kept']} 条。"
+                )
+                st.caption("；".join(_n["reasons"]) + "。建议：" + "、".join(_n["tips"]))
+
+    # 2.11 方案 A：需复核样本强提示（可跳过；复核后刷新报告）
+    nr_items = [it for it in bundle.coded_items if it.need_review]
+    if nr_items:
+        st.session_state[f"nr_had_{task_id}"] = True
+    nr_unreviewed = [it for it in nr_items if not it.reviewed_by]
+    if nr_unreviewed and not st.session_state.get(f"nr_skip_{task_id}"):
+        st.warning(
+            f"⚠️ 有 **{len(nr_unreviewed)}** 条需复核样本未确认："
+            "当前指标与结论基于模型判定。复核后报告统计/图表/Excel/HTML 会自动更新。"
+        )
+        c_go, c_skip, c_rebuild = st.columns([1, 1, 2])
+        if c_go.button("✅ 先去复核", key=f"nr_go_{task_id}"):
+            st.session_state[f"nr_focus_{task_id}"] = True
+            st.rerun()
+        if c_skip.button("先看报告", key=f"nr_skip_btn_{task_id}"):
+            st.session_state[f"nr_skip_{task_id}"] = True
+            st.rerun()
+        if c_rebuild.button(
+            "完成复核并刷新报告（应用已确认项）", key=f"nr_rebuild_top_{task_id}"
+        ):
+            res = rebuild_report_after_review(task_id, bundle)
+            if res:
+                st.session_state.bundle, st.session_state.output_files = res
+                st.success("已按复核结果刷新报告（统计/图表/Excel/HTML 已更新）")
+                st.session_state[f"nr_skip_{task_id}"] = False
+                st.rerun()
+            else:
+                st.error("刷新报告失败：任务结果文件不可写")
+
+    if bundle.insight_mode == "lexicon":
+        st.warning(
+            "本次为词典模式，维度情感与结论仅供参考；"
+            "开启 LLM 精分析可获得可归因的结论与行动建议。"
+        )
+    elif bundle.insight_mode == "template_fallback":
+        st.warning(
+            "本次深度结论由规则模板生成（LLM 兜底），仅供参考；"
+            "建议检查 LLM 配置后重新生成。"
+        )
+    elif bundle.insight_mode == "no_data":
+        st.warning("本次未采集到有效文本，未生成情感结论。")
+    elif bundle.insight_mode == "review_refresh":
+        st.warning(
+            "报告已按人工复核结果用规则重新生成，结论仅供参考；"
+            "如需 LLM 深度结论，请点击「重新生成 LLM 深度结论」。"
+        )
 
     if bundle.plan.llm_enabled:
         methods = Counter(it.method for it in bundle.coded_items)
@@ -1871,14 +2159,50 @@ elif stage == 6:
     nr_items = [it for it in bundle.coded_items if it.need_review]
     if nr_items:
         task_id = st.session_state.get("task_id")
+        focus = bool(st.session_state.get(f"nr_focus_{task_id}"))
         with st.expander(
             f"🔍 需复核样本（{len(nr_items)} 条：词典直判/低置信/反讽/黑话/问句/短句等难例）",
-            expanded=len(nr_items) <= 20,
+            expanded=len(nr_items) <= 20 or focus,
         ):
             st.caption(
-                "人工确认后回填情感并标记已复核；结果写回 result.json，"
-                "Excel 明细含「需复核」标记、HTML 报告注明复核数。"
+                "人工确认后回填情感并标记已复核；**全部确认后报告统计/图表/Excel/HTML "
+                "会按复核结果重算**（点「完成复核并刷新报告」或确认最后一条自动刷新）。"
             )
+            unreviewed = [it for it in nr_items if not it.reviewed_by]
+            if unreviewed:
+                q1, q2 = st.columns(2)
+                if q1.button(
+                    "✅ 一键全部按当前判定确认并刷新报告",
+                    key=f"nr_all_{task_id}",
+                ):
+                    ok_n = sum(
+                        1 for it in unreviewed
+                        if task_id and apply_need_review_feedback(
+                            task_id, it.text_id, it.sentiment.value)
+                    )
+                    # 先重载 result.json（含刚写入的修正），再重建报告，避免覆盖
+                    res_load = open_task_result(task_id)
+                    if res_load:
+                        st.session_state.bundle, st.session_state.output_files = res_load
+                    res = rebuild_report_after_review(
+                        task_id, st.session_state.bundle)
+                    if res:
+                        st.session_state.bundle, st.session_state.output_files = res
+                    st.success(f"已按当前判定确认 {ok_n}/{len(unreviewed)} 条并刷新报告")
+                    st.session_state[f"nr_focus_{task_id}"] = False
+                    st.rerun()
+                if q2.button(
+                    "完成复核并刷新报告（应用已确认项）",
+                    key=f"nr_rebuild_{task_id}",
+                ):
+                    res = rebuild_report_after_review(
+                        task_id, st.session_state.bundle)
+                    if res:
+                        st.session_state.bundle, st.session_state.output_files = res
+                        st.success("已按复核结果刷新报告（统计/图表/Excel/HTML 已更新）")
+                        st.rerun()
+                    else:
+                        st.error("刷新报告失败：任务结果文件不可写")
             csv_rows = [{
                 "text_id": it.text_id, "原文": it.text, "平台": it.platform,
                 "情感": it.sentiment.value,
@@ -1924,7 +2248,23 @@ elif stage == 6:
                             res = open_task_result(task_id)
                             if res:
                                 st.session_state.bundle, st.session_state.output_files = res
-                            st.success(f"已回填 {it.text_id} → positive")
+                            remaining = [
+                                x for x in st.session_state.bundle.coded_items
+                                if x.need_review and not x.reviewed_by
+                            ]
+                            if not remaining:
+                                r2 = rebuild_report_after_review(
+                                    task_id, st.session_state.bundle)
+                                if r2:
+                                    st.session_state.bundle, st.session_state.output_files = r2
+                                    st.success(
+                                        f"已回填 {it.text_id} → positive；最后一条已确认，报告已刷新")
+                                else:
+                                    st.success(f"已回填 {it.text_id} → positive（刷新失败：文件不可写）")
+                            else:
+                                st.success(
+                                    f"已回填 {it.text_id} → positive（还剩 {len(remaining)} 条，"
+                                    "可点「完成复核并刷新报告」）")
                             st.rerun()
                         else:
                             st.error("回填失败：找不到任务结果文件")
@@ -1933,7 +2273,23 @@ elif stage == 6:
                             res = open_task_result(task_id)
                             if res:
                                 st.session_state.bundle, st.session_state.output_files = res
-                            st.success(f"已回填 {it.text_id} → negative")
+                            remaining = [
+                                x for x in st.session_state.bundle.coded_items
+                                if x.need_review and not x.reviewed_by
+                            ]
+                            if not remaining:
+                                r2 = rebuild_report_after_review(
+                                    task_id, st.session_state.bundle)
+                                if r2:
+                                    st.session_state.bundle, st.session_state.output_files = r2
+                                    st.success(
+                                        f"已回填 {it.text_id} → negative；最后一条已确认，报告已刷新")
+                                else:
+                                    st.success(f"已回填 {it.text_id} → negative（刷新失败：文件不可写）")
+                            else:
+                                st.success(
+                                    f"已回填 {it.text_id} → negative（还剩 {len(remaining)} 条，"
+                                    "可点「完成复核并刷新报告」）")
                             st.rerun()
                         else:
                             st.error("回填失败：找不到任务结果文件")
@@ -1942,10 +2298,74 @@ elif stage == 6:
                             res = open_task_result(task_id)
                             if res:
                                 st.session_state.bundle, st.session_state.output_files = res
-                            st.success(f"已回填 {it.text_id} → neutral")
+                            remaining = [
+                                x for x in st.session_state.bundle.coded_items
+                                if x.need_review and not x.reviewed_by
+                            ]
+                            if not remaining:
+                                r2 = rebuild_report_after_review(
+                                    task_id, st.session_state.bundle)
+                                if r2:
+                                    st.session_state.bundle, st.session_state.output_files = r2
+                                    st.success(
+                                        f"已回填 {it.text_id} → neutral；最后一条已确认，报告已刷新")
+                                else:
+                                    st.success(f"已回填 {it.text_id} → neutral（刷新失败：文件不可写）")
+                            else:
+                                st.success(
+                                    f"已回填 {it.text_id} → neutral（还剩 {len(remaining)} 条，"
+                                    "可点「完成复核并刷新报告」）")
                             st.rerun()
                         else:
                             st.error("回填失败：找不到任务结果文件")
+
+    # 2.11 方案 A：复核后重新生成 LLM 深度结论（基于当前复核结果）
+    if st.session_state.get(f"nr_had_{task_id}"):
+        if st.button(
+            "✨ 重新生成 LLM 深度结论（基于当前复核结果）",
+            key=f"nr_regen_{task_id}",
+        ):
+            if not api_key:
+                st.warning("未配置 API Key：将生成词典规则结论（不调用 LLM）")
+            res = rebuild_report_after_review(
+                task_id, st.session_state.bundle, regenerate_insights=True)
+            if res:
+                st.session_state.bundle, st.session_state.output_files = res
+                st.success("深度结论已按当前复核结果重新生成")
+                st.rerun()
+            else:
+                st.error("重新生成失败：任务结果文件不可写")
+        st.caption(
+            "重新生成会按复核后的统计重新生成图表解析与深度结论"
+            "（LLM 模式需 API Key，按量计费）。"
+        )
+
+    if bundle.findings:
+        st.subheader(findings_section_title(bundle.insight_mode))
+        for f in bundle.findings:
+            with st.expander(
+                f"{display_finding_id(f.get('id', ''))} {f.get('claim', '')}",
+                expanded=False,
+            ):
+                for rid in (f.get("evidence_refs") or []):
+                    c = next((e for e in bundle.evidence if e.get("id") == rid), None)
+                    if not c:
+                        continue
+                    if c.get("kind") == "stat":
+                        st.markdown(
+                            f"📊 {c.get('text', '')}\n\n来源：报告统计 · n={c.get('n')}"
+                        )
+                        continue
+                    judge = "LLM 判定" if c.get("judge") == "llm" else "词典判定 · 仅供参考"
+                    label = (
+                        f"来源：{c.get('platform', '')} · {c.get('date') or '日期未知'} · "
+                        f"{judge}"
+                    )
+                    if c.get("need_review"):
+                        label += " · 待复核"
+                    st.markdown(f"「{c.get('text', '')}」\n\n{label}")
+                if f.get("action"):
+                    st.markdown(f"**建议：**{display_action(f.get('action'))}")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1979,6 +2399,23 @@ elif stage == 6:
         if dd_fig:
             st.plotly_chart(dd_fig, width="stretch")
             st.markdown(f"**解析：**{bundle.chart_insights.get('date_dim', '')}")
+        dim_neg = {}
+        for c in bundle.evidence:
+            if c.get("dimension") and c.get("sentiment") == "negative":
+                dim_neg.setdefault(c["dimension"], []).append(c)
+        if dim_neg:
+            st.markdown("**各维度负面原文 Top 3（规则抽取）**")
+            for dim, cards in dim_neg.items():
+                with st.expander(
+                    f"{dimension_cn(dim)}（{dimension_evidence_label(cards)}）",
+                    expanded=False,
+                ):
+                    for c in cards:
+                        label = " · 待复核" if c.get("need_review") else ""
+                        st.markdown(
+                            f"- 「{c.get('text', '')}」 — {c.get('platform', '')} · "
+                            f"{c.get('date') or '日期未知'}{label}"
+                        )
 
     pd_fig = platform_dim_fig(s)
     if pd_fig:
@@ -2002,15 +2439,65 @@ elif stage == 6:
     if co_fig:
         st.plotly_chart(co_fig, width="stretch")
         st.markdown(f"**解析：**{bundle.chart_insights.get('cooccurrence', '')}")
+        cluster_rows = topic_cluster_rows(s)
+        if cluster_rows:
+            st.markdown("**话题簇榜单**")
+            st.table(
+                [
+                    {
+                        "簇名": r["name"],
+                        "代表词": r["words"],
+                        "涉及文本数": r["doc_count"],
+                        "负面率": r["negative_rate"],
+                    }
+                    for r in cluster_rows
+                ]
+            )
+    elif cooccurrence_plan(s)["kind"] == "pairs":
+        st.caption(
+            "讨论结构样本不足，已显示话题词对榜："
+            f"{cooccurrence_plan(s)['reason']}。"
+        )
+        pair_rows = topic_pairs(s)
+        if pair_rows:
+            st.markdown("**话题词对榜**")
+            st.table(
+                [
+                    {
+                        "词对": f"{r['source']} — {r['target']}",
+                        "共现文本数": r["count"],
+                        "PMI": round(r["pmi"], 2),
+                    }
+                    for r in pair_rows
+                ]
+            )
     src_fig = sentiment_sources_fig(s)
     if src_fig:
         st.plotly_chart(src_fig, width="stretch")
 
+    narr_stats = s.get("narrative_stats") or {}
+    narr_total = narr_stats.get("total", 0)
+    if narr_total >= 10:
+        st.subheader("叙事框架与归因（LLM 高级分析）")
+        st.caption("仅对 LLM 精分析过的文本执行（成本控制设计）；归因/框架为固定词表。")
+        for line in narrative_insight_text(s):
+            st.markdown(line)
+        a1 = narrative_actor_fig(s)
+        if a1:
+            st.plotly_chart(a1, width="stretch")
+        a2 = narrative_frame_actor_heatmap(s)
+        if a2:
+            st.plotly_chart(a2, width="stretch")
+    elif narr_total > 0:
+        st.subheader("叙事框架与归因（LLM 高级分析）")
+        st.caption(f"叙事/归因样本仅 {narr_total} 条，样本不足，未生成聚合图。")
+
     st.subheader("概览")
     st.markdown(bundle.report_text)
 
-    st.subheader("深度结论与建议（按叙事框架）")
-    st.markdown(bundle.conclusion)
+    if not bundle.findings:
+        st.subheader(findings_section_title(bundle.insight_mode))
+        st.markdown(bundle.conclusion)
 
     st.subheader("下载报告")
     d1, d2, d3, d4 = st.columns(4)
@@ -2056,6 +2543,6 @@ elif stage == 6:
 
 # 顶部分步提示
 st.divider()
-steps = ["输入对象", "维度", "关键词", "渠道/时间", "确认运行", "后台执行", "结果"]
-current = min(int(st.session_state.get("stage", 0)), 6)
+steps = ["品牌和维度", "关键词", "渠道/时间", "确认运行", "后台执行", "结果"]
+current = min(int(st.session_state.get("stage", 0)), 5)
 st.caption("步骤：" + " → ".join(f"{'●' if i == current else '○'} {s}" for i, s in enumerate(steps)))
