@@ -1,0 +1,20 @@
+# Streamlit 主题配置草案（命题 A 落地件）
+# 对应任务：UI视觉升级方案 P0-1
+# 放置路径：项目根目录 .streamlit/config.toml
+# 说明：Streamlit 原生主题只暴露以下 6 个变量；控件级细节（圆角/间距/侧边栏宽度）
+#       由 streamlit_global.css 注入兜底（Streamlit 主题覆盖边界见方案 §九）。
+
+[theme]
+base = "light"                      # 强制浅色，禁止跟随系统的深色突变
+primaryColor = "#2B7BD6"            # 品牌蓝：按钮/链接/进度条/选中态（不表情感）
+backgroundColor = "#F8F9FA"         # 页面底 = 令牌 --g-50
+secondaryBackgroundColor = "#FFFFFF" # 卡片/侧边栏区块 = 令牌 --c-card
+textColor = "#1A1D23"               # 正文 = 令牌 --g-900
+font = "sans serif"                 # 走系统栈：微软雅黑/苹方（方案 §七-G：不引入思源黑体）
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# 本地工具默认行为，按需调整
+maxUploadSize = 100

@@ -48,6 +48,7 @@ UNIT_TESTS = [
     "test_custom_dimension.py",
     "test_dimension_aspect.py",
     "test_display_confidence.py",
+    "test_demo_report.py",
     "test_domain_proposer.py",
     "test_edge_annotation.py",
     "test_errors.py",

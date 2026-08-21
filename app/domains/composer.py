@@ -8,13 +8,13 @@
 - 组合维度强制 ≤10（超出由向导引导用户取消勾选后再继续）。
 
 合并规则（组合时生效，单模块原样保留模板维度）：
-- 价格类：content.pricing(付费定价) / physical.price_value(价格价值) /
-  service.price(价格) → 保留 price_value「价格价值」；
-- 品牌类：physical.brand_image(品牌形象) / service.brand_trust(品牌信任)
-  → 保留 brand_image「品牌形象」；
-- 渠道售后类：physical.channel_service(渠道服务) / service.after_sales(售后)
-  → 保留 channel_service「渠道服务与售后」；
-- 功能稳定类：content.tech_stability(技术稳定性) / physical.effectiveness(功能效果)
+- 价格类：content.monetization(付费与商业化) / physical.price_value(价格价值) /
+  service.price(价格与性价比) → 保留 price_value「价格价值」；
+- 品牌类：physical.brand_image(品牌与营销) / service.brand_trust(品牌信任与口碑)
+  → 保留 brand_image「品牌与营销」；
+- 渠道售后类：physical.channel_service(渠道与售后) / service.after_sales(售后与投诉处理)
+  → 保留 channel_service「渠道与售后」；
+- 功能稳定类：content.performance(性能稳定性) / physical.effectiveness(功能效果/使用体验)
   → 保留 effectiveness「功能与稳定性」。
 
 物化策略：向导确认时按「选中的维度子集」落盘到 data/domain_schemas/
@@ -25,6 +25,7 @@ modules_<ids>.json（worker 按 domain_id 直接 load_domain，无需改计划�
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 from app.core.models import DomainSchema
@@ -32,32 +33,39 @@ from app.core.models import Dimension
 
 TEMPLATES_FILE = Path(__file__).resolve().parent / "domain_templates.json"
 
+
+def templates_fingerprint() -> str:
+    """模板文件 sha256（模块 schema 缓存失效依据，2026-08-20）。"""
+    return hashlib.sha256(
+        TEMPLATES_FILE.read_bytes()
+    ).hexdigest()[:16]
+
 MODULE_CN = {
     "content": "数字产品",
     "physical": "有形实物",
     "service": "服务内容",
 }
 MODULE_DESC = {
-    "content": "游戏/影视/内容 App 等数字内容产品",
-    "physical": "消费品/3C/食品等有形商品",
-    "service": "餐饮/门店/平台等服务过程",
+    "content": "软件应用、游戏、数字内容等；功能与内容体验为主，性能、付费、安全为次",
+    "physical": "有形商品（消费品/3C/食品等）；品质、效果与价格为主，渠道、服务与品牌为次",
+    "service": "服务过程（餐饮/门店/平台服务等）；过程体验为主，价格与信任为次",
 }
 MAX_DIMENSIONS = 10
 
 # 合并目标规范：canonical id -> (名称, 描述)
 MERGE_SPEC = {
     "price_value": ("价格价值", "定价、付费机制、价格、性价比、促销折扣"),
-    "brand_image": ("品牌形象", "品牌声誉、营销、代言、信任与口碑"),
-    "channel_service": ("渠道服务与售后", "购买渠道、物流、客服、售后与投诉处理"),
+    "brand_image": ("品牌与营销", "品牌声誉、营销、代言、信任与口碑"),
+    "channel_service": ("渠道与售后", "购买渠道、物流、客服、售后与投诉处理"),
     "effectiveness": ("功能与稳定性", "核心功能、使用效果、性能与稳定性"),
 }
 # 合并映射：源维度 id -> canonical id（仅组合时生效）
 MERGE_MAP = {
-    "pricing": "price_value",
+    "monetization": "price_value",
+    "performance": "effectiveness",
     "price": "price_value",
     "brand_trust": "brand_image",
     "after_sales": "channel_service",
-    "tech_stability": "effectiveness",
 }
 
 
@@ -126,6 +134,7 @@ def compose_schema(module_ids: list[str]) -> DomainSchema:
         ],
         version="1.0",
         template_id=None,
+        template_fingerprint=templates_fingerprint(),
     )
 
 

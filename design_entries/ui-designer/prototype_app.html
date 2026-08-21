@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>命题A · 主应用视觉主题原型 — 社交媒体情感分析器</title>
+<style>
+/* ============================================================
+   设计令牌（竞稿 ui-designer · 现代企业风）
+   基础令牌沿用方案 §5.5；本方案按 §七-A 拍板结论扩展灰阶与语义色
+   ============================================================ */
+:root{
+  /* —— 基础令牌（不变） —— */
+  --c-page:#F8F9FA; --c-card:#FFFFFF; --c-text:#1A1D23; --c-border:#DEE2E6;
+  --c-brand:#2B7BD6; --c-brand-hover:#1F5F9E;
+  --c-pos:#2E9A6E; --c-neu:#8C8C8C; --c-neg:#D94A4A;
+  /* —— 扩展 · 中性灰阶（等色温，与文字色 #1A1D23 同源） —— */
+  --g-50:#F8F9FA; --g-100:#F1F3F5; --g-200:#E9ECEF; --g-300:#DEE2E6; --g-400:#CED4DA;
+  --g-500:#ADB5BD; --g-600:#8C8C8C; --g-700:#5C6370; --g-800:#3B414D; --g-900:#1A1D23;
+  /* —— 扩展 · 语义色（仅用于状态提示条/图标/边框，不上按钮背景） —— */
+  --s-success:#2E9A6E; --s-info:#2B7BD6; --s-warning:#B45309; --s-danger:#D94A4A;
+  --s-danger-text:#B93434; --s-warning-text:#8A4B06;
+  /* —— 令牌 alpha 派生（同一颜色透明度） —— */
+  --text-muted:rgba(26,29,35,.64); --text-faint:rgba(26,29,35,.45);
+  --brand-bg:rgba(43,123,214,.08); --brand-border:rgba(43,123,214,.28);
+  --pos-bg:rgba(46,154,110,.10); --neg-bg:rgba(217,74,74,.10); --neu-bg:rgba(140,140,140,.12);
+  --warn-bg:rgba(180,83,9,.08); --warn-border:rgba(180,83,9,.35);
+  --danger-bg:rgba(217,74,74,.08); --danger-border:rgba(217,74,74,.40);
+  /* —— 圆角 / 阴影 / 间距 —— */
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-full:999px;
+  --sh-xs:0 1px 2px rgba(16,24,40,.04);
+  --sh-sm:0 1px 3px rgba(16,24,40,.07),0 1px 2px rgba(16,24,40,.04);
+  --sh-md:0 4px 10px -2px rgba(16,24,40,.08),0 2px 4px -2px rgba(16,24,40,.05);
+  --sh-lg:0 12px 28px -8px rgba(16,24,40,.14);
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-6:24px; --sp-8:32px; --sp-12:48px;
+  /* —— 字体 —— */
+  --font:"Microsoft YaHei","PingFang SC","Segoe UI",system-ui,sans-serif;
+  --font-num:"Bahnschrift","Segoe UI","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--font);background:var(--g-100);color:var(--c-text);font-size:14px;line-height:1.6}
+.num{font-family:var(--font-num);font-variant-numeric:tabular-nums;letter-spacing:.01em}
+svg.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
+
+/* —— 页面骨架 —— */
+.demo-label{max-width:1240px;margin:40px auto 12px;padding:0 20px;font-size:13px;color:var(--g-500);letter-spacing:.12em}
+.frame{max-width:1240px;margin:0 auto 32px;padding:0 20px}
+.app{display:grid;grid-template-columns:284px 1fr;min-height:640px;background:var(--c-card);border:1px solid var(--g-200);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--sh-md)}
+
+/* —— 顶部品牌栏 —— */
+.topbar{grid-column:1 / -1;display:flex;align-items:center;gap:12px;padding:0 20px;height:52px;background:var(--c-card);border-bottom:1px solid var(--g-200)}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px}
+.logo .mark{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--c-brand),var(--c-brand-hover));display:flex;align-items:center;justify-content:center;box-shadow:var(--sh-sm)}
+.topbar .ver{font-size:12px;color:var(--g-500);margin-left:auto}
+.topbar .status-pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);background:var(--g-100);border:1px solid var(--g-200);border-radius:var(--r-full);padding:3px 10px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--s-success)}
+
+/* —— 侧边栏 —— */
+.side{background:var(--g-50);border-right:1px solid var(--g-200);padding:16px 14px;overflow-y:auto}
+.side h4{margin:18px 0 8px;font-size:12px;color:var(--g-500);font-weight:600;letter-spacing:.06em;display:flex;align-items:center;gap:6px}
+.side h4:first-child{margin-top:2px}
+.quick-card{background:linear-gradient(180deg,var(--brand-bg),rgba(43,123,214,.03));border:1px solid var(--brand-border);border-radius:var(--r-md);padding:12px;margin-bottom:6px}
+.quick-card .t{font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;color:var(--c-brand-hover)}
+.quick-card p{margin:6px 0 0;font-size:12px;color:var(--text-muted);line-height:1.7}
+.side .field{margin-bottom:10px}
+.switch-row{display:flex;align-items:center;justify-content:space-between;background:var(--c-card);border:1px solid var(--g-300);border-radius:var(--r-sm);padding:8px 10px}
+.switch-row .lbl{font-size:13px;display:flex;gap:6px;align-items:center}
+.toggle{width:36px;height:20px;border-radius:var(--r-full);background:var(--c-brand);position:relative;flex:none}
+.toggle::after{content:"";position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:var(--sh-xs)}
+.toggle.off{background:var(--g-400)}
+.toggle.off::after{right:auto;left:2px}
+.input{display:flex;align-items:center;gap:8px;background:var(--c-card);border:1px solid var(--g-300);border-radius:var(--r-sm);padding:8px 10px;font-size:13px;color:var(--text-muted)}
+.input:focus-within{border-color:var(--c-brand);box-shadow:0 0 0 3px var(--brand-bg)}
+.hint{font-size:12px;color:var(--text-faint);margin:6px 0 0}
+.expander{border:1px solid var(--g-200);border-radius:var(--r-sm);background:var(--c-card);margin-bottom:8px;overflow:hidden}
+.expander .head{display:flex;align-items:center;gap:8px;padding:9px 10px;font-size:13px;color:var(--text-muted);cursor:pointer}
+.expander .head .chev{margin-left:auto;color:var(--g-500)}
+.expander .body{padding:0 10px 10px;font-size:12px;color:var(--text-muted)}
+.task-mini{background:var(--c-card);border:1px solid var(--g-200);border-left:3px solid var(--c-brand);border-radius:var(--r-sm);padding:9px 10px;font-size:12px}
+.task-mini b{display:block;font-size:13px;color:var(--c-text)}
+.task-mini .sub{color:var(--text-faint);margin-top:2px}
+
+/* —— 主区 —— */
+.main{padding:24px 28px;min-width:0}
+.stepper{display:flex;align-items:center;gap:0;margin-bottom:22px;flex-wrap:wrap}
+.stepper .st{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--g-500)}
+.stepper .st .n{width:24px;height:24px;border-radius:50%;border:1.5px solid var(--g-400);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;background:var(--c-card);flex:none}
+.stepper .st.done{color:var(--s-success)}
+.stepper .st.done .n{border-color:var(--s-success);color:var(--s-success);background:var(--pos-bg)}
+.stepper .st.cur{color:var(--c-brand-hover);font-weight:600}
+.stepper .st.cur .n{border-color:var(--c-brand);background:var(--c-brand);color:#fff;box-shadow:0 0 0 4px var(--brand-bg)}
+.stepper .ln{width:34px;height:1.5px;background:var(--g-300);margin:0 10px}
+.stepper .ln.done{background:var(--s-success)}
+h2.page{margin:0 0 4px;font-size:20px;font-weight:700}
+.page-sub{color:var(--text-muted);font-size:13px;margin:0 0 20px}
+
+.card{background:var(--c-card);border:1px solid var(--g-200);border-radius:var(--r-md);padding:20px;box-shadow:var(--sh-xs)}
+.card h3{margin:0 0 14px;font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px}
+.card h3::before{content:"";width:3px;height:14px;border-radius:2px;background:var(--c-brand)}
+
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.kv .item{background:var(--g-50);border:1px solid var(--g-200);border-radius:var(--r-sm);padding:10px 12px}
+.kv .item .k{font-size:12px;color:var(--g-500)}
+.kv .item .v{font-size:14px;font-weight:600;margin-top:3px}
+
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;background:var(--g-100);border:1px solid var(--g-300);border-radius:var(--r-full);padding:4px 12px;color:var(--g-800)}
+.chip.channel{background:var(--brand-bg);border-color:var(--brand-border);color:var(--c-brand-hover)}
+
+.cost-row{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap}
+.cost{flex:1;min-width:160px;display:flex;align-items:center;gap:12px;background:var(--g-50);border:1px solid var(--g-200);border-radius:var(--r-sm);padding:12px 14px}
+.cost .ico{width:36px;height:36px;border-radius:var(--r-sm);background:var(--brand-bg);color:var(--c-brand-hover);display:flex;align-items:center;justify-content:center;flex:none}
+.cost .k{font-size:12px;color:var(--g-500)}
+.cost .v{font-size:20px;font-weight:700}
+
+/* —— 按钮 —— */
+.actions{display:flex;align-items:center;gap:12px;margin-top:20px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 22px;border-radius:var(--r-md);font-size:15px;font-weight:600;font-family:var(--font);cursor:pointer;border:1px solid transparent;transition:filter .15s ease,opacity .15s ease}
+.btn:focus-visible{outline:2px solid var(--c-brand);outline-offset:2px}
+.btn-primary{background:var(--c-brand);color:#fff}
+.btn-primary:hover{filter:brightness(.92)}   /* 悬停仅亮度变化，不引入新色 */
+.btn-secondary{background:var(--c-card);color:var(--c-brand-hover);border-color:var(--brand-border)}
+.btn-secondary:hover{filter:brightness(.97)}
+.btn-ghost{background:transparent;color:var(--text-muted)}
+.btn-ghost:hover{filter:brightness(.97)}
+.btn-sm{min-height:36px;padding:0 14px;font-size:13px}
+
+/* —— 执行页 —— */
+.progress{height:8px;background:var(--g-100);border-radius:var(--r-full);overflow:hidden;margin:14px 0 8px}
+.progress .bar{height:100%;width:58%;background:var(--c-brand);border-radius:var(--r-full)}
+.stages{list-style:none;margin:14px 0 0;padding:0}
+.stages li{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px dashed var(--g-200);font-size:14px}
+.stages li:last-child{border-bottom:none}
+.stages .st-ico{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none;font-size:12px;font-weight:700}
+.stages .done .st-ico{background:var(--pos-bg);color:var(--s-success);border:1px solid rgba(46,154,110,.35)}
+.stages .run  .st-ico{background:var(--brand-bg);color:var(--c-brand-hover);border:1px solid var(--brand-border)}
+.stages .wait{color:var(--g-500)}
+.stages .wait .st-ico{background:var(--g-100);color:var(--g-500);border:1px solid var(--g-300)}
+.stages .meta{margin-left:auto;font-size:12px;color:var(--text-faint)}
+.spin{width:14px;height:14px;border:2px solid var(--brand-border);border-top-color:var(--c-brand);border-radius:50%;animation:spin 1s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+
+/* —— 三态示范 —— */
+.states{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.state{border-radius:var(--r-md);padding:16px;border:1px solid;min-height:150px}
+.state .st-title{font-size:12px;font-weight:600;letter-spacing:.08em;margin-bottom:10px;display:block}
+.st-empty{background:var(--c-card);border-color:var(--g-200);color:var(--text-muted);text-align:center}
+.st-empty .big-ico{width:44px;height:44px;margin:6px auto 10px;border-radius:50%;background:var(--g-100);display:flex;align-items:center;justify-content:center;color:var(--g-500)}
+.st-error{background:var(--danger-bg);border-color:var(--danger-border)}
+.st-error .msg{color:var(--s-danger-text);font-size:13px;font-weight:600;display:flex;gap:8px;align-items:flex-start}
+.st-error .fix{color:var(--text-muted);font-size:13px;margin-top:8px;line-height:1.7}
+.st-loading{background:var(--brand-bg);border-color:var(--brand-border)}
+.st-loading .msg{color:var(--c-brand-hover);font-size:13px;font-weight:600;display:flex;gap:8px;align-items:center}
+.st-loading .sub{color:var(--text-muted);font-size:12px;margin-top:8px}
+
+/* —— 语义标签（情感色：仅图表/标签，不上按钮） —— */
+.tag{display:inline-flex;align-items:center;gap:5px;font-size:13px;border-radius:var(--r-full);padding:2px 10px}
+.tag .sym{font-weight:700}
+.tag-pos{background:var(--pos-bg);color:var(--c-pos)} .tag-pos .sym{color:var(--c-pos)}
+.tag-neg{background:var(--neg-bg);color:var(--s-danger-text)} .tag-neg .sym{color:var(--c-neg)}
+.tag-neu{background:var(--neu-bg);color:var(--g-700)} .tag-neu .sym{color:var(--g-600)}
+
+.foot-note{max-width:1240px;margin:0 auto 48px;padding:0 20px;font-size:12px;color:var(--g-500)}
+</style>
+</head>
+<body>
+
+<div class="demo-label">命题 A · 主应用视觉主题 — 屏幕 1：向导第 ④ 步「确认计划」</div>
+<div class="frame"><div class="app">
+
+  <div class="topbar">
+    <div class="logo">
+      <span class="mark">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 8.6 8.6 0 0 1-3.9-.9L3 20l1.2-4.4a8 8 0 0 1-.7-3.4A8.4 8.4 0 0 1 12 3.9a8.4 8.4 0 0 1 9 7.6z"/><path d="M8 10h8M8 13.5h5"/></svg>
+      </span>
+      社交媒体情感分析器
+    </div>
+    <span class="status-pill"><span class="dot"></span>就绪</span>
+    <span class="ver">v3.7</span>
+  </div>
+
+  <!-- 侧边栏 -->
+  <aside class="side">
+    <div class="quick-card">
+      <div class="t"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>快速上手</div>
+      <p>首次使用？试试「演示数据」渠道，3 分钟跑通一次完整分析，无需配置 API Key。</p>
+    </div>
+
+    <h4><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h.01M15 9h.01M8.5 14.5a4.5 4.5 0 0 1 7 0"/></svg>大模型设置</h4>
+    <div class="field">
+      <div class="switch-row">
+        <span class="lbl">LLM 精分析</span>
+        <span class="toggle" role="img" aria-label="已开启"></span>
+      </div>
+    </div>
+    <div class="field">
+      <div class="input">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        sk-••••••••••••3f9a
+      </div>
+      <p class="hint">已连接 · 余额充足 · 上次校验 2 分钟前</p>
+    </div>
+
+    <h4><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>高级选项</h4>
+    <div class="expander">
+      <div class="head">渠道风控安全 / 叙事归因<span class="chev">›</span></div>
+    </div>
+    <h4>数据与边界</h4>
+    <div class="expander">
+      <div class="head">《使用边界》<span class="chev">›</span></div>
+    </div>
+    <div class="expander">
+      <div class="head">数据管理<span class="chev">›</span></div>
+    </div>
+
+    <h4>任务中心</h4>
+    <div class="task-mini">
+      <b>OPPO Find X8 · 口碑分析</b>
+      <div class="sub">运行中 · 已用 6 分 12 秒</div>
+    </div>
+  </aside>
+
+  <!-- 主区：向导第④步 -->
+  <main class="main">
+    <div class="stepper">
+      <span class="st done"><span class="n">✓</span>品牌与维度</span><span class="ln done"></span>
+      <span class="st done"><span class="n">✓</span>确认关键词</span><span class="ln done"></span>
+      <span class="st done"><span class="n">✓</span>渠道与时间</span><span class="ln done"></span>
+      <span class="st cur"><span class="n">4</span>确认计划</span><span class="ln"></span>
+      <span class="st"><span class="n">5</span>后台执行</span><span class="ln"></span>
+      <span class="st"><span class="n">6</span>查看结果</span>
+    </div>
+
+    <h2 class="page">确认分析计划</h2>
+    <p class="page-sub">请核对以下内容，确认无误后开始分析。任务将在后台执行，期间可以离开页面。</p>
+
+    <div class="card" style="margin-bottom:16px">
+      <h3>计划摘要</h3>
+      <div class="kv" style="margin-bottom:16px">
+        <div class="item"><div class="k">分析对象</div><div class="v">OPPO Find X8</div></div>
+        <div class="item"><div class="k">关注维度</div><div class="v">外观 · 影像 · 续航 · 售后</div></div>
+        <div class="item"><div class="k">时间范围</div><div class="v num">近 30 天</div></div>
+        <div class="item"><div class="k">每词采集上限</div><div class="v num">10 条</div></div>
+      </div>
+      <div class="k" style="font-size:12px;color:var(--g-500);margin-bottom:8px">确认关键词（5 个）</div>
+      <div class="chips">
+        <span class="chip">OPPO Find X8</span>
+        <span class="chip">Find X8 评测</span>
+        <span class="chip">Find X8 值得买吗</span>
+        <span class="chip">Find X8 续航</span>
+        <span class="chip">Find X8 影像</span>
+      </div>
+      <div class="k" style="font-size:12px;color:var(--g-500);margin:14px 0 8px">采集渠道（4 个）</div>
+      <div class="chips">
+        <span class="chip channel"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>B站</span>
+        <span class="chip channel"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/></svg>微博</span>
+        <span class="chip channel"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l8.8 8.9 8.8-8.9a5.5 5.5 0 0 0 0-7.8z"/></svg>小红书</span>
+        <span class="chip channel"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>WebSearch</span>
+      </div>
+      <div class="cost-row">
+        <div class="cost">
+          <span class="ico"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
+          <span><span class="k">预计耗时</span><br><span class="v num">约 18 分钟</span></span>
+        </div>
+        <div class="cost">
+          <span class="ico"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+          <span><span class="k">预计费用（LLM）</span><br><span class="v num">约 ¥0.86</span></span>
+        </div>
+        <div class="cost">
+          <span class="ico"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg></span>
+          <span><span class="k">预计编码文本</span><br><span class="v num">约 1,200 条</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+        开始分析
+      </button>
+      <button class="btn btn-secondary">返回修改</button>
+      <span style="font-size:12px;color:var(--text-faint)">开始后任务转入后台，可随时在任务中心查看进度</span>
+    </div>
+  </main>
+</div></div>
+
+<div class="demo-label">命题 A · 主应用视觉主题 — 屏幕 2：向导第 ⑤ 步「后台执行」（加载态）</div>
+<div class="frame"><div class="app">
+  <div class="topbar">
+    <div class="logo">
+      <span class="mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 8.6 8.6 0 0 1-3.9-.9L3 20l1.2-4.4a8 8 0 0 1-.7-3.4A8.4 8.4 0 0 1 12 3.9a8.4 8.4 0 0 1 9 7.6z"/><path d="M8 10h8M8 13.5h5"/></svg></span>
+      社交媒体情感分析器
+    </div>
+    <span class="status-pill"><span class="dot" style="background:var(--c-brand)"></span>任务运行中</span>
+    <span class="ver">v3.7</span>
+  </div>
+  <div class="side" style="display:flex;align-items:center;justify-content:center;color:var(--g-500);font-size:13px">
+    侧边栏同屏幕 1（略）
+  </div>
+  <main class="main">
+    <div class="stepper">
+      <span class="st done"><span class="n">✓</span>品牌与维度</span><span class="ln done"></span>
+      <span class="st done"><span class="n">✓</span>确认关键词</span><span class="ln done"></span>
+      <span class="st done"><span class="n">✓</span>渠道与时间</span><span class="ln done"></span>
+      <span class="st done"><span class="n">✓</span>确认计划</span><span class="ln done"></span>
+      <span class="st cur"><span class="n">5</span>后台执行</span><span class="ln"></span>
+      <span class="st"><span class="n">6</span>查看结果</span>
+    </div>
+
+    <h2 class="page">正在分析 · OPPO Find X8</h2>
+    <p class="page-sub">任务在后台运行，您可以离开本页，完成后会自动生成报告。</p>
+
+    <div class="card">
+      <h3>执行进度</h3>
+      <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-muted)">
+        <span>词典预筛 · 阶段 3 / 6</span>
+        <span class="num">已用 06:12 · 预计还需约 11 分钟</span>
+      </div>
+      <div class="progress"><div class="bar"></div></div>
+      <ul class="stages">
+        <li class="done"><span class="st-ico">✓</span>采集数据<span class="meta">1,384 条</span></li>
+        <li class="done"><span class="st-ico">✓</span>清洗与去重<span class="meta">保留 1,214 条</span></li>
+        <li class="run"><span class="st-ico"><span class="spin"></span></span>词典预筛<span class="meta">928 / 1,214</span></li>
+        <li class="wait"><span class="st-ico">4</span>LLM 精分析<span class="meta">待开始</span></li>
+        <li class="wait"><span class="st-ico">5</span>叙事/归因分析<span class="meta">待开始</span></li>
+        <li class="wait"><span class="st-ico">6</span>生成报告<span class="meta">待开始</span></li>
+      </ul>
+      <div class="actions" style="margin-top:16px">
+        <button class="btn btn-secondary btn-sm">离开页面（后台继续）</button>
+        <button class="btn btn-ghost btn-sm">取消任务</button>
+      </div>
+    </div>
+  </main>
+</div></div>
+
+<div class="demo-label">命题 A · 主应用视觉主题 — 三态组件规范（空态 / 错误态 / 加载态，对应方案 §6-1 状态矩阵）</div>
+<div class="frame">
+  <div class="states">
+    <div class="state st-empty">
+      <span class="st-title" style="color:var(--g-500)">空态 EMPTY</span>
+      <div class="big-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+      <b style="color:var(--g-800)">还没有历史任务</b>
+      <p style="font-size:13px;margin:6px 0 12px">完成一次分析后，报告会保存在这里，可随时回看或重跑。</p>
+      <button class="btn btn-secondary btn-sm">新建分析</button>
+    </div>
+    <div class="state st-error">
+      <span class="st-title" style="color:var(--s-danger-text)">错误态 ERROR</span>
+      <div class="msg">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        微博采集失败：Cookie 已过期（第 2 次重试后仍失败）
+      </div>
+      <div class="fix">建议：到侧边栏「高级选项 → 渠道风控安全」更新微博 Cookie；或先取消勾选微博渠道，用其余 3 个渠道继续分析。</div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm">更新 Cookie</button>
+        <button class="btn btn-ghost btn-sm">跳过微博继续</button>
+      </div>
+    </div>
+    <div class="state st-loading">
+      <span class="st-title" style="color:var(--c-brand-hover)">加载态 LOADING</span>
+      <div class="msg"><span class="spin"></span>正在生成报告（阶段 6/6）</div>
+      <div class="sub">已用 00:38 · 可离开页面，完成后在任务中心查看</div>
+    </div>
+  </div>
+
+  <div style="margin-top:20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--g-500)">情感语义标签规范（✓/✗/～ 符号叠加，仅用于标签与图表，不上按钮）：</span>
+    <span class="tag tag-pos"><span class="sym">✓</span>正面 46.2%</span>
+    <span class="tag tag-neu"><span class="sym">～</span>中性 35.3%</span>
+    <span class="tag tag-neg"><span class="sym">✗</span>负面 18.5%</span>
+  </div>
+</div>
+
+<div class="foot-note">
+  竞稿：ui-designer · 命题 A（主应用视觉主题）· 纯前端原型，示例数据 · 配套落地草案见 streamlit_config.toml 与 streamlit_global.css
+</div>
+
+</body>
+</html>

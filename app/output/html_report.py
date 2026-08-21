@@ -156,6 +156,10 @@ def trend_fig(s: dict) -> go.Figure:
     trend = s["trend"]
     if not trend:
         return go.Figure().update_layout(title="暂无趋势数据")
+    # 2026-08-21：无日期文本（WebSearch 等）不进入时间轴，避免"未知"成为高峰
+    trend = {d: v for d, v in trend.items() if d != "未知"}
+    if not trend:
+        return go.Figure().update_layout(title="暂无趋势数据（文本均无发布日期）")
     df = pd.DataFrame(
         [
             {"日期": d, "内容量": v["count"], "平均评分": v["avg_score"], "负面数": v["negative"]}
@@ -171,7 +175,11 @@ def make_subplots_dual(df: pd.DataFrame) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(x=df["日期"], y=df["内容量"], name="内容量", marker_color="rgba(43, 123, 214, 0.6)"), secondary_y=False)
     fig.add_trace(go.Scatter(x=df["日期"], y=df["平均评分"], name="平均评分", mode="lines+markers", line=dict(color=SENTIMENT_COLORS["negative"])), secondary_y=True)
-    fig.update_layout(title="情感趋势（内容量 + 平均评分）", height=380, margin=dict(l=20, r=20, t=50, b=20))
+    fig.update_layout(
+        title="情感趋势（内容量 + 平均评分）", height=380,
+        margin=dict(l=20, r=20, t=50, b=20),
+        xaxis=dict(tickangle=45, tickfont=dict(size=11)),
+    )
     fig.update_yaxes(title_text="内容量", secondary_y=False)
     fig.update_yaxes(title_text="平均评分", secondary_y=True)
     return fig
@@ -199,8 +207,11 @@ def make_subplots_dual_dim(dims: dict) -> go.Figure:
         go.Scatter(x=cnames, y=[dims[n]["negative_rate"] for n in names], name="负面率 ✗", mode="lines+markers", line=dict(color=SENTIMENT_COLORS["negative"])),
         secondary_y=True,
     )
-    fig.update_layout(title="维度评价量与负面率", height=380,
-                      margin=dict(l=20, r=20, t=50, b=20))
+    fig.update_layout(
+        title="维度评价量与负面率", height=380,
+        margin=dict(l=20, r=20, t=50, b=20),
+        xaxis=dict(tickangle=40, tickfont=dict(size=11)),
+    )
     fig.update_yaxes(title_text="讨论量", secondary_y=False)
     fig.update_yaxes(title_text="负面率", secondary_y=True, tickformat=".0%")
     return fig
@@ -238,11 +249,12 @@ def heatmap_fig(s: dict) -> go.Figure | None:
             showscale=False,
         )
     )
-    fig.update_xaxes(side="top")
+    # 2026-08-21：x 轴放底部（顶部与标题重叠），旋转 + 缩小字体 + 加大下边距
+    fig.update_xaxes(tickangle=40, tickfont=dict(size=11))
     fig.update_layout(
         title="维度负面率（n<3 样本不评级）",
         height=360,
-        margin=dict(l=20, r=20, t=50, b=20),
+        margin=dict(l=20, r=20, t=70, b=130),
     )
     return fig
 
@@ -380,6 +392,14 @@ def platform_dim_fig(s: dict) -> go.Figure | None:
                 x=cdim_names,
                 y=[dmap.get(d, {}).get("negative_rate", 0) for d in dim_names],
                 marker_color=colors[i % len(colors)],
+                customdata=[
+                    [dmap.get(d, {}).get("count", 0), dmap.get(d, {}).get("negative", 0)]
+                    for d in dim_names
+                ],
+                hovertemplate=(
+                    "%{x}<br>%{fullData.name}：提及 %{customdata[0]} 条"
+                    "（负面 %{customdata[1]}）· 负面率 %{y:.0%}<extra></extra>"
+                ),
             )
         )
     fig.update_layout(
@@ -390,6 +410,7 @@ def platform_dim_fig(s: dict) -> go.Figure | None:
         yaxis_tickformat=".0%",
         height=420,
         margin=dict(l=20, r=20, t=50, b=40),
+        xaxis=dict(tickangle=40, tickfont=dict(size=11)),
     )
     return fig
 
@@ -870,6 +891,11 @@ def narrative_frame_actor_heatmap(s: dict) -> go.Figure | None:
                     f"{cell['count']} · {_rate_symbol(cell['negative_rate'])} "
                     f"{cell['negative_rate'] * 100:.0f}%"
                 )
+            elif cell:
+                # 2026-08-21：n<3 格子显示样本数（与日期热力图口径一致），
+                # 让"总计"与格子求和可对上，避免"企业 5 / 总计 6"困惑
+                zrow.append(None)
+                trow.append(f"n={cell['count']}")
             else:
                 zrow.append(None)
                 trow.append("—")
@@ -922,7 +948,7 @@ def narrative_frame_actor_heatmap(s: dict) -> go.Figure | None:
         )
     )
     fig.update_layout(
-        title="叙事框架 × 归因主体负面率（颜色=负面率；数字=n · 负面率）",
+        title="叙事框架 × 归因主体负面率（颜色=负面率；n<3 仅显示样本数）",
         height=60 + 34 * len(y_labels),
         margin=dict(l=20, r=20, t=60, b=20),
         yaxis=dict(autorange="reversed"),
@@ -1022,15 +1048,12 @@ def date_dim_heatmap_fig(s: dict) -> go.Figure | None:
     for i, d in enumerate(dates):
         for j, dim in enumerate(dim_names):
             v = dd[d].get(dim)
-            if not v or v["count"] <= 0:
+            if not v or v["count"] < 3:
+                # 2026-08-21：n<3 不标注（hover 可见），避免小格子文字重叠
                 continue
-            if v["count"] >= 3:
-                rate = v["negative_rate"]
-                txt = f"{rate * 100:.0f}%"
-                color = "white" if rate > 0.55 else "#1A1D23"
-            else:
-                txt = f"n={v['count']}"
-            color = "#8C8C8C"
+            rate = v["negative_rate"]
+            txt = f"{rate * 100:.0f}%"
+            color = "white" if rate > 0.55 else "#1A1D23"
             fig.add_annotation(
                 x=cdim_names[j],
                 y=d,
@@ -1040,8 +1063,9 @@ def date_dim_heatmap_fig(s: dict) -> go.Figure | None:
             )
     fig.update_layout(
         title="日期 × 维度 负面率热力图（n<3 样本不评级）",
-        height=max(360, 22 * len(dates) + 140),
+        height=max(420, 30 * len(dates) + 160),
         yaxis=dict(type="date", autorange="reversed"),
+        xaxis=dict(tickangle=40, tickfont=dict(size=11)),
         margin=dict(l=20, r=20, t=60, b=40),
     )
     return fig

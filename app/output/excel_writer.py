@@ -167,19 +167,20 @@ def _coded_rows(bundle: ReportBundle) -> list[dict]:
     if schema:
         dim_names = {d.id: d.name for d in schema.dimensions}
 
-def _note(it) -> str:
-    notes = []
-    if it.need_review:
-        notes.append(f"需复核：{it.need_review_reason}")
-        if not it.dimensions:
-            notes.append("维度：未命中领域词表")
-        if not bundle.plan.narrative_enabled:
-            notes.append("叙事/归因：未启用")
-        elif it.method != "llm":
-            notes.append("叙事/归因：仅对 LLM 精分析文本执行")
-        elif not it.narrative and not it.attribution:
-            notes.append("叙事/归因：模型未给出")
-        return "；".join(notes)
+    def _note(it) -> str:
+        notes = []
+        if it.need_review:
+            notes.append(f"需复核：{it.need_review_reason}")
+            if not it.dimensions:
+                notes.append("维度：未命中领域词表")
+            if not bundle.plan.narrative_enabled:
+                notes.append("叙事/归因：未启用")
+            elif it.method != "llm":
+                notes.append("叙事/归因：仅对 LLM 精分析文本执行")
+            elif not it.narrative and not it.attribution:
+                notes.append("叙事/归因：模型未给出")
+            return "；".join(notes)
+        return ""
 
     return [
         {
@@ -465,7 +466,7 @@ def build_excel(bundle: ReportBundle) -> BytesIO:
 
         summary_rows = []
         for name, df in _summary_frames(bundle):
-            summary_rows.append(f"== {name} ==")
+            summary_rows.append(f"【{name}】")
             summary_rows.extend(df.to_string(index=False).splitlines())
         pd.DataFrame({"统计汇总": summary_rows}).to_excel(
             writer, sheet_name="统计汇总", index=False

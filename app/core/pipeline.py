@@ -952,7 +952,7 @@ class TaskRunner:
                                     "title": (post.title or post.content)[:80],
                                     "keyword": post.keyword,
                                     "query": (post.platform_specific or {}).get("query", ""),
-                                    "reason": "LLM 相关性复核：不相关",
+                                    "reason": "LLM 相关性复核：不相关/无意义",
                                     "kind": "quality",
                                 }
                             )

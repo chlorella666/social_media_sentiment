@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>命题B · 结果页「结论优先」首屏原型 — 社交媒体情感分析器</title>
+<style>
+/* 设计令牌：与命题 A 同一套（竞稿 ui-designer） */
+:root{
+  --c-page:#F8F9FA; --c-card:#FFFFFF; --c-text:#1A1D23; --c-border:#DEE2E6;
+  --c-brand:#2B7BD6; --c-brand-hover:#1F5F9E;
+  --c-pos:#2E9A6E; --c-neu:#8C8C8C; --c-neg:#D94A4A;
+  --g-50:#F8F9FA; --g-100:#F1F3F5; --g-200:#E9ECEF; --g-300:#DEE2E6; --g-400:#CED4DA;
+  --g-500:#ADB5BD; --g-600:#8C8C8C; --g-700:#5C6370; --g-800:#3B414D; --g-900:#1A1D23;
+  --s-success:#2E9A6E; --s-info:#2B7BD6; --s-warning:#B45309; --s-danger:#D94A4A;
+  --s-danger-text:#B93434;
+  --text-muted:rgba(26,29,35,.64); --text-faint:rgba(26,29,35,.45);
+  --brand-bg:rgba(43,123,214,.08); --brand-border:rgba(43,123,214,.28);
+  --pos-bg:rgba(46,154,110,.10); --neg-bg:rgba(217,74,74,.10); --neu-bg:rgba(140,140,140,.12);
+  --warn-bg:rgba(180,83,9,.08); --warn-border:rgba(180,83,9,.35); --warn-text:#8A4B06;
+  --danger-bg:rgba(217,74,74,.08); --danger-border:rgba(217,74,74,.40);
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-full:999px;
+  --sh-xs:0 1px 2px rgba(16,24,40,.04); --sh-sm:0 1px 3px rgba(16,24,40,.07);
+  --sh-md:0 4px 10px -2px rgba(16,24,40,.08),0 2px 4px -2px rgba(16,24,40,.05);
+  --font:"Microsoft YaHei","PingFang SC","Segoe UI",system-ui,sans-serif;
+  --font-num:"Bahnschrift","Segoe UI","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font);background:var(--g-100);color:var(--c-text);font-size:14px;line-height:1.6;padding:24px 20px 60px}
+.wrap{max-width:1080px;margin:0 auto}
+.num{font-family:var(--font-num);font-variant-numeric:tabular-nums}
+svg.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
+
+/* 顶部条 */
+.crumb{display:flex;align-items:center;gap:10px;margin-bottom:16px;font-size:13px;color:var(--text-muted)}
+.crumb b{color:var(--c-text)}
+.crumb .acts{margin-left:auto;display:flex;gap:8px}
+
+/* 按钮 */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:40px;padding:0 16px;border-radius:var(--r-md);font-size:14px;font-weight:600;font-family:var(--font);cursor:pointer;border:1px solid transparent;transition:filter .15s ease}
+.btn:focus-visible{outline:2px solid var(--c-brand);outline-offset:2px}
+.btn-primary{background:var(--c-brand);color:#fff}
+.btn-primary:hover{filter:brightness(.92)}
+.btn-secondary{background:var(--c-card);color:var(--c-brand-hover);border-color:var(--brand-border)}
+.btn-secondary:hover{filter:brightness(.97)}
+
+/* —— 一句话结论横幅 —— */
+.conclusion{background:var(--c-card);border:1px solid var(--g-200);border-left:4px solid var(--c-brand);border-radius:var(--r-md);padding:22px 24px;box-shadow:var(--sh-xs);margin-bottom:16px}
+.conclusion .kicker{font-size:12px;color:var(--g-500);letter-spacing:.08em;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.conclusion h1{margin:0 0 10px;font-size:21px;line-height:1.55;font-weight:700}
+.conclusion h1 .hl-pos{color:var(--c-pos)} .conclusion h1 .hl-neg{color:var(--s-danger-text)}
+.conclusion .trust{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12px;color:var(--text-muted)}
+.trust .t-item{display:inline-flex;align-items:center;gap:5px;background:var(--g-100);border:1px solid var(--g-200);border-radius:var(--r-full);padding:3px 10px}
+
+/* —— 核心指标卡 —— */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.metric{background:var(--c-card);border:1px solid var(--g-200);border-radius:var(--r-md);padding:16px 18px;box-shadow:var(--sh-xs);position:relative}
+.metric .k{font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:6px}
+.metric .v{font-size:30px;font-weight:700;margin-top:6px;line-height:1.2}
+.metric .d{font-size:12px;margin-top:6px;color:var(--text-faint)}
+.metric .v.pos{color:var(--c-pos)} .metric .v.neg{color:var(--s-danger-text)}
+.metric .v .unit{font-size:14px;font-weight:600;color:var(--text-muted);margin-left:2px}
+
+/* 情感标签 */
+.tag{display:inline-flex;align-items:center;gap:5px;font-size:13px;border-radius:var(--r-full);padding:2px 10px;font-weight:600}
+.tag .sym{font-weight:700}
+.tag-pos{background:var(--pos-bg);color:var(--c-pos)}
+.tag-neg{background:var(--neg-bg);color:var(--s-danger-text)}
+.tag-neu{background:var(--neu-bg);color:var(--g-700)}
+
+/* —— 主图卡片 —— */
+.card{background:var(--c-card);border:1px solid var(--g-200);border-radius:var(--r-md);box-shadow:var(--sh-xs);margin-bottom:16px}
+.card .hd{display:flex;align-items:center;gap:10px;padding:16px 20px 0}
+.card .hd h3{margin:0;font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
+.card .hd h3::before{content:"";width:3px;height:15px;border-radius:2px;background:var(--c-brand)}
+.card .hd .r{margin-left:auto;font-size:12px;color:var(--text-faint)}
+.card .bd{padding:16px 20px 20px}
+
+/* 主图区：甜甜圈 + 洞察 */
+.chart-flex{display:flex;gap:32px;align-items:center;flex-wrap:wrap}
+.donut-legend{list-style:none;margin:0;padding:0;flex:1;min-width:220px}
+.donut-legend li{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed var(--g-200);font-size:14px}
+.donut-legend li:last-child{border-bottom:none}
+.donut-legend .sw{width:12px;height:12px;border-radius:3px;flex:none}
+.donut-legend .pct{margin-left:auto;font-size:18px;font-weight:700}
+.donut-legend .n{color:var(--text-faint);font-size:12px;margin-left:8px}
+.insight{background:var(--g-50);border-left:3px solid var(--c-neu);border-radius:var(--r-sm);padding:10px 14px;font-size:13px;color:var(--g-800);line-height:1.8;margin-top:14px}
+.insight b{color:var(--c-text)}
+
+/* —— 视图切换 —— */
+.viewbar{display:flex;align-items:center;gap:12px;margin:26px 0 14px}
+.viewbar .lbl{font-size:13px;color:var(--text-muted)}
+.seg{display:inline-flex;background:var(--g-100);border:1px solid var(--g-300);border-radius:var(--r-full);padding:3px}
+.seg button{border:none;background:transparent;font-family:var(--font);font-size:13px;font-weight:600;color:var(--text-muted);padding:7px 18px;border-radius:var(--r-full);cursor:pointer;transition:filter .15s ease;display:inline-flex;align-items:center;gap:6px}
+.seg button.on{background:var(--c-brand);color:#fff;box-shadow:var(--sh-sm)}
+.seg button:not(.on):hover{filter:brightness(.97)}
+.viewbar .note{font-size:12px;color:var(--text-faint);margin-left:auto}
+
+/* —— 折叠钻取区 —— */
+details.drill{background:var(--c-card);border:1px solid var(--g-200);border-radius:var(--r-md);margin-bottom:10px;box-shadow:var(--sh-xs);overflow:hidden}
+details.drill summary{list-style:none;display:flex;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;font-size:14px;font-weight:600;transition:background .15s ease}
+details.drill summary::-webkit-details-marker{display:none}
+details.drill summary:hover{background:var(--g-50)}
+details.drill summary .chev{margin-left:auto;color:var(--g-500);transition:transform .15s ease}
+details.drill[open] summary .chev{transform:rotate(90deg)}
+details.drill .badge{font-size:12px;font-weight:600;border-radius:var(--r-full);padding:2px 10px}
+.badge-pos{background:var(--pos-bg);color:var(--c-pos)}
+.badge-neg{background:var(--neg-bg);color:var(--s-danger-text)}
+.badge-neu{background:var(--neu-bg);color:var(--g-700)}
+.badge-info{background:var(--brand-bg);color:var(--c-brand-hover)}
+details.drill .inner{padding:0 18px 18px;color:var(--text-muted);font-size:13px}
+.mini-bars{display:flex;flex-direction:column;gap:10px;margin-top:4px}
+.mbar .row{display:flex;align-items:center;gap:10px;font-size:13px;margin-bottom:4px}
+.mbar .row .nm{width:64px;color:var(--g-800);text-align:right}
+.mbar .row .bar{height:10px;border-radius:var(--r-full);display:flex;overflow:hidden;width:100%;background:var(--g-100)}
+.mbar .row .p{height:100%;background:var(--c-pos)} .mbar .row .u{height:100%;background:var(--c-neu)} .mbar .row .g{height:100%;background:var(--c-neg)}
+.mbar .row .val{margin-left:10px;color:var(--text-faint);font-size:12px;white-space:nowrap}
+
+.feedback{display:flex;align-items:center;gap:8px;margin-top:22px;font-size:13px;color:var(--text-muted)}
+.feedback a{color:var(--c-brand);font-weight:600;text-decoration:none;border-bottom:1px dashed var(--brand-border)}
+.foot-note{max-width:1080px;margin:36px auto 0;font-size:12px;color:var(--g-500)}
+@media (max-width:720px){.chart-flex{gap:16px}.conclusion h1{font-size:18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="crumb">
+    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.4 2.6L3 8"/><path d="M3 3v5h5"/></svg>
+    返回任务中心 ｜ <b>OPPO Find X8 · 口碑分析</b>
+    <span class="acts">
+      <button class="btn btn-secondary">下载 Excel</button>
+      <button class="btn btn-secondary">查看报告</button>
+      <button class="btn btn-primary">重新分析</button>
+    </span>
+  </div>
+
+  <!-- ① 一句话结论 -->
+  <div class="conclusion">
+    <div class="kicker">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      分析结论
+    </div>
+    <h1>消费者对 OPPO Find X8 的讨论<span class="hl-pos">整体偏正面 ✓</span>：口碑集中在「外观设计」与「影像」，主要风险点是「续航虚标」与「售后响应」。</h1>
+    <div class="trust">
+      <span class="t-item"><svg class="ic" style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/></svg>4 渠道 · 近 30 天</span>
+      <span class="t-item">编码文本 1,214 条</span>
+      <span class="t-item">LLM 精分析占 78%</span>
+      <span class="t-item">可信度：<b style="color:var(--s-success)">较高</b>（样本充足）</span>
+      <span class="t-item" style="background:var(--warn-bg);border-color:var(--warn-border);color:var(--warn-text)">8 条样本待人工复核</span>
+    </div>
+  </div>
+
+  <!-- ② 核心指标 -->
+  <div class="metrics">
+    <div class="metric">
+      <div class="k">整体倾向</div>
+      <div class="v pos"><span class="tag tag-pos" style="font-size:18px;padding:4px 14px"><span class="sym">✓</span>偏正面</span></div>
+      <div class="d">正面 46.2% · 高于中性 35.3% 与负面 18.5%</div>
+    </div>
+    <div class="metric">
+      <div class="k">平均情感分</div>
+      <div class="v num">0.62<span class="unit">/ 1.0</span></div>
+      <div class="d">较上一周期 +0.07</div>
+    </div>
+    <div class="metric">
+      <div class="k">负面占比</div>
+      <div class="v num neg">18.5<span class="unit">%</span></div>
+      <div class="d">集中在「续航」维度（负面率 31.2%）</div>
+    </div>
+    <div class="metric">
+      <div class="k">消费者声音</div>
+      <div class="v num">1,214<span class="unit">条</span></div>
+      <div class="d">主帖 312 · 评论 902 · 丢弃率 12.3%</div>
+    </div>
+  </div>
+
+  <!-- ③ 整体情感占比主图（唯一默认展开） -->
+  <div class="card">
+    <div class="hd">
+      <h3>整体情感占比</h3>
+      <span class="r">按编码文本统计 · n=1,214</span>
+    </div>
+    <div class="bd">
+      <div class="chart-flex">
+        <svg width="220" height="220" viewBox="0 0 220 220" role="img" aria-label="整体情感占比：正面46.2%，中性35.3%，负面18.5%">
+          <circle cx="110" cy="110" r="70" fill="none" stroke="var(--g-100)" stroke-width="26"/>
+          <!-- 正面 46.2% -->
+          <circle cx="110" cy="110" r="70" fill="none" stroke="var(--c-pos)" stroke-width="26"
+                  stroke-dasharray="203.2 439.8" stroke-dashoffset="0" transform="rotate(-90 110 110)"/>
+          <!-- 中性 35.3% -->
+          <circle cx="110" cy="110" r="70" fill="none" stroke="var(--c-neu)" stroke-width="26"
+                  stroke-dasharray="155.3 439.8" stroke-dashoffset="-203.2" transform="rotate(-90 110 110)"/>
+          <!-- 负面 18.5% -->
+          <circle cx="110" cy="110" r="70" fill="none" stroke="var(--c-neg)" stroke-width="26"
+                  stroke-dasharray="81.4 439.8" stroke-dashoffset="-358.5" transform="rotate(-90 110 110)"/>
+          <text x="110" y="104" text-anchor="middle" font-size="13" fill="var(--g-500)" font-family="var(--font)">正面占比</text>
+          <text x="110" y="132" text-anchor="middle" font-size="30" font-weight="700" fill="var(--c-pos)" font-family="var(--font-num)">46.2%</text>
+        </svg>
+        <ul class="donut-legend">
+          <li><span class="sw" style="background:var(--c-pos)"></span>✓ 正面 <span class="n">560 条</span><span class="pct num" style="color:var(--c-pos)">46.2%</span></li>
+          <li><span class="sw" style="background:var(--c-neu)"></span>～ 中性 <span class="n">428 条</span><span class="pct num" style="color:var(--g-700)">35.3%</span></li>
+          <li><span class="sw" style="background:var(--c-neg)"></span>✗ 负面 <span class="n">226 条</span><span class="pct num" style="color:var(--s-danger-text)">18.5%</span></li>
+        </ul>
+      </div>
+      <p class="insight"><b>怎么读：</b>正面讨论主要来自「外观手感」「潜望长焦」；负面讨论中约六成与「续航虚标 / 掉电快」相关，且集中在小红书渠道。详见下方维度分析与平台对比。</p>
+    </div>
+  </div>
+
+  <!-- ④ 视图切换 -->
+  <div class="viewbar">
+    <span class="lbl">视图：</span>
+    <div class="seg" role="tablist">
+      <button class="on" role="tab" aria-selected="true">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15l2 2 4-4"/></svg>
+        结论视图
+      </button>
+      <button role="tab" aria-selected="false">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        全部视图（12 图）
+      </button>
+    </div>
+    <span class="note">结论视图 = 结论 + 4 指标 + 主图；需要全部图表时切换到「全部视图」</span>
+  </div>
+
+  <!-- ⑤ 折叠钻取 -->
+  <details class="drill">
+    <summary>
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/></svg>
+      平台对比
+      <span class="badge badge-info">4 渠道</span>
+      <span style="font-size:12px;font-weight:400;color:var(--text-faint)">负面率最高：小红书 24.1%</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="inner">
+      <div class="mbar">
+        <div class="row"><span class="nm">B站</span><span class="bar"><span class="p" style="width:49%"></span><span class="u" style="width:34%"></span><span class="g" style="width:17%"></span></span><span class="val">✓49 ～34 ✗17</span></div>
+        <div class="row"><span class="nm">微博</span><span class="bar"><span class="p" style="width:41%"></span><span class="u" style="width:39%"></span><span class="g" style="width:20%"></span></span><span class="val">✓41 ～39 ✗20</span></div>
+        <div class="row"><span class="nm">小红书</span><span class="bar"><span class="p" style="width:44%"></span><span class="u" style="width:32%"></span><span class="g" style="width:24%"></span></span><span class="val">✓44 ～32 ✗24</span></div>
+        <div class="row"><span class="nm">WebSearch</span><span class="bar"><span class="p" style="width:51%"></span><span class="u" style="width:33%"></span><span class="g" style="width:16%"></span></span><span class="val">✓51 ～33 ✗16</span></div>
+      </div>
+    </div>
+  </details>
+
+  <details class="drill">
+    <summary>
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+      时间趋势
+      <span class="badge badge-pos">✓ 情感升温</span>
+      <span style="font-size:12px;font-weight:400;color:var(--text-faint)">近 7 天正面占比 +5.8pt</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="inner">按日情感占比堆叠图 + 均分折线（切换到「全部视图」默认展开）。</div>
+  </details>
+
+  <details class="drill">
+    <summary>
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+      维度分析
+      <span class="badge badge-neg">✗ 风险维度 ×2</span>
+      <span style="font-size:12px;font-weight:400;color:var(--text-faint)">续航 31.2% · 售后 26.8%</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="inner">维度负面率排序、平台 × 维度热力图、雷达图、各维度负面原文 Top 3（切换到「全部视图」默认展开）。</div>
+  </details>
+
+  <details class="drill">
+    <summary>
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+      高频情感词与词云
+      <span class="badge badge-neu">～ Top 30 词</span>
+      <span style="font-size:12px;font-weight:400;color:var(--text-faint)">热词：「手感」「长焦」「掉电」</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="inner">高频情感词条形图 + 正/负/最差维度三张词云（切换到「全部视图」默认展开）。</div>
+  </details>
+
+  <details class="drill">
+    <summary>
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7 7l3.5 8.5M17 7l-3.5 8.5M7.5 6h9"/></svg>
+      讨论结构与叙事归因
+      <span class="badge badge-info">6 话题簇</span>
+      <span style="font-size:12px;font-weight:400;color:var(--text-faint)">LLM 高级分析 · 945 条样本</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="inner">话题共现网络、话题簇榜单、叙事框架/归因图（切换到「全部视图」默认展开）。</div>
+  </details>
+
+  <div class="feedback">
+    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>
+    判错了？<a href="#">点此反馈</a>，帮助模型变得更准 —— 你的反馈会进入评测中心的候选池。
+  </div>
+
+</div>
+<div class="foot-note">
+  竞稿：ui-designer · 命题 B（结果页「结论优先」首屏）· 对应方案 §6-4 线框：一句话结论（含可信度）→ 4 指标 → 唯一默认展开主图 → 视图切换 → 其余 12 图折叠钻取 · 纯前端原型，示例数据
+</div>
+</body>
+</html>

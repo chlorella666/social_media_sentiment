@@ -456,6 +456,56 @@ def test_v34_rule_gating() -> None:
     print("✓ v3.4/v3.5 规则开关（SMS_V34_RULES / SMS_V35_RULES 消融） 通过")
 
 
+def test_v38_rule_gating() -> None:
+    """SMS_V38_RULES 规则开关：默认全开、置空回到 v3.7、子集可单规则消融。"""
+    from app.coding import llm_analyzer as la
+
+    cfg = LLMConfig(api_key="sk-test", base_url="http://127.0.0.1:1",
+                    model="deepseek-chat")
+    schema = {
+        "dimensions": [
+            {"id": "character", "name": "角色偏好", "description": "角色",
+             "keywords": ["角色", "人设"]},
+            {"id": "brand_image", "name": "品牌形象", "description": "品牌",
+             "keywords": ["品牌", "营销"]},
+        ]
+    }
+    captured: dict[str, str] = {}
+
+    def fake_post(system, user, **kwargs):
+        captured["system"] = system
+        body = json.dumps({"items": [{"index": 0, "sentiment": "neutral",
+                                      "score": 0.0, "confidence": 0.5,
+                                      "keywords": [],
+                                      "dimension_sentiments": {}}]},
+                          ensure_ascii=False)
+        return body, ""
+
+    def run(v38: str) -> str:
+        a2 = OpenAICompatibleAnalyzer(cfg)
+        with mock.patch.dict("os.environ", {"SMS_V38_RULES": v38}), \
+             mock.patch.object(a2, "_post_chat", side_effect=fake_post):
+            a2.analyze_batch(["测试文本"], dimension_schema=schema)
+        return captured["system"]
+
+    tags = ("19a. 维度判维双信号", "19b. 长文本分段扫描", "19c. 游戏侧维度边界",
+            "19d. 品牌形象语境", "19e. 竞品对比边界", "19f. 渠道服务语境",
+            "19g. 字面词去噪", "19h. 页面壳不产生维度情感", "20. emoji 维度依据")
+    sys_all = run(la._V38_RULES_DEFAULT)
+    # 消融（2026-08-21）：19b 双输移出默认，保留为可选开关
+    assert la._V38_RULES_DEFAULT == "19a,19c,19d,19e,19f,19g,19h,20"
+    assert all(t in sys_all for t in tags if t != "19b. 长文本分段扫描")
+    assert "19b. 长文本分段扫描" not in sys_all, "19b 消融后不应默认注入"
+    sys_off = run("")
+    assert all(t not in sys_off for t in tags), "置空应回到 v3.7（无 v3.8 规则）"
+    sys_only = run("19a")
+    assert "19a. 维度判维双信号" in sys_only
+    assert "20. emoji 维度依据" not in sys_only
+    sys_19b = run("19b")
+    assert "19b. 长文本分段扫描" in sys_19b, "19b 仍应可通过开关显式启用"
+    print("✓ v3.8 规则开关（SMS_V38_RULES 消融） 通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_ping_unreachable()
@@ -474,4 +524,5 @@ if __name__ == "__main__":
     test_sentiment_missing_index_completion_recovers()
     test_subject_anchor_instruction_and_cache()
     test_v34_rule_gating()
+    test_v38_rule_gating()
     print("LLM 分析器测试全部通过 ✅")

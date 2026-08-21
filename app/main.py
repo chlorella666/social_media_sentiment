@@ -23,6 +23,7 @@ from pathlib import Path
 import streamlit as st
 
 from app import __version__
+from app import demo_report
 from app.channels.registry import list_channel_infos
 from app.channels import health
 from app.core import jobs
@@ -975,7 +976,7 @@ def _render_review_view(task: dict, task_id: str) -> None:
     ad_cid_set: set[str] = st.session_state[ad_cid_key]
 
     st.caption(
-        "同一行两个判断：**不相关** = 剔除（帖子随帖评论级联）；"
+        "同一行两个判断：**不相关/无意义** = 剔除（帖子随帖评论级联）；"
         "**广告/官方** = 默认计入，开启「剔除广告/官方内容」时仅从情感统计剔除"
         "（🔖 规则预标为建议，人工最终决定）。"
     )
@@ -1002,10 +1003,10 @@ def _render_review_view(task: dict, task_id: str) -> None:
     )
     only_pending = c2.checkbox("只看未判定", key=f"rv_pending_{task_id}",
                                help="相关性与广告/官方都尚未处理")
-    only_llm = c3.checkbox("只看 LLM 建议不相关", key=f"rv_llm_{task_id}")
+    only_llm = c3.checkbox("只看 LLM 建议不相关/无意义", key=f"rv_llm_{task_id}")
     only_ad_suggested = c4.checkbox("只看广告预标", key=f"rv_ad_suggested_{task_id}")
     tc1, tc2, tc3 = st.columns(3)
-    if tc1.button("全部标记不相关", key=f"rv_all_{task_id}"):
+    if tc1.button("全部标记不相关/无意义", key=f"rv_all_{task_id}"):
         for p in posts:
             url_set.add(p["url"])
         st.rerun()
@@ -1101,10 +1102,10 @@ def _render_review_post(
         st.markdown(f"{'🚫 ' if excluded else ''}{'📢 ' if ad_marked else ''}**{title}**")
         st.caption(meta)
         if p.get("llm_relevant") is False:
-            st.caption("🔖 LLM 建议不相关（人工最终决定）")
+            st.caption("🔖 LLM 建议不相关/无意义（人工最终决定）")
         if suggested:
             st.caption(f"🔖 广告规则预标：{suggested}")
-    mark = c2.checkbox("不相关", value=excluded, key=_review_key("rv", url))
+    mark = c2.checkbox("不相关/无意义", value=excluded, key=_review_key("rv", url))
     if mark != excluded:
         (url_set.add if mark else url_set.discard)(url)
         st.rerun()
@@ -1116,7 +1117,7 @@ def _render_review_post(
         st.markdown(p.get("content") or p.get("title") or "（无正文）")
         comments = p.get("comments") or []
         if excluded:
-            st.caption(f"帖子已标记不相关，{len(comments)} 条评论随帖剔除")
+            st.caption(f"帖子已标记不相关/无意义，{len(comments)} 条评论随帖剔除")
         elif comments:
             st.markdown("**评论**")
             for c in comments:
@@ -1194,11 +1195,14 @@ def reset_wizard() -> None:
     for key in [
         "stage", "mode", "subject", "domain_id", "selected_dims", "selected_modules",
         "schema", "custom_dim", "custom_dimensions", "custom_dim_errors",
+        "module_select", "dim_select",
         "manual_keywords", "keyword_groups",
         "websearch_eval_suffix", "keywords",
         "kwopt_bilibili", "kwopt_weibo", "kwopt_xiaohongshu",
-        "channel_ids", "date_range", "plan", "bundle", "output_files", "task_id",
+        "channel_ids", "channel_ids_opt", "date_range", "plan",
+        "bundle", "output_files", "task_id",
         "exclude_words", "exclude_words_opt",
+        "demo_report",
     ]:
         st.session_state.pop(key, None)
     st.session_state.stage = 0
@@ -1212,27 +1216,21 @@ def prev_stage() -> None:
     st.session_state.stage = max(int(st.session_state.get("stage", 0)) - 1, 0)
 
 
-def _submit_demo_plan() -> None:
-    """一键体验（4.1）：demo 渠道 + 示例品牌预填提交，只跑演示数据。"""
-    demo_plan = build_plan(
-        subject="瑞幸",
-        domain_id=None,
-        dimension_ids=[],
-        keyword_groups=[],
-        manual_keywords=["瑞幸"],
-        channel_ids=["demo"],
-        date_start=dt.date.today() - dt.timedelta(days=7),
-        date_end=dt.date.today(),
-        comments_enabled=False,
-        comments_per_post=0,
-        exclude_words=[],
-        llm_enabled=False,
-        narrative_enabled=False,
-        relevance_check_enabled=False,
-    )
-    task_id = jobs.submit_task(demo_plan)
-    st.session_state.task_id = task_id
-    st.session_state.stage = 4
+def _open_demo_report() -> None:
+    """打开内置演示报告（成品示例）：直接进结果页，不产生真实任务/数据。"""
+    with st.spinner("正在生成演示报告（几秒）…"):
+        try:
+            bundle = demo_report.build_demo_bundle()
+            files = demo_report.prepare_demo_files(bundle)
+        except Exception as exc:  # 演示入口失败不阻塞主流程
+            st.error(f"演示报告生成失败：{exc}")
+            st.stop()
+    st.session_state.bundle = bundle
+    st.session_state.output_files = files
+    st.session_state.task_id = None
+    st.session_state.demo_report = True
+    st.session_state.stage = 5
+    st.rerun()
 
 
 def _prefill_wizard_from_plan(plan: dict) -> None:
@@ -1260,7 +1258,8 @@ def _prefill_wizard_from_plan(plan: dict) -> None:
     channel_ids = [
         c.get("channel_id") for c in channels if c.get("channel_id")
     ] or list(plan.get("channel_ids") or [])
-    st.session_state.channel_ids = channel_ids or ["demo"]
+    st.session_state.channel_ids = channel_ids or []
+    st.session_state.channel_ids_opt = channel_ids or []
     # 渠道级参数：上限 / 官方域名 / WebSearch 优化 / 微博关键词展开
     limits: dict[str, int] = {}
     official_domains = ""
@@ -1333,15 +1332,18 @@ def _prefill_wizard_from_plan(plan: dict) -> None:
     st.session_state.selected_modules = mods
     if mods:
         try:
-            schema = compose_schema(mods)
-            st.session_state.schema = schema
-            save_cached_schema(
-                filter_schema_dims(schema, st.session_state.selected_dims)
-            )
+            st.session_state.schema = compose_schema(mods)
         except Exception:
             pass
+        st.session_state._restore_module_select = mods
+        st.session_state._restore_dim_select = list(st.session_state.selected_dims)
     else:
         st.session_state.schema = None
+    # demo-only 计划恢复时明示，避免"以为在跑真实渠道"（2026-08-20 走查）
+    if channel_ids and all(cid == "demo" for cid in channel_ids):
+        _demo_note = "（注意：该计划渠道为演示数据，只会生成演示内容，不采集真实数据）"
+        if st.session_state.get("plan_restored_notice"):
+            st.session_state["plan_restored_notice"] += _demo_note
 
 
 def _modules_for_domain(domain_id: str | None) -> list[str]:
@@ -1369,6 +1371,7 @@ for _wk in (
     "llm_enabled", "narrative_enabled", "wizard_mode",
     "comments_enabled", "comments_per_post", "exclude_words", "ad_review_mode",
     "websearch_eval_suffix_toggle", "kwopt_weibo_toggle",
+    "module_select", "dim_select",
 ):
     _restored_val = st.session_state.pop(f"_restore_{_wk}", None)
     if _restored_val is not None:
@@ -1385,17 +1388,16 @@ with st.sidebar:
         st.markdown("### 🚀 快速上手")
         st.markdown(
             "三步开始：\n"
-            "1. **一键体验演示数据**（1 分钟跑通全流程）；\n"
-            "2. 换真实渠道（微博 / B站 等）；\n"
+            "1. **先看成品演示报告**（约 2 秒，无需配置）；\n"
+            "2. 在向导中选择真实渠道开始分析；\n"
             "3. 开启 LLM 精分析，结论更可归因。"
         )
         qc1, qc2 = st.columns(2)
         if qc1.button(
-            "▶️ 一键体验", type="primary", width="stretch", key="quickstart_demo"
+            "✨ 看演示报告", type="primary", width="stretch", key="quickstart_demo_report"
         ):
             st.session_state["quickstart_dismissed"] = True
-            _submit_demo_plan()
-            st.rerun()
+            _open_demo_report()
         if qc2.button("知道了", width="stretch", key="quickstart_dismiss"):
             st.session_state["quickstart_dismissed"] = True
             st.rerun()
@@ -1415,13 +1417,13 @@ with st.sidebar:
         help="默认词典模式（离线可跑，不发送数据）；开启后低置信度文本将发送给"
              "所选服务商，可提高准确率（按量计费）",
     )
+    st.caption(
+        "准确率（内置评测集实测）：词典模式约 35%~46%，"
+        "LLM 精分析约 80%~88%。"
+    )
     # 2.8（2026-08-18）：LLM 相关性复核随 LLM 自动开启，不再提供独立开关
     relevance_check_enabled = llm_enabled
     if llm_enabled:
-        st.warning(
-            "⚠️ 开启后，低置信度文本将发送给所选服务商（DeepSeek/OpenAI 等），"
-            "请勿输入含个人敏感信息的内容。"
-        )
         with st.expander("❓ 如何获取 API Key（小白版）"):
             st.markdown(API_KEY_GUIDE)
         saved_key = load_api_key(allow_env=False)
@@ -1508,7 +1510,11 @@ with st.sidebar:
             "可在下方调整（-1=不限；不限的渠道不在此显示）。"
             "检测到风控时渠道会自动冷却，可在此手动解除。"
         )
-        _quota_channels = list(st.session_state.get("channel_ids") or [])
+        _quota_channels = list(
+            st.session_state.get("channel_ids_opt")
+            or st.session_state.get("channel_ids")
+            or []
+        )
         _quota_infos = {i["id"]: i["name"] for i in list_channel_infos()}
         quota_save: dict[str, int] = {}
         if not _quota_channels:
@@ -1793,6 +1799,7 @@ if stage == 0:
             "模块（可多选，例如零售商 = 有形实物 + 服务内容）",
             options=["content", "physical", "service"],
             format_func=lambda m: f"{module_name(m)}（{MODULE_DESC[m]}）",
+            key="module_select",
         )
         st.session_state.selected_modules = mods
         schema = None
@@ -1809,6 +1816,7 @@ if stage == 0:
                 options=[d.id for d in schema.dimensions],
                 format_func=lambda k: names[k],
                 default=[d.id for d in schema.dimensions],
+                key="dim_select",
             )
             st.session_state.selected_dims = selected
             st.session_state.domain_id = schema.domain_id
@@ -1930,17 +1938,18 @@ elif stage == 1:
 elif stage == 2:
     st.subheader("③ 选择采集渠道与时间段")
     infos = list_channel_infos()
-    default_channels = ["demo"]
     selected = st.multiselect(
-        "采集渠道（建议先使用演示数据体验全流程）",
+        "采集渠道（demo = 内置演示数据，仅用于体验，不采集真实内容）",
         options=[i["id"] for i in infos],
-        default=default_channels,
         key="channel_ids",
         format_func=lambda cid: {
             i["id"]: f"{i['name']} — {i['applicability']}"
             for i in infos
         }[cid],
     )
+    # 2026-08-20 走查修复：控件卸载会清理 widget key，镜像到普通键，
+    # 确认页/提交读取镜像（否则④确认页显示真实渠道、提交时被清理回退 demo）
+    st.session_state.channel_ids_opt = selected
 
     # 渠道提示：已选渠道的风控/前置条件/采集规则统一展示（避免警告散落各处）
     risk_texts = []
@@ -1957,9 +1966,7 @@ elif stage == 2:
         )
         info_texts.append(
             "小红书前置条件：Chrome 已登录 xiaohongshu.com + opencli 已安装"
-            "（npm install -g @jackwener/opencli）；采集较慢，每个关键词约 1~2 分钟。\n"
-            "评论抓取范围：每个关键词最多收录 10 帖，评论只对其中**最热（按点赞）前 5 帖**抓取，"
-            "每帖最多抓取设定的评论条数——降低操作频率以防验证码与风控、控制采集耗时。"
+            "（npm install -g @jackwener/opencli）；采集较慢，每个关键词约 1~2 分钟。"
         )
     if risk_texts:
         st.warning("⚠️ 渠道风控提示\n" + "\n".join(f"- {t}" for t in risk_texts))
@@ -1971,7 +1978,12 @@ elif stage == 2:
         default_start = dt.date.today() - dt.timedelta(days=30)
         date_range = st.date_input(
             "时间段", value=(default_start, dt.date.today()),
-            key="date_range", help="采集该时间段内的内容",
+            key="date_range",
+            help=(
+                "时间段过滤器：平台不提供按历史日期检索能力，此设置只保证"
+                "『不保留超出窗口的内容』，不保证『窗口内的内容都采得到』"
+                "（各渠道只能返回近期内容，历史内容请定期运行分析积累）。"
+            ),
         )
     with col2:
         if "weibo" in selected:
@@ -2070,7 +2082,12 @@ elif stage == 2:
         with c2:
             comments_per_post = st.slider(
                 "每帖评论上限", 0, 10, 10, key="comments_per_post",
-                help="每条帖子最多抓取多少条评论（评论越多采集越慢）",
+                help=(
+                    "每条帖子最多抓取多少条评论（评论越多采集越慢）。"
+                    "评论抓取范围：每个关键词最多收录 10 帖，"
+                    "评论只对其中最热（按点赞）前 5 帖抓取，"
+                    "每帖最多抓取设定的评论条数——降低操作频率以防验证码与风控、控制采集耗时。"
+                ),
             )
         # Streamlit 会在控件卸载时清理其 widget key，镜像到普通键供确认页/提交读取
         st.session_state.comments_enabled_opt = comments_enabled
@@ -2119,8 +2136,7 @@ elif stage == 2:
         opt_channels = ["weibo"] if "weibo" in selected else []
         has_ws = any(cid.startswith("websearch") for cid in selected)
         if has_ws or opt_channels:
-            with st.container(border=True):
-                st.markdown("**⚙️ 关键词优化**")
+            with st.expander("⚙️ 关键词优化", expanded=False):
                 st.caption(
                     "开启后系统会按策略自动加后缀/展开查询，降低纯品牌词命中官网/壳页的"
                     "丢弃率。"
@@ -2247,7 +2263,7 @@ elif stage == 3:
             )
     relevance_check_enabled = llm_enabled  # 与侧边栏口径一致（随 LLM 自动开启）
     keywords = st.session_state.get("keywords", [])
-    channel_ids = st.session_state.get("channel_ids", ["demo"])
+    channel_ids = st.session_state.get("channel_ids_opt") or st.session_state.get("channel_ids", [])
     date_range = st.session_state.get("date_range", (dt.date.today() - dt.timedelta(days=30), dt.date.today()))
     channel_params = {}
     if "weibo" in channel_ids and st.session_state.get("weibo_cookie"):
@@ -2406,6 +2422,21 @@ elif stage == 3:
         review_enabled=st.session_state.get("review_enabled_opt", False),
         exclude_ad_enabled=st.session_state.get("exclude_ad_opt", False),
     )
+    # 2026-08-20 走查：demo 渠道不得静默提交——确认页显著警示 + 显式勾选
+    demo_only = bool(plan.channels) and all(
+        cfg.channel_id == "demo" for cfg in plan.channels
+    )
+    if demo_only:
+        st.error(
+            "⚠️ 本次计划只包含「演示数据」渠道：**不会采集任何真实内容**，"
+            "报告为内置模拟数据。若需分析真实品牌，请返回 ③ 选择真实渠道。"
+        )
+        st.session_state.demo_only_confirm = st.checkbox(
+            "我确认本次只跑演示数据（不采集真实内容）",
+            key="demo_only_confirm_box",
+        )
+    else:
+        st.session_state.demo_only_confirm = False
 
     # UX 5.2 预期管理：同类任务历史耗时均值（供"通常多久跑完"预期）
     _dur = jobs.history_duration_stats(plan)
@@ -2419,7 +2450,8 @@ elif stage == 3:
         )
     else:
         st.caption(
-            "⏱ 暂无同类任务历史，耗时无法预估；建议先用演示数据体验全流程。"
+            "⏱ 暂无同类任务历史，耗时无法预估；建议先跑小规模任务"
+            "（1~2 个关键词、单个渠道）验证链路。"
         )
 
     # UX 5.1：把当前配置存为命名模板（≤5，同名覆盖）
@@ -2447,6 +2479,12 @@ elif stage == 3:
 
     start_btn = col2.button("🚀 启动分析", type="primary", width="stretch")
     if start_btn:
+        if not plan.channels:
+            st.error("未选择任何采集渠道，请返回 ③ 至少选择一个渠道。")
+            st.stop()
+        if demo_only and not st.session_state.get("demo_only_confirm"):
+            st.error("本次为演示数据任务：请先勾选「我确认本次只跑演示数据」再启动。")
+            st.stop()
         # LLM Key：DPAPI 加密存本机供后台 worker 读取（不落库、不落明文）
         if api_key and api_key.strip():
             try:
@@ -2625,6 +2663,17 @@ elif stage == 5:
     s = bundle.summary
     dist = s["sentiment_distribution"]
     st.subheader("⑥ 分析结果")
+    _is_demo = bool(st.session_state.get("demo_report"))
+    if _is_demo:
+        _demo_subject = bundle.plan.subject or "示例"
+        st.info(
+            f"📋 这是**演示报告**：示例为「{html.escape(_demo_subject)}」"
+            "（LLM 精分析模式效果），用于展示报告形态。"
+            "真实分析请在向导中提交任务。"
+        )
+        if st.button("← 返回向导", key="demo_back"):
+            reset_wizard()
+            st.rerun()
     # P1-1：视图切换（结论视图 = 结论 + 4 指标 + 整体情感主图；全部图表 = 展开全部）
     view = st.segmented_control(
         "视图",
@@ -2765,7 +2814,11 @@ elif stage == 5:
     if nr_items:
         st.session_state[f"nr_had_{task_id}"] = True
     nr_unreviewed = [it for it in nr_items if not it.reviewed_by]
-    if nr_unreviewed and not st.session_state.get(f"nr_skip_{task_id}"):
+    if (
+        nr_unreviewed
+        and not _is_demo
+        and not st.session_state.get(f"nr_skip_{task_id}")
+    ):
         st.warning(
             f"⚠️ 有 **{len(nr_unreviewed)}** 条需复核样本未确认："
             "当前指标与结论基于模型判定。复核后报告统计/图表/Excel/HTML 会自动更新。"
@@ -2831,10 +2884,16 @@ elif stage == 5:
             f"🔍 需复核样本（{len(nr_items)} 条：词典直判/低置信/反讽/黑话/问句/短句等难例）",
             expanded=len(nr_items) <= 20 or focus,
         ):
-            st.caption(
-                "人工确认后回填情感并标记已复核；**全部确认后报告统计/图表/Excel/HTML "
-                "会按复核结果自动重算**（确认最后一条即自动刷新，无需手动操作）。"
-            )
+            if _is_demo:
+                st.caption(
+                    "演示报告为静态示例：以下需复核样本仅作展示，不支持回填；"
+                    "真实任务可在此逐条复核并自动重算报告。"
+                )
+            else:
+                st.caption(
+                    "人工确认后回填情感并标记已复核；**全部确认后报告统计/图表/Excel/HTML "
+                    "会按复核结果自动重算**（确认最后一条即自动刷新，无需手动操作）。"
+                )
             unreviewed = [it for it in nr_items if not it.reviewed_by]
             shown = unreviewed[:50]
             if len(unreviewed) > 50:
@@ -2850,6 +2909,8 @@ elif stage == 5:
                 c4.write(it.need_review_reason)
                 if it.reviewed_by:
                     c5.caption(f"✅ {it.reviewed_by}")
+                elif _is_demo:
+                    c5.caption("演示样本")
                 else:
                     b1, b2, b3 = c5.columns(3)
                     if b1.button("正", key=f"nr_pos_{task_id}_{i}"):
@@ -2860,7 +2921,7 @@ elif stage == 5:
                         _apply_review_item(task_id, it, "neutral")
 
     # 2.11 方案 A：复核后重新生成 LLM 深度结论（基于当前复核结果）
-    if st.session_state.get(f"nr_had_{task_id}"):
+    if st.session_state.get(f"nr_had_{task_id}") and not _is_demo:
         if st.button(
             "✨ 重新生成 LLM 深度结论（基于当前复核结果）",
             key=f"nr_regen_{task_id}",

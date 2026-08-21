@@ -40,6 +40,8 @@ class DomainSchema(BaseModel):
     version: str = "1.0"  # schema 版本号：变更触发该领域评测基线重冻结（指纹守卫）
     template_id: Optional[str] = None  # 主导对象模板：content/physical/service
     # （缺省 None = 旧 schema 按领域推断，只读不改行为）
+    template_fingerprint: str = ""  # 模块模板文件指纹（2026-08-20）：缓存失效用，
+    # 模板改动后旧 modules_* 缓存自动失效重合成；非模块 schema 为空
 
 
 # ---------------------------------------------------------------------------

@@ -274,7 +274,7 @@ def _apply_exclusions(snapshot: dict, task: dict[str, Any]):
                     "platform": p["platform"],
                     "url": p["url"],
                     "title": title,
-                    "reason": f"人工筛选：帖子不相关（{len(comments)} 条评论随帖剔除）",
+                    "reason": f"人工筛选：帖子不相关/无意义（{len(comments)} 条评论随帖剔除）",
                     "kind": "quality",
                 }
             )
@@ -286,7 +286,7 @@ def _apply_exclusions(snapshot: dict, task: dict[str, Any]):
                     "platform": p["platform"],
                     "url": p["url"],
                     "title": title,
-                    "reason": f"人工筛选：评论不相关（剔除 {len(comments) - len(kept_comments)} 条）",
+                    "reason": f"人工筛选：评论不相关/无意义（剔除 {len(comments) - len(kept_comments)} 条）",
                     "kind": "quality",
                 }
             )

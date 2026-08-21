@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>命题C · HTML 分析报告视觉稿 — 社交媒体情感分析器</title>
+<style>
+/* 设计令牌：与命题 A / B 同一套（竞稿 ui-designer） */
+:root{
+  --c-page:#F8F9FA; --c-card:#FFFFFF; --c-text:#1A1D23; --c-border:#DEE2E6;
+  --c-brand:#2B7BD6; --c-brand-hover:#1F5F9E;
+  --c-pos:#2E9A6E; --c-neu:#8C8C8C; --c-neg:#D94A4A;
+  --g-50:#F8F9FA; --g-100:#F1F3F5; --g-200:#E9ECEF; --g-300:#DEE2E6; --g-400:#CED4DA;
+  --g-500:#ADB5BD; --g-600:#8C8C8C; --g-700:#5C6370; --g-800:#3B414D; --g-900:#1A1D23;
+  --s-success:#2E9A6E; --s-info:#2B7BD6; --s-warning:#B45309; --s-danger:#D94A4A;
+  --s-danger-text:#B93434;
+  --text-muted:rgba(26,29,35,.64); --text-faint:rgba(26,29,35,.45);
+  --brand-bg:rgba(43,123,214,.08); --brand-border:rgba(43,123,214,.28);
+  --pos-bg:rgba(46,154,110,.10); --neg-bg:rgba(217,74,74,.10); --neu-bg:rgba(140,140,140,.12);
+  --warn-bg:rgba(180,83,9,.08); --warn-border:rgba(180,83,9,.35); --warn-text:#8A4B06;
+  --danger-bg:rgba(217,74,74,.08); --danger-border:rgba(217,74,74,.40);
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-full:999px;
+  --sh-xs:0 1px 2px rgba(16,24,40,.04); --sh-sm:0 1px 3px rgba(16,24,40,.07);
+  --sh-md:0 4px 10px -2px rgba(16,24,40,.08),0 2px 4px -2px rgba(16,24,40,.05);
+  --sh-lg:0 12px 28px -8px rgba(16,24,40,.14);
+  --font:"Microsoft YaHei","PingFang SC","Segoe UI",system-ui,sans-serif;
+  --font-num:"Bahnschrift","Segoe UI","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font);background:var(--g-100);color:var(--c-text);font-size:14px;line-height:1.65}
+.wrap{max-width:1040px;margin:0 auto;padding:32px 20px 48px}
+.num{font-family:var(--font-num);font-variant-numeric:tabular-nums}
+svg.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
+
+/* ============ 封面（替代原渐变 banner 的品牌化封面） ============ */
+.cover{background:var(--c-card);border:1px solid var(--g-200);border-radius:var(--r-lg);box-shadow:var(--sh-md);overflow:hidden;margin-bottom:16px}
+.cover .band{height:6px;background:linear-gradient(90deg,var(--c-brand) 0%,var(--c-brand-hover) 60%,var(--c-pos) 100%)}
+.cover .inner{padding:34px 38px 30px}
+.cover .brand-row{display:flex;align-items:center;gap:12px;margin-bottom:26px}
+.cover .mark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--c-brand),var(--c-brand-hover));display:flex;align-items:center;justify-content:center;box-shadow:var(--sh-sm)}
+.cover .pname{font-weight:700;font-size:15px;letter-spacing:.02em}
+.cover .ptype{font-size:12px;color:var(--g-500);margin-left:auto;letter-spacing:.14em}
+.cover h1{margin:0 0 6px;font-size:28px;line-height:1.4;font-weight:700}
+.cover .subject-desc{color:var(--text-muted);font-size:14px;margin:0 0 22px;max-width:640px}
+.cover .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0;border:1px solid var(--g-200);border-radius:var(--r-md);overflow:hidden;background:var(--g-50)}
+.cover .meta .m{padding:12px 16px;border-right:1px solid var(--g-200)}
+.cover .meta .m:last-child{border-right:none}
+.cover .meta .k{font-size:12px;color:var(--g-500)}
+.cover .meta .v{font-size:14px;font-weight:600;margin-top:2px}
+.cover .verdict-row{display:flex;align-items:center;gap:14px;margin-top:22px;flex-wrap:wrap}
+.cover .verdict{display:inline-flex;align-items:center;gap:8px;font-size:16px;font-weight:700;border-radius:var(--r-full);padding:8px 20px}
+.cover .share{font-size:13px;color:var(--text-muted)}
+
+/* 情感标签 */
+.tag{display:inline-flex;align-items:center;gap:5px;font-size:13px;border-radius:var(--r-full);padding:2px 10px;font-weight:600}
+.tag .sym{font-weight:700}
+.tag-pos{background:var(--pos-bg);color:var(--c-pos)}
+.tag-neg{background:var(--neg-bg);color:var(--s-danger-text)}
+.tag-neu{background:var(--neu-bg);color:var(--g-700)}
+
+/* 提示条 */
+.notice{border-radius:var(--r-md);padding:12px 16px;font-size:13px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-start;line-height:1.7}
+.notice .t-ico{margin-top:2px}
+.notice-warning{background:var(--warn-bg);border:1px solid var(--warn-border);color:var(--warn-text)}
+.notice-info{background:var(--brand-bg);border:1px solid var(--brand-border);color:var(--c-brand-hover)}
+.notice-danger{background:var(--danger-bg);border:1px solid var(--danger-border);color:var(--s-danger-text)}
+
+/* ============ 指标卡 ============ */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--c-card);border:1px solid var(--g-200);border-radius:var(--r-md);padding:16px 18px;box-shadow:var(--sh-xs)}
+.card .k{font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px}
+.card .v{font-size:26px;font-weight:700;margin-top:6px}
+.card .v.pos{color:var(--c-pos)} .card .v.neg{color:var(--s-danger-text)}
+.card .d{font-size:12px;color:var(--text-faint);margin-top:4px}
+
+/* ============ 章节卡片 ============ */
+.section{background:var(--c-card);border:1px solid var(--g-200);border-radius:var(--r-md);padding:22px 24px;margin-bottom:16px;box-shadow:var(--sh-xs)}
+.sec-hd{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;border-bottom:1px solid var(--g-200);padding-bottom:12px}
+.sec-hd .idx{font-family:var(--font-num);font-size:13px;font-weight:700;color:var(--c-brand);letter-spacing:.06em}
+.sec-hd h2{margin:0;font-size:18px;font-weight:700;letter-spacing:.01em}
+.sec-hd .r{margin-left:auto;font-size:12px;color:var(--text-faint)}
+
+/* 表格 */
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--g-200)}
+th{color:var(--g-500);font-weight:600;background:var(--g-50);font-size:12px;letter-spacing:.03em}
+td{color:var(--g-800)}
+tbody tr:nth-child(even){background:var(--g-50)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+td .neg-hi{color:var(--s-danger-text);font-weight:600}
+.tbl-note{font-size:12px;color:var(--text-faint);margin-top:10px;line-height:1.7}
+
+/* ============ 图表卡片（图与卡片融合） ============ */
+.chart-block{border:1px solid var(--g-200);border-radius:var(--r-md);padding:18px 20px;margin-bottom:14px;background:var(--c-card)}
+.chart-block .cb-hd{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.chart-block .cb-hd .nm{font-size:14px;font-weight:700}
+.chart-block .cb-hd .sub{font-size:12px;color:var(--text-faint)}
+.chart-block .cb-hd .lg{margin-left:auto;display:flex;gap:12px;font-size:12px;color:var(--text-muted)}
+.chart-block .cb-hd .lg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px;font-style:normal}
+.insight{background:var(--g-50);border-left:3px solid var(--c-neu);border-radius:var(--r-sm);padding:10px 14px;font-size:13px;color:var(--g-800);line-height:1.8;margin-top:12px}
+.insight b{color:var(--c-text)}
+
+/* 条形图（CSS 模拟 plotly 统一模板后的观感） */
+.bars{display:flex;flex-direction:column;gap:12px}
+.brow{display:grid;grid-template-columns:72px 1fr 120px;align-items:center;gap:12px;font-size:13px}
+.brow .nm{text-align:right;color:var(--g-700)}
+.brow .stack{display:flex;height:14px;border-radius:var(--r-full);overflow:hidden;background:var(--g-100)}
+.brow .stack .p{background:var(--c-pos)} .brow .stack .u{background:var(--c-neu)} .brow .stack .g{background:var(--c-neg)}
+.brow .val{font-size:12px;color:var(--text-muted);white-space:nowrap}
+
+/* 维度负面率横向条 */
+.dim-row{display:grid;grid-template-columns:76px 1fr 64px;align-items:center;gap:12px;font-size:13px;margin-bottom:10px}
+.dim-row .nm{text-align:right;color:var(--g-700)}
+.dim-row .track{height:10px;border-radius:var(--r-full);background:var(--g-100);overflow:hidden}
+.dim-row .fill{height:100%;border-radius:var(--r-full)}
+.dim-row .pc{font-size:13px;font-weight:600;text-align:right}
+
+/* 结论条目 */
+.finding{border:1px solid var(--g-200);border-radius:var(--r-md);margin-bottom:12px;overflow:hidden}
+.finding .f-hd{display:flex;gap:10px;align-items:flex-start;padding:14px 16px;cursor:pointer}
+.finding .f-id{flex:none;font-family:var(--font-num);font-size:12px;font-weight:700;color:var(--c-brand-hover);background:var(--brand-bg);border:1px solid var(--brand-border);border-radius:var(--r-sm);padding:2px 8px;margin-top:1px}
+.finding .f-claim{font-weight:600;font-size:14px;line-height:1.6}
+.finding .f-body{padding:0 16px 14px;display:none}
+.finding.open .f-body{display:block}
+.evi{border-radius:var(--r-sm);padding:10px 14px;font-size:13px;line-height:1.8;margin-top:8px}
+.evi .src{font-size:12px;color:var(--text-faint);margin-top:4px}
+.evi-stat{background:var(--pos-bg);border-left:3px solid var(--c-pos)}
+.evi-quote{background:var(--g-50);border-left:3px solid var(--g-400)}
+.action{display:flex;gap:8px;align-items:flex-start;margin-top:10px;font-size:13px;color:var(--g-800)}
+.action b{color:var(--c-brand-hover)}
+
+/* 下载区 */
+.dl{display:flex;gap:10px;flex-wrap:wrap}
+.dl a{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 18px;border-radius:var(--r-md);font-size:14px;font-weight:600;text-decoration:none;transition:filter .15s ease}
+.dl a:focus-visible{outline:2px solid var(--c-brand);outline-offset:2px}
+.dl .main{background:var(--c-brand);color:#fff}
+.dl .main:hover{filter:brightness(.92)}
+.dl .alt{background:var(--c-card);color:var(--c-brand-hover);border:1px solid var(--brand-border)}
+.dl .alt:hover{filter:brightness(.97)}
+
+footer{color:var(--text-faint);font-size:12px;text-align:center;padding:20px 0 0;line-height:1.8}
+@media (max-width:720px){.cover .inner{padding:24px}.cover h1{font-size:22px}.sec-hd{flex-wrap:wrap}}
+@media print{
+  body{background:#fff}
+  .cover,.card,.section,.chart-block{box-shadow:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ 封面 ============ -->
+  <div class="cover">
+    <div class="band"></div>
+    <div class="inner">
+      <div class="brand-row">
+        <span class="mark"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 8.6 8.6 0 0 1-3.9-.9L3 20l1.2-4.4a8 8 0 0 1-.7-3.4A8.4 8.4 0 0 1 12 3.9a8.4 8.4 0 0 1 9 7.6z"/><path d="M8 10h8M8 13.5h5"/></svg></span>
+        <span class="pname">社交媒体情感分析器</span>
+        <span class="ptype">SENTIMENT ANALYSIS REPORT</span>
+      </div>
+      <h1>OPPO Find X8 · 消费者口碑情感分析</h1>
+      <p class="subject-desc">覆盖 B站 / 微博 / 小红书 / WebSearch 四渠道近 30 天公开讨论，共采集 1,384 条内容、编码 1,214 条文本，其中 78% 经大模型精分析。</p>
+      <div class="meta">
+        <div class="m"><div class="k">报告编号</div><div class="v num">RPT-20260819-0042</div></div>
+        <div class="m"><div class="k">生成时间</div><div class="v num">2026-08-19 21:40</div></div>
+        <div class="m"><div class="k">数据窗口</div><div class="v num">07-20 ~ 08-19</div></div>
+        <div class="m"><div class="k">编码文本</div><div class="v num">1,214 条</div></div>
+        <div class="m"><div class="k">LLM 精分析占比</div><div class="v num">78%</div></div>
+      </div>
+      <div class="verdict-row">
+        <span class="verdict tag-pos" style="background:var(--pos-bg);color:var(--c-pos);font-size:16px"><span class="sym" style="font-weight:700">✓</span>整体偏正面</span>
+        <span class="share"><span class="num">✓ 正面 46.2%</span> · <span class="num">～ 中性 35.3%</span> · <span class="num" style="color:var(--s-danger-text)">✗ 负面 18.5%</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 采集说明提示条（三态语义示例） -->
+  <div class="notice notice-warning">
+    <span class="t-ico"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+    <div><b>采集说明：</b>微博渠道目标 300 条、实际保留 214 条（Cookie 中途过期，已自动重试 2 次）；其余渠道达标。整体丢弃率 12.3%，结论可信度影响可控。</div>
+  </div>
+
+  <!-- ============ 指标卡 ============ -->
+  <div class="cards">
+    <div class="card"><div class="k">整体倾向</div><div class="v pos" style="font-size:20px"><span class="tag tag-pos"><span class="sym">✓</span>偏正面</span></div><div class="d">正面为最大类别</div></div>
+    <div class="card"><div class="k">平均情感分</div><div class="v num">0.62</div><div class="d">区间 −1.0 ~ +1.0</div></div>
+    <div class="card"><div class="k">正面占比</div><div class="v num pos">46.2<span style="font-size:13px">%</span></div><div class="d">560 条</div></div>
+    <div class="card"><div class="k">负面占比</div><div class="v num neg">18.5<span style="font-size:13px">%</span></div><div class="d">226 条</div></div>
+    <div class="card"><div class="k">中性占比</div><div class="v num">35.3<span style="font-size:13px">%</span></div><div class="d">428 条</div></div>
+  </div>
+
+  <!-- ============ 数据可信度 ============ -->
+  <div class="section">
+    <div class="sec-hd"><span class="idx">01</span><h2>数据可信度</h2><span class="r">决定结论能信几分</span></div>
+    <table>
+      <thead><tr><th>指标</th><th class="num">数值</th><th>指标</th><th class="num">数值</th></tr></thead>
+      <tbody>
+        <tr><td>采集 / 保留 / 丢弃</td><td class="num">1,384 / 1,214 / 170</td><td>丢弃率</td><td class="num">12.3%</td></tr>
+        <tr><td>评论数</td><td class="num">902</td><td>编码文本数</td><td class="num">1,214</td></tr>
+        <tr><td>LLM 精分析占比</td><td class="num">78%（945 条）</td><td>LLM 修正词典判定</td><td class="num">117 条</td></tr>
+        <tr><td>广告/官方内容</td><td class="num">63 条（5.2%）</td><td>待人工复核样本</td><td class="num"><span class="neg-hi">8 条</span></td></tr>
+        <tr><td>LLM 实际用量</td><td class="num" colspan="3" style="text-align:left">输入 412,800 token / 输出 38,200 token，约 ¥0.86（以 DeepSeek 官方计费为准）</td></tr>
+      </tbody>
+    </table>
+    <p class="tbl-note">说明：样本量、丢弃率与 LLM 处理占比影响结论可信度；样本越少、丢弃率越高、词典直判占比越高，结论越应谨慎参考。8 条低置信/疑似反讽样本建议人工复核后再引用。</p>
+  </div>
+
+  <!-- ============ 深度结论 ============ -->
+  <div class="section">
+    <div class="sec-hd"><span class="idx">02</span><h2>深度结论与建议</h2><span class="r">按叙事框架组织 · 每条结论可溯源</span></div>
+
+    <div class="finding open">
+      <div class="f-hd">
+        <span class="f-id">F1</span>
+        <span class="f-claim">「外观设计」与「影像」是口碑双引擎，正面讨论的六成集中于此，是传播中应放大的资产。</span>
+      </div>
+      <div class="f-body">
+        <div class="evi evi-stat">📊 维度正面率：外观 68.4%（n=312）、影像 61.7%（n=286），均显著高于整体 46.2%。<div class="src">来源：报告统计</div></div>
+        <div class="evi evi-quote">「手感是真的好，直边不硌手，这个绿色很耐看。」「长焦 concert 拍月亮终于能看了，演唱会神器。」<div class="src">来源：小红书 · 08-14 · LLM 判定</div></div>
+        <div class="action"><b>建议：</b>营销素材优先调用「手感/配色」与「长焦实拍」两个记忆点，UGC 二创优先选外观向内容。</div>
+      </div>
+    </div>
+
+    <div class="finding">
+      <div class="f-hd">
+        <span class="f-id">F2</span>
+        <span class="f-claim">「续航虚标」是最大风险点：负面率 31.2%，且负面声量在近 7 天抬升，需在传播侧主动回应。</span>
+      </div>
+      <div class="f-body">
+        <div class="evi evi-stat">📊 续航维度负面率 31.2%（n=198），高于整体负面率 12.7pt；近 7 天趋势 +6.3pt。<div class="src">来源：报告统计</div></div>
+        <div class="action"><b>建议：</b>发布「典型场景续航实测」内容对冲「虚标」叙事；客服话术统一给出「耗电排查三步」。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 图表区：融合卡片 ============ -->
+  <div class="section">
+    <div class="sec-hd"><span class="idx">03</span><h2>情感与分布</h2><span class="r">统一图表模板：无多余网格、品牌字体、情感三色 + 符号</span></div>
+
+    <div class="chart-block">
+      <div class="cb-hd">
+        <span class="nm">整体情感占比</span><span class="sub">n=1,214</span>
+        <span class="lg"><span><i style="background:var(--c-pos)"></i>✓ 正面</span><span><i style="background:var(--c-neu)"></i>～ 中性</span><span><i style="background:var(--c-neg)"></i>✗ 负面</span></span>
+      </div>
+      <div class="bars">
+        <div class="brow"><span class="nm">占比</span><span class="stack"><span class="p" style="width:46.2%"></span><span class="u" style="width:35.3%"></span><span class="g" style="width:18.5%"></span></span><span class="val num">✓46.2% ～35.3% ✗18.5%</span></div>
+      </div>
+      <p class="insight"><b>怎么读：</b>正面占比接近半数，整体口碑安全；但负面 18.5% 高于同类产品基准（约 12%），风险集中在单一维度（见 F2）。</p>
+    </div>
+
+    <div class="chart-block">
+      <div class="cb-hd">
+        <span class="nm">各平台情感构成</span><span class="sub">按渠道拆分</span>
+        <span class="lg"><span><i style="background:var(--c-pos)"></i>✓ 正面</span><span><i style="background:var(--c-neu)"></i>～ 中性</span><span><i style="background:var(--c-neg)"></i>✗ 负面</span></span>
+      </div>
+      <div class="bars">
+        <div class="brow"><span class="nm">B站</span><span class="stack"><span class="p" style="width:49%"></span><span class="u" style="width:34%"></span><span class="g" style="width:17%"></span></span><span class="val num">n=386 · ✗17.1%</span></div>
+        <div class="brow"><span class="nm">微博</span><span class="stack"><span class="p" style="width:41%"></span><span class="u" style="width:39%"></span><span class="g" style="width:20%"></span></span><span class="val num">n=342 · ✗20.2%</span></div>
+        <div class="brow"><span class="nm">小红书</span><span class="stack"><span class="p" style="width:44%"></span><span class="u" style="width:32%"></span><span class="g" style="width:24%"></span></span><span class="val num">n=312 · <span class="neg-hi">✗24.1%</span></span></div>
+        <div class="brow"><span class="nm">WebSearch</span><span class="stack"><span class="p" style="width:51%"></span><span class="u" style="width:33%"></span><span class="g" style="width:16%"></span></span><span class="val num">n=174 · ✗16.1%</span></div>
+      </div>
+      <p class="insight"><b>怎么读：</b>小红书负面率最高（24.1%），主要来自续航类吐槽；B站氛围最友好，评测向 UP 主内容以正面为主。</p>
+    </div>
+
+    <div class="chart-block">
+      <div class="cb-hd">
+        <span class="nm">各维度负面率</span><span class="sub">红色越深风险越高</span>
+        <span class="lg"><span>基准：整体负面率 18.5%</span></span>
+      </div>
+      <div class="dim-row"><span class="nm">续航</span><span class="track"><span class="fill" style="width:78%;background:var(--c-neg)"></span></span><span class="pc num" style="color:var(--s-danger-text)">31.2%</span></div>
+      <div class="dim-row"><span class="nm">售后</span><span class="track"><span class="fill" style="width:67%;background:var(--c-neg)"></span></span><span class="pc num" style="color:var(--s-danger-text)">26.8%</span></div>
+      <div class="dim-row"><span class="nm">性能</span><span class="track"><span class="fill" style="width:38%;background:var(--g-500)"></span></span><span class="pc num">15.1%</span></div>
+      <div class="dim-row"><span class="nm">价格</span><span class="track"><span class="fill" style="width:33%;background:var(--g-500)"></span></span><span class="pc num">13.0%</span></div>
+      <div class="dim-row"><span class="nm">影像</span><span class="track"><span class="fill" style="width:23%;background:var(--c-pos)"></span></span><span class="pc num" style="color:var(--c-pos)">9.2%</span></div>
+      <div class="dim-row"><span class="nm">外观</span><span class="track"><span class="fill" style="width:19%;background:var(--c-pos)"></span></span><span class="pc num" style="color:var(--c-pos)">7.6%</span></div>
+      <p class="insight"><b>怎么读：</b>续航、售后两个维度负面率高于整体基准，其余维度健康；「外观」「影像」是最稳的口碑资产。</p>
+    </div>
+  </div>
+
+  <!-- ============ 附录表格 ============ -->
+  <div class="section">
+    <div class="sec-hd"><span class="idx">04</span><h2>附录 · 关键词采集明细</h2><span class="r">系统实际搜了什么、留了多少</span></div>
+    <table>
+      <thead><tr>
+        <th>关键词</th><th class="num">采集</th><th class="num">保留</th><th class="num">丢弃</th><th class="num">有效供给率</th><th class="num">编码</th><th class="num">负面率</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>OPPO Find X8</td><td class="num">412</td><td class="num">368</td><td class="num">44</td><td class="num">89.3%</td><td class="num">361</td><td class="num">17.5%</td></tr>
+        <tr><td>Find X8 评测</td><td class="num">356</td><td class="num">322</td><td class="num">34</td><td class="num">90.4%</td><td class="num">315</td><td class="num">14.9%</td></tr>
+        <tr><td>Find X8 值得买吗</td><td class="num">284</td><td class="num">246</td><td class="num">38</td><td class="num">86.6%</td><td class="num">240</td><td class="num"><span class="neg-hi">23.3%</span></td></tr>
+        <tr><td>Find X8 续航</td><td class="num">198</td><td class="num">172</td><td class="num">26</td><td class="num">86.9%</td><td class="num">169</td><td class="num"><span class="neg-hi">31.4%</span></td></tr>
+        <tr><td>Find X8 影像</td><td class="num">134</td><td class="num">106</td><td class="num">28</td><td class="num">79.1%</td><td class="num">103</td><td class="num">9.7%</td></tr>
+      </tbody>
+    </table>
+    <p class="tbl-note">说明：采集=该关键词采回的帖子数（含清洗丢弃）；有效供给率=保留/采集；样本少的行仅供参考。完整查询串明细见 Excel 附件。</p>
+  </div>
+
+  <!-- ============ 下载 ============ -->
+  <div class="section">
+    <div class="sec-hd"><span class="idx">05</span><h2>获取完整报告</h2></div>
+    <div class="dl">
+      <a class="main" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>下载 Word 报告</a>
+      <a class="alt" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>下载 Excel 原始数据</a>
+      <a class="alt" href="#"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>打印 / 存为 PDF</a>
+    </div>
+  </div>
+
+  <footer>
+    由「社交媒体情感分析器」自动生成 · 报告编号 RPT-20260819-0042 · 词典 269 条 + LLM 945 条 · 综合评分 = 主帖 40% + 评论均值 60%<br>
+    本报告基于公开网络数据，仅供参考，不构成任何投资或商业决策依据。
+  </footer>
+
+</div>
+</body>
+</html>

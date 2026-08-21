@@ -300,7 +300,10 @@ def _stat_cards(summary: dict) -> list[dict]:
     # 走势统计卡
     trend = summary.get("trend") or {}
     if trend:
-        dates = sorted(trend.keys())
+        # 2026-08-21：无日期文本（WebSearch 等）不进入时间轴，避免"讨论高峰在 未知"
+        dated = {d: v for d, v in trend.items() if d != "未知"}
+        unknown_n = int(trend.get("未知", {}).get("count") or 0)
+        dates = sorted(dated.keys())
         if len(dates) >= 2:
             half = len(dates) // 2
             a = _avg_trend(dates[:half], trend)
@@ -308,6 +311,7 @@ def _stat_cards(summary: dict) -> list[dict]:
             direction = "上升" if b > a + 0.05 else ("下降" if b < a - 0.05 else "平稳")
             peak = max(dates, key=lambda d: trend[d]["count"])
             worst = max(dates, key=lambda d: trend[d]["negative"])
+            tail = f"；另有 {unknown_n} 条无日期未计入趋势" if unknown_n else ""
             cards.append(
                 {
                     "id": "",
@@ -316,7 +320,7 @@ def _stat_cards(summary: dict) -> list[dict]:
                     "text": (
                         f"情感走势整体{direction}：前半段均分 {a} → 后半段均分 {b}；"
                         f"讨论高峰在 {peak}（{trend[peak]['count']} 条），"
-                        f"负面量峰值在 {worst}（{trend[worst]['negative']} 条）。"
+                        f"负面量峰值在 {worst}（{trend[worst]['negative']} 条）{tail}。"
                     ),
                     "platform": "",
                     "date": "",
@@ -339,9 +343,9 @@ def _stat_cards(summary: dict) -> list[dict]:
                 "kind": "stat",
                 "stat_key": "intensity",
                 "text": (
-                    f"情绪强度：1~5 级分布为 {counts.get(1,0)}/{counts.get(2,0)}/"
+                    f"情绪强度：1～5 级分布为 {counts.get(1,0)}/{counts.get(2,0)}/"
                     f"{counts.get(3,0)}/{counts.get(4,0)}/{counts.get(5,0)}；"
-                    f"强情绪（4~5 级）共 {strong} 条，占比 {strong / total_i * 100:.1f}%。"
+                    f"强情绪（4～5 级）共 {strong} 条，占比 {strong / total_i * 100:.1f}%。"
                 ),
                 "platform": "",
                 "date": "",

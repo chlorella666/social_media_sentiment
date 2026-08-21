@@ -18,6 +18,25 @@ def _load_file(path: Path) -> DomainSchema:
 
 def load_domain(domain_id: str) -> DomainSchema:
     """优先加载缓存 schema，否则加载预置 schema。"""
+    # 模块组合 schema（modules_*）：缓存缺失或模板已变更 → 用当前模板重新合成，
+    # 避免陈旧的维度集（增删/改名/关键词调整后旧缓存失效）被继续用于分析。
+    if domain_id.startswith("modules_"):
+        from app.domains.composer import compose_schema, templates_fingerprint
+
+        mods = [
+            p for p in domain_id[len("modules_"):].split("_")
+            if p in ("content", "physical", "service")
+        ]
+        if mods:
+            cache_path = CACHE_DIR / f"{domain_id}.json"
+            if cache_path.exists():
+                try:
+                    schema = _load_file(cache_path)
+                    if schema.template_fingerprint == templates_fingerprint():
+                        return schema
+                except Exception:
+                    pass
+            return compose_schema(mods)
     cache_path = CACHE_DIR / f"{domain_id}.json"
     if cache_path.exists():
         return _load_file(cache_path)

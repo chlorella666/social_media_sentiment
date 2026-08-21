@@ -44,7 +44,7 @@ def build_descriptors(summary: dict) -> dict:
             f"正面 {dist['positive']['count']} 条（{pct('positive')}）、"
             f"负面 {dist['negative']['count']} 条（{pct('negative')}）、"
             f"中性 {dist['neutral']['count']} 条（{pct('neutral')}）；"
-            f"平均情感分 {summary['avg_score']}（-1~1），整体倾向“{summary['overall_sentiment']}”。"
+            f"平均情感分 {summary['avg_score']}（-1～1），整体倾向“{summary['overall_sentiment']}”。"
         ),
         "platform": (
             "各平台内容量："
@@ -132,7 +132,7 @@ def _intensity_descriptor(intensity: dict) -> str:
     return (
         f"情绪强度分布：1 级 {counts.get(1, 0)} 条、2 级 {counts.get(2, 0)} 条、"
         f"3 级 {counts.get(3, 0)} 条、4 级 {counts.get(4, 0)} 条、5 级 {counts.get(5, 0)} 条；"
-        f"强情绪（4~5 级）共 {strong} 条，占比 {strong / total * 100:.1f}%"
+        f"强情绪（4～5 级）共 {strong} 条，占比 {strong / total * 100:.1f}%"
     )
 
 

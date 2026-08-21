@@ -185,16 +185,21 @@ def main() -> None:
     assert at.session_state["stage"] == 2
     print("✓ 阶段1（关键词）通过")
 
-    # 阶段2：默认演示渠道
-    assert at.session_state["channel_ids"] == ["demo"]
+    # 阶段2：默认不再勾选演示渠道（2026-08-20 走查：demo 必须显式选择）
+    assert at.session_state["channel_ids"] == [], at.session_state["channel_ids"]
     marks = [m.value for m in at.markdown if m.value]
     assert any("渠道风控安全" in m for m in marks), "侧边栏渠道风控安全区未渲染"
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["demo"]).run()  # 显式选择 demo，避免测试触发真实网络采集
+    restore_stale_widget_states(at)
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 3
     restore_stale_widget_states(at)
-    print("✓ 阶段2（渠道/时间 + 侧边栏渠道风控安全区）通过")
+    print("✓ 阶段2（默认无演示渠道 + 显式选择 + 侧边栏渠道风控安全区）通过")
 
     # 阶段3：提交后台任务
+    demo_ck = next(c for c in at.checkbox if c.key == "demo_only_confirm_box")
+    demo_ck.set_value(True).run()  # demo-only 提交守卫：先显式确认
     click_button(at, "🚀 启动分析")
     assert at.session_state["stage"] in (4, 5), at.session_state["stage"]
     task_id = at.session_state["task_id"]
@@ -250,7 +255,7 @@ def test_brand_mode() -> None:
     at.multiselect[0].set_value(["content"]).run()
     assert at.session_state["domain_id"] == "modules_content", at.session_state.get("domain_id")
     selected = at.session_state["selected_dims"]
-    assert len(selected) == 5, selected
+    assert len(selected) == 8, selected  # v2.0 模板：数字产品 8 维
     assert "content_quality" in selected
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 1
@@ -270,19 +275,19 @@ def test_brand_mode() -> None:
     # 阶段2（渠道页）：选 WebSearch 后出现关键词优化开关（2026-08-18 移入③）
     ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
     ms.set_value(["demo", "websearch"]).run()
-    toggles = [t.label for t in at.toggle]
-    assert any("WebSearch 关键词优化" in t for t in toggles), f"③页缺优化开关: {toggles}"
+    exps = [e.label for e in at.expander]
+    assert any("关键词优化" in e for e in exps), f"③页缺关键词优化折叠区: {exps}"
     assert ss(at, "websearch_eval_suffix", True) is True
-    marks3 = [m.value for m in at.markdown if m.value]
-    assert any("关键词优化进阶" in m for m in marks3), "③页缺关键词优化进阶入口"
     ms.set_value(["demo"]).run()  # 切回 demo，避免测试触发真实网络采集
     restore_stale_widget_states(at)
-    print("✓ 品牌模式 阶段2（③渠道页含 WebSearch 关键词优化开关）通过")
+    print("✓ 品牌模式 阶段2（③渠道页含关键词优化折叠区）通过")
 
     # 阶段3/4：确认页并提交后台任务
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 3
     restore_stale_widget_states(at)
+    demo_ck = next(c for c in at.checkbox if c.key == "demo_only_confirm_box")
+    demo_ck.set_value(True).run()  # demo-only 提交守卫：先显式确认
     click_button(at, "🚀 启动分析")
     assert at.session_state["stage"] in (4, 5)
     wait_completed(at)
@@ -410,12 +415,12 @@ def test_module_combo_dim_cap() -> None:
     at.multiselect[0].set_value(["physical", "service"]).run()
     assert at.session_state["domain_id"] == "modules_physical_service"
     dims = at.session_state["selected_dims"]
-    assert len(dims) == 11, f"实物+服务组合应为 11 维: {len(dims)}"
+    assert len(dims) == 12, f"实物+服务组合应为 12 维: {len(dims)}"
     # 超限：下一步被阻塞（stage 保持 0）
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 0, "超 10 维不应放行"
     assert any("超过上限" in e.value for e in at.error), "缺少超限提示"
-    print("✓ 模块组合 11 维被阻塞（强制 ≤10）")
+    print("✓ 模块组合 12 维被阻塞（强制 ≤10）")
 
     # 裁剪到 10 维后放行
     dim_ms = next(m for m in at.multiselect if m.label.startswith("选择要分析的维度"))
@@ -462,6 +467,9 @@ def test_custom_dimension_ui() -> None:
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 2
     restore_stale_widget_states(at)
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["demo"]).run()  # 显式选择 demo（默认不再预选）
+    restore_stale_widget_states(at)
     click_button(at, "下一步 →")
     assert at.session_state["stage"] == 3
     tables = [str(t.value) for t in at.table]
@@ -485,13 +493,12 @@ def test_channel_strategy_ui() -> None:
     assert at.session_state["stage"] == 2
     ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
     ms.set_value(["weibo"]).run()
-    # ④渠道页：仅微博关键词优化开关存在（B站/小红书不展示，2026-08-19）
-    toggles = [t.label for t in at.toggle]
-    assert any("微博 关键词优化" in t for t in toggles), f"缺微博优化开关: {toggles}"
-    assert not any(("B站 关键词优化" in t) or ("小红书 关键词优化" in t)
-                   for t in toggles), f"不应展示 B站/小红书优化开关: {toggles}"
-    wb = next(t for t in at.toggle if "微博 关键词优化" in t.label)
-    wb.set_value(True).run()
+    # ④渠道页：关键词优化收进折叠区（2026-08-21）；AppTest 不支持展开折叠区，
+    # 直接验证折叠区存在 + 微博策略键生效（B站/小红书不展示开关，2026-08-19）
+    exps = [e.label for e in at.expander]
+    assert any("关键词优化" in e for e in exps), f"③页缺关键词优化折叠区: {exps}"
+    at.session_state["kwopt_weibo_toggle"] = True
+    at.session_state["kwopt_weibo"] = True
     assert ss(at, "kwopt_weibo") is True
     restore_stale_widget_states(at)
     click_button(at, "下一步 →")
@@ -500,7 +507,7 @@ def test_channel_strategy_ui() -> None:
     # 恋与深空命中微博策略 5 词 → 展开为 5 个查询串
     assert any("渠道查询数（策略展开）" in t and "weibo 5" in t for t in tables), \
         "确认页缺渠道查询数行"
-    print("✓ 其他渠道关键词优化：④开关 + 确认页渠道查询数 通过")
+    print("✓ 其他渠道关键词优化：折叠区 + 确认页渠道查询数 通过")
 
 
 def test_need_review_refresh_ui() -> None:
