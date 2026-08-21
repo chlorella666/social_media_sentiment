@@ -11,10 +11,6 @@
 > sentiment with a lexicon + optional LLM pipeline, and produces charts and reports
 > (Excel / HTML / Word). No data leaves your computer unless you enable LLM analysis.
 
-![应用首页](docs/screenshots/app_home.png)
-
-![示例报告（演示数据）](docs/screenshots/report_demo.png)
-
 ## 亮点
 
 - **工程纪律**：38 个单元/UI 测试 + 黄金集准确率门槛 + 双平台 CI，每次改动都有回归保护；
