@@ -1,0 +1,3 @@
+# 裁判集 CSV 按二进制锁定，避免 Windows/Ubuntu 行尾转换导致 golden 指纹跨平台漂移
+# （GitHub 公开执行方案 阶段 5b，2026-08-21）
+tests/fixtures/*.csv -text

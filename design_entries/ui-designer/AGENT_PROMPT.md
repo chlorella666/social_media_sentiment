@@ -8,7 +8,7 @@
 
 ## 项目
 
-- 路径：`D:/app/codex/social_media_sentence`
+- 路径：`<repo_root>`（本仓库根目录）
 - 技术栈：Streamlit 主应用（`app/main.py`，约 3000 行，6 步向导+结果页）+ Plotly 图表（`app/output/html_report.py`）+ Jinja2 HTML 报告模板（`app/output/templates/report.html.j2`）
 
 ## 设计材料（先全部读完再动手）

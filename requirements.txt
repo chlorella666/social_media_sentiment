@@ -1,3 +1,5 @@
+# 验证环境：Python 3.13（Windows/Ubuntu CI，2026-08-21 冻结验证）。
+# 最低版本约束；新用户建议按本文件全量安装（python -m pip install -r requirements.txt）。
 streamlit>=1.60
 pandas>=2.2
 openpyxl>=3.1
