@@ -144,6 +144,15 @@ if (Test-Path (Join-Path $RUNTIME "python.exe")) {
 # ---------------------------------------------------------------------------
 # 3. 白名单复制源码
 # ---------------------------------------------------------------------------
+Step "清理运行时冗余（长路径 pyc/测试目录/streamlit 技能模板）"
+Get-ChildItem -Path $RUNTIME -Recurse -Force -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $RUNTIME -Recurse -Force -File -Filter "*.pyc" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path (Join-Path $RUNTIME "Lib\site-packages") -Recurse -Force -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -in @("tests", "test") } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+if (Test-Path (Join-Path $RUNTIME "Lib\site-packages\streamlit\.agents")) { Remove-Item -LiteralPath (Join-Path $RUNTIME "Lib\site-packages\streamlit\.agents") -Recurse -Force }
+$maxLen = 0; $maxPath = ""
+Get-ChildItem -Path $RUNTIME -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { if ($_.FullName.Length -gt $maxLen) { $maxLen = $_.FullName.Length; $maxPath = $_.FullName } }
+Write-Host "runtime 最长路径: $maxLen ($maxPath)"
+if ($maxLen -gt 230) { Fail "runtime 最长路径超过 230，Windows 资源管理器解压会报「路径太长」，请检查清理是否生效" }
 Step "按白名单复制源码"
 foreach ($entry in @("app", ".streamlit", "requirements.txt", "README.md", "LICENSE")) {
     $src = Join-Path $ROOT $entry
