@@ -12,7 +12,31 @@ import json
 import shutil
 import streamlit as st
 import time
+import os
+import subprocess
+import sys
 from app.ui.wizard import (_prefill_wizard_from_plan, reset_wizard)
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _start_worker() -> tuple[bool, str]:
+    """拉起后台 worker（pythonw app/worker.py）；失败返回错误信息。"""
+    try:
+        exe = Path(sys.executable)
+        pyw = exe.with_name("pythonw.exe")
+        if not pyw.exists():
+            pyw = exe
+        kw: dict = {"cwd": str(ROOT)}
+        if os.name == "nt":
+            kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        else:
+            kw["start_new_session"] = True
+        subprocess.Popen([str(pyw), str(ROOT / "app" / "worker.py")], **kw)
+        return True, ""
+    except Exception as exc:  # 启动失败不阻断页面
+        return False, str(exc)
+
 
 def open_task_result(task_id: str) -> tuple[ReportBundle, dict] | None:
     """从任务记录加载完整结果（bundle + 可下载文件字节）。"""
@@ -68,6 +92,14 @@ def render_task_center() -> None:
                 "⚠️ 后台执行进程未运行：新任务将排队等待，"
                 "请通过 run.bat 启动后台进程后才会执行。"
             )
+            if st.button("🔄 启动后台进程", key="start_worker_btn_empty"):
+                ok, msg = _start_worker()
+                if ok:
+                    st.success("后台进程已启动，任务将自动执行")
+                    st.rerun()
+                else:
+                    st.error(f"启动失败：{msg}；请关闭后重新双击「启动应用.bat」")
+
         return
     running_n = jobs.count_tasks(statuses=list(jobs.ACTIVE_STATUSES))
     with st.expander(
@@ -81,6 +113,14 @@ def render_task_center() -> None:
                 "⚠️ 后台执行进程未运行：新任务将排队等待，"
                 "请通过 run.bat 启动后台进程后才会执行。"
             )
+            if st.button("🔄 启动后台进程", key="start_worker_btn_center"):
+                ok, msg = _start_worker()
+                if ok:
+                    st.success("后台进程已启动，任务将自动执行")
+                    st.rerun()
+                else:
+                    st.error(f"启动失败：{msg}；请关闭后重新双击「启动应用.bat」")
+
         if total_pages > 1:
             p1, p2, p3 = st.columns([1, 3, 1])
             if p1.button("← 上一页", disabled=(page <= 1), key="task_page_prev"):
@@ -348,6 +388,14 @@ def render_running():
         st.caption("任务在后台执行中：关闭本页面、刷新或重启应用均不会中断任务。")
         if not workers:
             st.warning("⚠️ 后台执行进程未运行：任务处于排队状态，请通过 run.bat 启动后台进程。")
+            if st.button("🔄 启动后台进程", key="start_worker_btn_running"):
+                ok, msg = _start_worker()
+                if ok:
+                    st.success("后台进程已启动，任务将自动执行")
+                    st.rerun()
+                else:
+                    st.error(f"启动失败：{msg}；请关闭后重新双击「启动应用.bat」")
+
         # 实时风控提示：worker 检测到风控自动冷却时展示
         cooldowns = []
         for l in jobs.list_task_logs(task_id, limit=100):

@@ -163,7 +163,7 @@ Get-ChildItem -Path (Join-Path $PKG_PATH "app") -Recurse -Force -Directory -Filt
 Step "生成启动/退出脚本与使用说明"
 $launcher = @'
 @echo off
-chcp 65001 >nul
+rem 保持系统默认代码页（bat 为 OEM/GBK 编码，避免乱码）
 cd /d "%~dp0"
 
 rem 数据目录兜底（zip 会丢空目录）
@@ -193,7 +193,7 @@ pause
 $quitter = @'
 @echo off
 setlocal enabledelayedexpansion
-chcp 65001 >nul
+rem 保持系统默认代码页（bat 为 OEM/GBK 编码，避免乱码）
 cd /d "%~dp0"
 echo 正在结束后台任务进程...
 if exist "data\worker.pid" (
@@ -244,7 +244,7 @@ $notice = @'
 测试完成后请按反馈表回传：卡在哪一步 / 截图（遮挡原文）/ 是否顺利出报告；
 出问题时把 data\logs\app.jsonl 一并回传，便于定位。
 '@
-Set-Content -LiteralPath (Join-Path $PKG_PATH "使用说明.txt") -Value $notice -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $PKG_PATH "使用说明.txt") -Value ($notice.Replace("便携版试用包 v0.1", "便携版试用包 $Version")) -Encoding UTF8
 Copy-Item -LiteralPath (Join-Path $ROOT "scripts\portable_known_issues.txt") -Destination (Join-Path $PKG_PATH "已知问题.txt") -Force
 
 # ---------------------------------------------------------------------------

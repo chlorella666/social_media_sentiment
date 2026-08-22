@@ -362,6 +362,7 @@ def render_stage0():
             _dim_restored = st.session_state.pop("_dim_restored_run", False)
             if not _dim_restored and st.session_state.get("_last_modules_key") != tuple(mods):
                 st.session_state.pop("dim_select", None)
+                st.session_state["_dim_reset_pending"] = True
             st.session_state["_last_modules_key"] = tuple(mods)
             schema = None
             if mods:
@@ -372,6 +373,9 @@ def render_stage0():
             if schema:
                 st.session_state.schema = schema
                 names = {d.id: f"{d.name} — {d.description}" for d in schema.dimensions}
+                if st.session_state.pop("_dim_reset_pending", False):
+                    # 显式落位全选，避免不同会话状态下 default 不生效
+                    st.session_state["dim_select"] = [d.id for d in schema.dimensions]
                 selected = st.multiselect(
                     "选择要分析的维度（默认全选；组合最多 10 个，报告按维度统计）",
                     options=[d.id for d in schema.dimensions],
@@ -1153,4 +1157,5 @@ def render_wizard():
         render_stage2()
     elif stage == 3:
         render_stage3()
+
 
