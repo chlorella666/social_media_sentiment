@@ -146,7 +146,7 @@ def reset_wizard() -> None:
         "manual_keywords", "keyword_groups",
         "websearch_eval_suffix", "keywords",
         "kwopt_bilibili", "kwopt_weibo", "kwopt_xiaohongshu",
-        "channel_ids", "channel_ids_opt", "date_range", "plan",
+        "channel_ids", "channel_ids_opt", "date_range", "date_range_opt", "plan",
         "bundle", "output_files", "task_id",
         "exclude_words", "exclude_words_opt",
         "demo_report",
@@ -226,6 +226,8 @@ def _prefill_wizard_from_plan(plan: dict) -> None:
                 dt.date.fromisoformat(str(ds)),
                 dt.date.fromisoformat(str(de)),
             )
+            st.session_state.date_range_opt = st.session_state.date_range
+
     except (ValueError, TypeError):
         pass
     # widget key 统一走延迟应用（顶部 _restore_ 块在 widget 渲染前落位；
@@ -573,6 +575,9 @@ def render_stage2():
         col1, col2 = st.columns(2)
         with col1:
             default_start = dt.date.today() - dt.timedelta(days=30)
+            # 控件卸载会清理 widget key：镜像键恢复/落位（与 channel_ids_opt 同模式，2026-08-22）
+            if st.session_state.get("date_range_opt") and "date_range" not in st.session_state:
+                st.session_state.date_range = st.session_state.date_range_opt
             date_range = st.date_input(
                 "时间段", value=(default_start, dt.date.today()),
                 key="date_range",
@@ -582,6 +587,7 @@ def render_stage2():
                     "（各渠道只能返回近期内容，历史内容请定期运行分析积累）。"
                 ),
             )
+            st.session_state.date_range_opt = date_range
         with col2:
             if "weibo" in selected:
                 if not st.session_state.get("weibo_cookie"):
@@ -867,7 +873,7 @@ def render_stage3():
     relevance_check_enabled = llm_enabled  # 与侧边栏口径一致（随 LLM 自动开启）
     keywords = st.session_state.get("keywords", [])
     channel_ids = st.session_state.get("channel_ids_opt") or st.session_state.get("channel_ids", [])
-    date_range = st.session_state.get("date_range", (dt.date.today() - dt.timedelta(days=30), dt.date.today()))
+    date_range = st.session_state.get("date_range_opt") or st.session_state.get("date_range") or (dt.date.today() - dt.timedelta(days=30), dt.date.today())
     channel_params = {}
     if "weibo" in channel_ids and st.session_state.get("weibo_cookie"):
         channel_params["weibo"] = {"cookie": st.session_state.weibo_cookie}
