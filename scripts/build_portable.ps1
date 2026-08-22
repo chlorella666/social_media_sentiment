@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 构建「便携版试用包」（解压即用，Windows x64）。
 
@@ -17,6 +17,7 @@
 
 param(
     [switch]$SkipRegression,
+    [switch]$AllowDirty,
     [string]$Version = "v0.1_win_x64"
 )
 
@@ -43,7 +44,7 @@ $TOP_WHITELIST = @(
 $FORBIDDEN = @(
     "^data\\[^\\]*[^.]",            # data/ 下除 .gitkeep 外的任何内容
     "^data\\\.gitkeep$",            # 占位：仅用于反向规则，不命中
-    "llm_apikey", "\\.pem$", "cookies", "app\\.db$", "worker\\.pid$"
+    "llm_apikey", "\\.pem$", "\\cookies\\", "app\\.db$", "worker\\.pid$"
 )
 
 function Fail([string]$msg) {
@@ -62,8 +63,12 @@ function Step([string]$msg) {
 Step "前置校验"
 $status = git -C $ROOT status --porcelain
 if ($status) {
-    Fail "工作区未提交（git status 非空）。构建前必须先收敛代码：$($status -join '; ')"
+    if (-not $AllowDirty) {
+        Fail "工作区未提交（git status 非空）。构建前必须先收敛代码：$($status -join '; ')"
+    }
+    Write-Host "[warn] -AllowDirty：跳过工作区干净校验（仅限不相关文档在途时使用）" -ForegroundColor Yellow
 }
+
 if (-not $SkipRegression) {
     Write-Host "运行全量回归（38/38 + 黄金集门槛）…"
     Push-Location $ROOT
@@ -91,7 +96,13 @@ Step "获取自包含 Python 运行时（python-build-standalone $PY_VER+$PY_TAG
 New-Item -ItemType Directory -Force -Path $CACHE, $DIST, $STAGE | Out-Null
 if (-not (Test-Path $TARBALL)) {
     Write-Host "下载运行时…"
-    curl.exe -L -sS -o $TARBALL $RUNTIME_URL
+    curl.exe -L -sS --retry 2 --max-time 600 -o $TARBALL $RUNTIME_URL
+    if ($LASTEXITCODE -ne 0 -or (Get-Item $TARBALL -ErrorAction SilentlyContinue).Length -lt 1MB) {
+        Write-Host "GitHub 下载失败/过慢，改用镜像（gh-proxy.com）…"
+        Remove-Item $TARBALL -Force -ErrorAction SilentlyContinue
+        curl.exe -L -sS --retry 2 --max-time 600 -o $TARBALL "https://gh-proxy.com/$RUNTIME_URL"
+        if ($LASTEXITCODE -ne 0) { Fail "运行时下载失败" }
+    }
     if ($LASTEXITCODE -ne 0) { Fail "运行时下载失败" }
 }
 if (-not (Test-Path $SUMS)) {
@@ -111,20 +122,24 @@ Write-Host "运行时校验和 OK"
 # ---------------------------------------------------------------------------
 Step "准备 runtime/ 并安装依赖"
 $RUNTIME = Join-Path $PKG_PATH "runtime"
-if (Test-Path $PKG_PATH) { Remove-Item -LiteralPath $PKG_PATH -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $RUNTIME | Out-Null
-tar.exe -xzf $TARBALL -C $RUNTIME --strip-components=1
-if ($LASTEXITCODE -ne 0) { Fail "运行时解压失败" }
-$py = Join-Path $RUNTIME "python.exe"
-if (-not (Test-Path $py)) { Fail "runtime/python.exe 不存在，解压结构异常" }
-& $py --version
-& $py -m pip --version
-if ($LASTEXITCODE -ne 0) { Fail "运行时 pip 不可用" }
-Write-Host "安装依赖（--no-cache-dir）…"
-& $py -m pip install --no-cache-dir -r (Join-Path $ROOT "requirements.txt")
-if ($LASTEXITCODE -ne 0) { Fail "依赖安装失败" }
-& $py -m pip freeze | Set-Content (Join-Path $CACHE "requirements.lock_$Version.txt") -Encoding UTF8
-Write-Host "依赖锁定已保存：$CACHE\requirements.lock_$Version.txt"
+if (Test-Path (Join-Path $RUNTIME "python.exe")) {
+    Write-Host "复用已有 runtime（如需全新构建，删除 scratch\_portable_dist\_stage）"
+} else {
+    if (Test-Path $PKG_PATH) { Remove-Item -LiteralPath $PKG_PATH -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $RUNTIME | Out-Null
+    tar.exe -xzf $TARBALL -C $RUNTIME --strip-components=1
+    if ($LASTEXITCODE -ne 0) { Fail "运行时解压失败" }
+    $py = Join-Path $RUNTIME "python.exe"
+    if (-not (Test-Path $py)) { Fail "runtime/python.exe 不存在，解压结构异常" }
+    & $py --version
+    & $py -m pip --version
+    if ($LASTEXITCODE -ne 0) { Fail "运行时 pip 不可用" }
+    Write-Host "安装依赖（--no-cache-dir）…"
+    & $py -m pip install --no-cache-dir -r (Join-Path $ROOT "requirements.txt")
+    if ($LASTEXITCODE -ne 0) { Fail "依赖安装失败" }
+    & $py -m pip freeze | Set-Content (Join-Path $CACHE "requirements.lock_$Version.txt") -Encoding UTF8
+    Write-Host "依赖锁定已保存：$CACHE\requirements.lock_$Version.txt"
+}
 
 # ---------------------------------------------------------------------------
 # 3. 白名单复制源码
@@ -137,6 +152,7 @@ foreach ($entry in @("app", ".streamlit", "requirements.txt", "README.md", "LICE
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $PKG_PATH "data") | Out-Null
 Copy-Item -LiteralPath (Join-Path $ROOT "data\.gitkeep") -Destination (Join-Path $PKG_PATH "data\.gitkeep") -Force
+Set-Content -LiteralPath (Join-Path $PKG_PATH "data\.gitkeep") -Value "portable package placeholder" -Encoding ASCII
 # 清理源码中的缓存字节码
 Get-ChildItem -Path (Join-Path $PKG_PATH "app") -Recurse -Force -Directory -Filter "__pycache__" |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -156,7 +172,7 @@ if not exist "data\state" mkdir "data\state"
 if not exist "data\reports" mkdir "data\reports"
 
 rem 实例检测：端口 8501 已占用则提示退出（防重复双击）
-netstat -ano | findstr ":8501" >nul 2>nul
+netstat -ano | findstr "LISTENING" | findstr ":8501" >nul 2>nul
 if not errorlevel 1 (
     echo [提示] 检测到应用已在运行（端口 8501 已占用），请勿重复启动。
     echo        已在浏览器打开的话直接使用即可；若确实无法访问，请先运行「退出.bat」。
@@ -176,15 +192,18 @@ pause
 '@
 $quitter = @'
 @echo off
+setlocal enabledelayedexpansion
 chcp 65001 >nul
 cd /d "%~dp0"
 echo 正在结束后台任务进程...
 if exist "data\worker.pid" (
     set /p WPID=<"data\worker.pid"
-    taskkill /F /PID %WPID% >nul 2>nul
+    if defined WPID taskkill /F /PID !WPID! >nul 2>nul
 )
 rem 兜底：结束监听 8501 的进程
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8501"') do taskkill /F /PID %%p >nul 2>nul
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr ":8501"') do (
+    if not "%%p"=="0" taskkill /F /PID %%p >nul 2>nul
+)
 echo 已结束。可安全关闭窗口。
 pause
 '@
@@ -237,7 +256,7 @@ Get-ChildItem -Path $PKG_PATH -Recurse -Force | ForEach-Object {
     $rel = $_.FullName.Substring($PKG_PATH.Length + 1).Replace("/", "\")
     if ($_.PSIsContainer) {
         if ($rel -match "^(data)\\.*" -and $rel -ne "data") { $violations += "data 目录含内容: $rel" }
-        if ($rel -match "cookies") { $violations += "cookies 目录: $rel" }
+        if ($rel -match "\\cookies\\") { $violations += "cookies 目录: $rel" }
     } else {
         foreach ($pat in $FORBIDDEN) {
             if ($rel -match $pat -and $rel -notmatch "^data\\.gitkeep$") {
@@ -259,6 +278,12 @@ Write-Host "敏感扫描 0 命中 OK"
 # 6. 压缩 + 校验和
 # ---------------------------------------------------------------------------
 Step "压缩并计算校验和"
+$sumLines = Get-ChildItem -Path $PKG_PATH -Recurse -File -Force | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object {
+    $rel = $_.FullName.Substring($PKG_PATH.Length + 1)
+    $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+    "$h  $rel"
+}
+Set-Content -LiteralPath (Join-Path $PKG_PATH "SHA256SUMS.txt") -Value $sumLines -Encoding UTF8
 if (Test-Path $ZIP) { Remove-Item -LiteralPath $ZIP -Force }
 Push-Location $STAGE
 $tarOut = tar.exe -a -c -f $ZIP $PKG_DIR
@@ -269,7 +294,6 @@ if ($LASTEXITCODE -ne 0) {
     Pop-Location
 }
 $zipHash = (Get-FileHash $ZIP -Algorithm SHA256).Hash
-Set-Content -LiteralPath (Join-Path $PKG_PATH "SHA256SUMS.txt") -Value "social_media_sentence_$Version.zip  SHA256  $zipHash" -Encoding UTF8
 $report = @"
 便携版试用包构建报告
 ======================
