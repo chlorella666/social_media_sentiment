@@ -8,6 +8,7 @@
 用法：
     powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1            # 完整构建（含回归）
     powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1 -SkipRegression   # 跳过回归（迭代用）
+    powershell -ExecutionPolicy Bypass -File scripts/build_portable.ps1 -LeanRuntime          # 精简模式（A+删 pydeck/altair，保留 pyarrow/pip）
 
 输出：scratch/_portable_dist/（gitignored）
     social_media_sentence_v0.1_win_x64/   # 解压目录
@@ -18,6 +19,7 @@
 param(
     [switch]$SkipRegression,
     [switch]$AllowDirty,
+    [switch]$LeanRuntime,
     [string]$Version = "v0.1_win_x64"
 )
 
@@ -122,9 +124,11 @@ Write-Host "运行时校验和 OK"
 # ---------------------------------------------------------------------------
 Step "准备 runtime/ 并安装依赖"
 $RUNTIME = Join-Path $PKG_PATH "runtime"
-if (Test-Path (Join-Path $RUNTIME "python.exe")) {
+$leanMarker = Join-Path $RUNTIME ".lean_marker"
+if ((Test-Path (Join-Path $RUNTIME "python.exe")) -and ((Test-Path $leanMarker) -eq $LeanRuntime)) {
     Write-Host "复用已有 runtime（如需全新构建，删除 scratch\_portable_dist\_stage）"
 } else {
+    Write-Host "runtime 与精简开关不匹配或缺失，重新解压安装…" 
     if (Test-Path $PKG_PATH) { Remove-Item -LiteralPath $PKG_PATH -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $RUNTIME | Out-Null
     tar.exe -xzf $TARBALL -C $RUNTIME --strip-components=1
@@ -149,6 +153,23 @@ Get-ChildItem -Path $RUNTIME -Recurse -Force -Directory -Filter "__pycache__" -E
 Get-ChildItem -Path $RUNTIME -Recurse -Force -File -Filter "*.pyc" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 Get-ChildItem -Path (Join-Path $RUNTIME "Lib\site-packages") -Recurse -Force -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -in @("tests", "test") } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 if (Test-Path (Join-Path $RUNTIME "Lib\site-packages\streamlit\.agents")) { Remove-Item -LiteralPath (Join-Path $RUNTIME "Lib\site-packages\streamlit\.agents") -Recurse -Force }
+if ($LeanRuntime) {
+    Write-Host "精简模式（-LeanRuntime）：移除 Jupyter 扩展/venv/tkinter/头文件/脚本入口/pydeck/altair，保留 pyarrow/pip"
+    foreach ($p in @("share\jupyter", "share\man", "tcl", "include", "libs")) {
+        Remove-Item -LiteralPath (Join-Path $RUNTIME $p) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($sub in @("venv", "ensurepip", "idlelib", "tkinter", "lib2to3", "turtledemo")) {
+        Remove-Item -LiteralPath (Join-Path $RUNTIME "Lib\$sub") -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Get-ChildItem -Path (Join-Path $RUNTIME "DLLs") -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "tcl|tk|_tkinter" } | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path (Join-Path $RUNTIME "Scripts") -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    foreach ($pkg in @("pydeck", "altair")) {
+        Get-ChildItem -Path (Join-Path $RUNTIME "Lib\site-packages") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $pkg -or $_.Name -like "$pkg-*" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Set-Content -LiteralPath $leanMarker -Value "1" -Encoding ASCII
+} else {
+    Remove-Item -LiteralPath $leanMarker -Force -ErrorAction SilentlyContinue
+}
 $maxLen = 0; $maxPath = ""
 Get-ChildItem -Path $RUNTIME -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { if ($_.FullName.Length -gt $maxLen) { $maxLen = $_.FullName.Length; $maxPath = $_.FullName } }
 Write-Host "runtime 最长路径: $maxLen ($maxPath)"
