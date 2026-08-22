@@ -40,7 +40,7 @@ $SUMS = Join-Path $CACHE "SHA256SUMS"
 
 $TOP_WHITELIST = @(
     "app", ".streamlit", "data", "runtime", "requirements.txt",
-    "README.md", "LICENSE", "使用说明.txt", "已知问题.txt",
+    "README.md", "LICENSE", "docs", "使用说明.txt", "已知问题.txt",
     "启动应用.bat", "退出.bat", "SHA256SUMS.txt"
 )
 $FORBIDDEN = @(
@@ -175,10 +175,21 @@ Get-ChildItem -Path $RUNTIME -Recurse -Force -File -ErrorAction SilentlyContinue
 Write-Host "runtime 最长路径: $maxLen ($maxPath)"
 if ($maxLen -gt 230) { Fail "runtime 最长路径超过 230，Windows 资源管理器解压会报「路径太长」，请检查清理是否生效" }
 Step "按白名单复制源码"
+
+# 清理旧构建遗留的顶层条目（白名单外），避免版本间残留（如旧版根目录 使用边界.md）
+Get-ChildItem -Path $PKG_PATH -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin $TOP_WHITELIST } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($entry in @("app", ".streamlit", "requirements.txt", "README.md", "LICENSE")) {
     $src = Join-Path $ROOT $entry
     if (-not (Test-Path $src)) { Fail "白名单条目缺失：$entry" }
     Copy-Item -LiteralPath $src -Destination (Join-Path $PKG_PATH $entry) -Recurse -Force
+}
+# 《使用边界》随包提供：应用运行时读取 docs/使用边界.md（缺失会退化为内置兜底）
+$boundarySrc = Join-Path $ROOT "docs\使用边界.md"
+if (Test-Path $boundarySrc) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $PKG_PATH "docs") | Out-Null
+    Copy-Item -LiteralPath $boundarySrc -Destination (Join-Path $PKG_PATH "docs\使用边界.md") -Force
+} else {
+    Fail "docs/使用边界.md 缺失，无法随包提供"
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $PKG_PATH "data") | Out-Null
 Copy-Item -LiteralPath (Join-Path $ROOT "data\.gitkeep") -Destination (Join-Path $PKG_PATH "data\.gitkeep") -Force
@@ -263,6 +274,7 @@ $notice = @'
   - 报告含平台用户原文，仅供自用，勿公开传播；
   - 反馈截图只截流程界面，涉及报告原文先遮挡；日志回传前自查一眼；
   - 侧边栏「数据管理」可一键清除全部数据；测试完删除整个文件夹即可。
+  - 完整《使用边界》见随包「docs\使用边界.md」（首次启动确认页展示同一文件内容）。
 
 常见问题（FAQ）：
   Q：双击后没反应/白屏？  A：确认 data/ 下有 logs 目录；重试前先双击「退出.bat」。
