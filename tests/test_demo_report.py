@@ -83,7 +83,7 @@ class TestDemoReport(unittest.TestCase):
         md = demo_report.accuracy_compare_md()
         self.assertIn("词典模式", md)
         self.assertIn("LLM 精分析", md)
-        self.assertIn("35%~46%", md)
+        self.assertIn("47%~51%", md)
         self.assertIn("80%~88%", md)
 
     def test_prepare_demo_files(self):

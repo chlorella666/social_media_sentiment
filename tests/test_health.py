@@ -104,6 +104,66 @@ def test_backward_compat_tuple() -> None:
     print("✓ 旧 check_channel_health tuple 接口兼容 通过")
 
 
+
+
+def test_opencli_installer() -> None:
+    """一键安装 opencli：命令组装（镜像/非镜像）+ 成功/缺 npm 分支。"""
+    with mock.patch.object(health.shutil, "which", side_effect=lambda n: f"C:/tools/{n}.exe"):
+        assert health.node_ready() is True
+        assert health._npm_cmd() == "C:/tools/npm.exe"
+
+    calls: list[list[str]] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = iter(["added 1 package"])
+
+        def wait(self, timeout=None) -> None:
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeProc()
+
+    with mock.patch.object(health.subprocess, "Popen", side_effect=fake_popen):
+        r = health.install_opencli(use_mirror=True)
+        assert r["ok"] is True and "安装完成" in r["message"]
+        assert calls[-1][-2:] == ["--registry", health.NPM_MIRROR_REGISTRY]
+        r2 = health.install_opencli(use_mirror=False)
+        assert r2["ok"] is True
+        assert calls[-1][-1] == "@jackwener/opencli"
+
+    with mock.patch.object(health, "_npm_cmd", return_value=None):
+        r3 = health.install_opencli()
+        assert r3["ok"] is False and "npm" in r3["message"]
+    print("✓ opencli 一键安装：命令组装/镜像/缺 npm 分支 通过")
+
+
+def test_install_node_winget() -> None:
+    """一键安装 Node：winget 命令与缺 winget 分支。"""
+    calls: list[list[str]] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = iter(["installed"])
+
+        def wait(self, timeout=None) -> None:
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeProc()
+
+    with mock.patch.object(health.shutil, "which", return_value="C:/Windows/System32/winget.exe"), \
+         mock.patch.object(health.subprocess, "Popen", side_effect=fake_popen):
+        r = health.install_node_winget()
+    assert r["ok"] is True and "重启应用" in r["message"]
+    assert calls[0][0].endswith("winget.exe")
+    assert "OpenJS.NodeJS.LTS" in calls[0]
+    with mock.patch.object(health.shutil, "which", return_value=None):
+        r2 = health.install_node_winget()
+    assert r2["ok"] is False and "winget" in r2["message"]
+    print("✓ 一键安装 Node（winget）：命令与缺 winget 分支 通过")
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_websearch_captcha_page_not_ok()
@@ -111,6 +171,8 @@ def main() -> None:
     test_demo_skip_and_xhs_env()
     test_weibo_cookie_warn_and_ok()
     test_backward_compat_tuple()
+    test_opencli_installer()
+    test_install_node_winget()
     print("渠道诊断测试全部通过 ✅")
 
 

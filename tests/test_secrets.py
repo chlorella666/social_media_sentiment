@@ -6,6 +6,7 @@ DPAPI 用例仅 Windows 可跑（非 Windows 自动跳过）；存储目录经 S
 """
 
 from __future__ import annotations
+from unittest import mock
 
 import os
 import sys
@@ -102,9 +103,22 @@ def test_ensure_legacy_migrated_deletes_file() -> None:
     print("✓ 迁移后删除明文文件 通过")
 
 
+
+
+def test_posix_fallback_roundtrip() -> None:
+    """非 Windows 平台：降级为仅当前用户可读的本地文件，读写往返可用。"""
+    with mock.patch.object(secrets, "_is_windows", return_value=False):
+        secrets.clear_cookie("__posix_probe__")
+        secrets.save_cookie("__posix_probe__", "plain-value")
+        assert secrets.load_cookie("__posix_probe__") == "plain-value"
+        blob = (secrets.secrets_dir() / "__posix_probe__.bin").read_text(encoding="utf-8")
+        assert "plain-value" in blob  # 无 DPAPI 平台明文降级（0600）
+        secrets.clear_cookie("__posix_probe__")
+    print("✓ 非 Windows 密钥降级（0600 明文文件）往返 通过")
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_secrets_dir_override()
+    test_posix_fallback_roundtrip()
     test_api_key_roundtrip()
     test_load_api_key_env_override()
     test_migrate_legacy_key_idempotent()

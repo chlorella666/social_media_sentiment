@@ -33,7 +33,16 @@
 
 > 时间预算：约 10 分钟。你只需要会「双击」或「复制粘贴命令」。
 
-### 方式一：Windows 双击运行（推荐）
+### 选择你的系统
+
+> 发布时提供 **Windows 版** 与 **macOS 版** 两个下载包，请对照你的电脑选择；
+> 也可以直接用下面的命令行方式从源码运行。
+
+### 🪟 Windows 版（推荐 Windows 10/11）
+
+> ⚠️ **系统要求：仅支持 Windows 10/11。** 应用内「一键安装 Node.js / opencli」依赖
+> 系统内置的 winget（Windows 10/11 自带）；Windows 7/8 无法一键安装，
+> 需手动安装 Python / Node.js，并手动执行 `npm install -g @jackwener/opencli`。
 
 1. **安装 Python**：打开 https://www.python.org/downloads/ 下载安装包，
    安装时**务必勾选 "Add Python to PATH"**（否则双击 `run.bat` 会提示找不到 Python）；
@@ -43,32 +52,42 @@
    - 装好后会自动启动后台任务进程，并打开浏览器进入应用；
 4. 浏览器看到「① 品牌和分析维度」页面 = 启动成功。
 
-### 方式二：命令行（Windows / macOS / Linux 通用）
+### 🍎 macOS 版
 
-打开终端（Windows 叫「命令提示符」或 PowerShell），逐条复制粘贴：
+> 系统要求：macOS（Intel / Apple Silicon 均可）+ Python 3.10+。
+> 推荐先安装 [Homebrew](https://brew.sh)（应用内一键安装 Node.js 依赖它）。
+
+打开「终端」，逐条复制粘贴：
 
 ```bash
 # 1. 进入项目目录（把 <路径> 换成你的项目位置）
 cd <路径>
 
 # 2. 创建独立运行环境（虚拟环境 = 给本项目单独开一个小房间，不污染系统）
-python -m venv .venv
+python3 -m venv .venv
 
-# 3. 激活它（Windows）
-.venv\Scripts\activate
-# （macOS / Linux 用：source .venv/bin/activate）
+# 3. 激活它
+source .venv/bin/activate
 
 # 4. 安装依赖（第一次需要，约 1~2 分钟）
 pip install -r requirements.txt
 
-# 5. 启动应用
+# 5. 启动后台任务进程（另开一个终端，先激活 .venv 再执行）
+python app/worker.py
+
+# 6. 启动应用
 python -m streamlit run app/main.py
 ```
 
 看到 `Local URL: http://localhost:8501` 就成功了，浏览器会自动打开（没自动开就手动访问这个地址）。
 
-> 命令行方式不会自动启动后台任务进程：任务会排队等待。需要后台执行时另开一个终端运行
-> `python app/worker.py`（Windows 用户直接双击 `run.bat` 最省事）。
+**macOS 版差异说明：**
+
+- 小红书渠道的 opencli 可在应用内一键安装（③ 渠道页勾选小红书后出现）；若未装 Node.js，
+  应用会用 Homebrew 自动安装，装完重启应用即可；
+- 「保存 API Key / 微博 Cookie 到本机」在 macOS 上使用仅当前用户可读的本地文件保存
+  （Windows 版为加密存储）；更在意安全可每次使用时临时粘贴；
+- 词云与报告的中文字体已适配 macOS 自带字体（PingFang SC 等），无需额外配置。
 
 ### 第一次体验：5 分钟出一份报告
 

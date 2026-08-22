@@ -142,6 +142,7 @@ def reset_wizard() -> None:
         "stage", "mode", "subject", "domain_id", "selected_dims", "selected_modules",
         "schema", "custom_dim", "custom_dimensions", "custom_dim_errors",
         "module_select", "dim_select",
+        "_last_modules_key", "_dim_restored_run",
         "manual_keywords", "keyword_groups",
         "websearch_eval_suffix", "keywords",
         "kwopt_bilibili", "kwopt_weibo", "kwopt_xiaohongshu",
@@ -263,6 +264,7 @@ def _prefill_wizard_from_plan(plan: dict) -> None:
             pass
         st.session_state._restore_module_select = mods
         st.session_state._restore_dim_select = list(st.session_state.selected_dims)
+        st.session_state["_dim_restored_run"] = True
     else:
         st.session_state.schema = None
     # demo-only 计划恢复时明示，避免"以为在跑真实渠道"（2026-08-20 走查）
@@ -355,6 +357,12 @@ def render_stage0():
                 key="module_select",
             )
             st.session_state.selected_modules = mods
+            # 模块组合变更时，维度选择重置为「当前组合全部维度默认全选」
+            # （恢复计划时跳过，保留计划里的维度选择）
+            _dim_restored = st.session_state.pop("_dim_restored_run", False)
+            if not _dim_restored and st.session_state.get("_last_modules_key") != tuple(mods):
+                st.session_state.pop("dim_select", None)
+            st.session_state["_last_modules_key"] = tuple(mods)
             schema = None
             if mods:
                 try:
@@ -494,7 +502,7 @@ def render_stage2():
         st.subheader("③ 选择采集渠道与时间段")
         infos = list_channel_infos()
         selected = st.multiselect(
-            "采集渠道（demo = 内置演示数据，仅用于体验，不采集真实内容）",
+            "采集渠道",
             options=[i["id"] for i in infos],
             key="channel_ids",
             format_func=lambda cid: {
@@ -521,12 +529,42 @@ def render_stage2():
             )
             info_texts.append(
                 "小红书前置条件：Chrome 已登录 xiaohongshu.com + opencli 已安装"
-                "（npm install -g @jackwener/opencli）；采集较慢，每个关键词约 1~2 分钟。"
+                "（可点下方「一键安装」，无需手动命令）；采集较慢，每个关键词约 1~2 分钟。"
             )
         if risk_texts:
             st.warning("⚠️ 渠道风控提示\n" + "\n".join(f"- {t}" for t in risk_texts))
         for t in info_texts:
             st.info(t)
+
+        if "xiaohongshu" in selected:
+            _xhs_ok, _xhs_msg = health.opencli_status()
+            if not _xhs_ok:
+                with st.expander("🔧 opencli 未就绪：一键安装（小白友好）", expanded=False):
+                    st.caption("小红书采集依赖 opencli 命令行工具。点击按钮自动安装，全程无需手动敲命令。")
+                    if not health.node_ready():
+                        st.caption("Windows 10/11 内置一键安装；更老的 Windows（7/8）请到 nodejs.org 手动安装。")
+                        if st.button("安装 Node.js（约 1~2 分钟）", key="install_node_btn", width="stretch"):
+                            with st.spinner("正在安装 Node.js…"):
+                                _res = health.install_node()
+                            if _res["ok"]:
+                                st.success(_res["message"])
+                            else:
+                                st.error(_res["message"])
+                                if _res["output"]:
+                                    st.code(_res["output"], language="text")
+                    else:
+                        if st.button("一键安装 opencli（约 1 分钟）", key="install_opencli_btn", width="stretch"):
+                            with st.spinner("正在安装 opencli…"):
+                                _res = health.install_opencli(
+                                    use_mirror=bool(st.session_state.get("opencli_mirror", True)),
+                                )
+                            if _res["ok"]:
+                                st.success(_res["message"])
+                                st.rerun()
+                            else:
+                                st.error(_res["message"])
+                                if _res["output"]:
+                                    st.code(_res["output"], language="text")
 
         col1, col2 = st.columns(2)
         with col1:

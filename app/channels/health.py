@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import shutil
+import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -135,6 +137,126 @@ def check_xiaohongshu_rich() -> dict:
     return {"ok": ok, "level": "ok" if ok else "warn", "msg": msg, "detail": {}}
 
 
+
+
+# ---------------------------------------------------------------------------
+# opencli 一键安装（2026-08-22，小白友好：应用内按钮直接安装，无需手动命令）
+# ---------------------------------------------------------------------------
+
+NPM_MIRROR_REGISTRY = "https://registry.npmmirror.com"
+_NODE_CANDIDATES = (
+    Path.home() / ".nodejs" / "node.exe",
+    Path("C:/Program Files/nodejs/node.exe"),
+)
+_NPM_CANDIDATES = (
+    Path.home() / ".nodejs" / "npm.cmd",
+    Path("C:/Program Files/nodejs/npm.cmd"),
+)
+
+
+def node_ready() -> bool:
+    """Node.js 是否可用（PATH 或常见安装位置）。"""
+    return bool(shutil.which("node") or any(p.exists() for p in _NODE_CANDIDATES))
+
+
+def opencli_status() -> tuple[bool, str]:
+    """opencli 就绪状态：(是否就绪, 说明文案)。"""
+    return _opencli_ready()
+
+
+def _npm_cmd() -> str | None:
+    """npm 可执行文件：PATH 优先，回退常见安装位置。"""
+    exe = shutil.which("npm")
+    if exe:
+        return exe
+    for p in _NPM_CANDIDATES:
+        if p.exists():
+            return str(p)
+    return None
+
+
+def _run_streaming(cmd: list[str], timeout_s: int = 600, on_output=None) -> dict:
+    """子进程执行并流式收集输出；返回 {ok, message, output}。"""
+    out_lines: list[str] = []
+    try:
+        kwargs: dict = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", **kwargs,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                out_lines.append(line)
+                if on_output:
+                    on_output(line)
+        proc.wait(timeout=timeout_s)
+    except Exception as exc:
+        return {"ok": False, "message": f"执行失败：{exc}", "output": "\\n".join(out_lines[-30:])}
+    tail = "\\n".join(out_lines[-30:])
+    if proc.returncode == 0:
+        return {"ok": True, "message": "执行完成", "output": tail}
+    return {"ok": False, "message": f"执行失败（退出码 {proc.returncode}）", "output": tail}
+
+
+def install_opencli(use_mirror: bool = True, on_output=None) -> dict:
+    """npm 全局安装 opencli（约 1 分钟）。"""
+    npm = _npm_cmd()
+    if not npm:
+        return {
+            "ok": False,
+            "message": "未检测到 npm：请先安装 Node.js（点上方「安装 Node.js」按钮），"
+                       "安装完成后重启应用再试。",
+            "output": "",
+        }
+    cmd = [npm, "install", "-g", "@jackwener/opencli"]
+    if use_mirror:
+        cmd += ["--registry", NPM_MIRROR_REGISTRY]
+    res = _run_streaming(cmd, on_output=on_output)
+    if res["ok"]:
+        res["message"] = "opencli 安装完成 ✅（请确认 Chrome 已登录 xiaohongshu.com）"
+    return res
+
+
+
+
+def install_node(on_output=None) -> dict:
+    """按平台一键安装 Node.js：Windows 用 winget（需 Windows 10/11），
+    macOS 用 Homebrew（brew install node）。"""
+    if os.name == "nt":
+        return install_node_winget(on_output=on_output)
+    brew = shutil.which("brew")
+    if not brew:
+        return {
+            "ok": False,
+            "message": "未找到 Homebrew：请先安装 Node.js（https://nodejs.org 或 brew install node）",
+            "output": "",
+        }
+    res = _run_streaming([brew, "install", "node"], on_output=on_output)
+    if res["ok"]:
+        res["message"] = "Node.js 安装完成 ✅ 请重启应用（终端重新启动 Streamlit），再点「一键安装 opencli」。已安装则忽略。"
+    return res
+def install_node_winget(on_output=None) -> dict:
+    """Windows 10/11：winget 一键安装 Node.js LTS。"""
+    winget = shutil.which("winget")
+    if not winget:
+        return {
+            "ok": False,
+            "message": "未找到 winget（需要 Windows 10/11）：请到 https://nodejs.org 手动下载安装",
+            "output": "",
+        }
+    cmd = [
+        winget, "install", "OpenJS.NodeJS.LTS",
+        "--accept-source-agreements", "--accept-package-agreements",
+        "--disable-interactivity", "--silent",
+    ]
+    res = _run_streaming(cmd, on_output=on_output)
+    if res["ok"]:
+        res["message"] = "Node.js 安装完成 ✅ 请重启应用（关闭后重新 run.bat），再点「安装 opencli」。已安装则忽略。"
+    return res
 def check_channel_rich(channel_id: str, params: dict | None = None) -> dict:
     """单渠道诊断（统一返回 {ok, level, msg, detail}）；demo 不发起网络探测。"""
     params = params or {}

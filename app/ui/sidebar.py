@@ -65,7 +65,7 @@ def render_sidebar():
                  "所选服务商，可提高准确率（按量计费）",
         )
         st.caption(
-            "准确率（内置评测集实测）：词典模式约 35%~46%，"
+            "准确率（内置评测集实测）：词典模式约 47%~51%，"
             "LLM 精分析约 80%~88%。"
         )
         # 2.8（2026-08-18）：LLM 相关性复核随 LLM 自动开启，不再提供独立开关
@@ -145,10 +145,6 @@ def render_sidebar():
             )
             st.caption(
                 "仅对 LLM 精分析过的文本执行（成本控制设计）；归因/框架为固定词表。"
-            )
-            st.caption(
-                "提示：环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 仅用于"
-                "开发/评测脚本，应用内 Key 只存本机 DPAPI。"
             )
             st.divider()
             st.markdown("**渠道风控安全（每日配额）**")

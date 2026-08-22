@@ -453,16 +453,8 @@ def render_results():
         if st.button("← 返回向导", key="demo_back"):
             reset_wizard()
             st.rerun()
-    # P1-1：视图切换（结论视图 = 结论 + 4 指标 + 整体情感主图；全部图表 = 展开全部）
-    view = st.segmented_control(
-        "视图",
-        ["只看结论", "全部图表"],
-        default="只看结论",
-        key="result_view",
-        label_visibility="collapsed",
-        help="结论视图 = 一句话结论 + 4 指标 + 整体情感主图；需要全部图表时切换",
-    )
-    show_all = view == "全部图表"
+    # 固定「只看结论」视图（2026-08-22 用户决定：不再提供「全部图表」切换）
+    show_all = False
     if s["total_items"] < 10:
         st.caption("⚠️ 小样本（n<10）：以下指标与结论仅供参考。")
 
@@ -558,7 +550,7 @@ def render_results():
     <div class="d">正面 {dist['positive']['ratio'] * 100:.1f}% · 中性 {dist['neutral']['ratio'] * 100:.1f}% · 负面 {dist['negative']['ratio'] * 100:.1f}%</div>
   </div>
   <div class="stat-card">
-    <div class="k">平均情感分</div>
+    <div class="k" title="{terms.TOOLTIPS['avg_score']}">平均情感分</div>
     <div class="v">{s['avg_score']:.2f}<span style="font-size:14px;font-weight:600;color:var(--text-muted)"> / 1.0</span></div>
     <div class="d">区间 −1.0 ~ +1.0</div>
   </div>
@@ -568,7 +560,7 @@ def render_results():
     <div class="d">{f'集中在「{_worst}」维度' if _worst != '—' else '—'}</div>
   </div>
   <div class="stat-card">
-    <div class="k">消费者声音</div>
+    <div class="k" title="{terms.TOOLTIPS['consumer_voice']}">消费者声音</div>
     <div class="v">{'—' if _cv_ratio is None else f'{_cv_ratio * 100:.1f}'}<span style="font-size:14px;font-weight:600;color:var(--text-muted)">%</span></div>
     <div class="d">{html.escape(str(cv.get('tier') or '—'))}</div>
   </div>
@@ -843,27 +835,27 @@ def render_results():
         st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
         _render_dim_charts(s, bundle)
     else:
-        with st.expander("📊 各平台情感分布（细节）", expanded=False):
+        with st.expander("📊 各平台情感分布", expanded=False):
             st.plotly_chart(platform_fig(s), width="stretch")
             st.markdown(f"**解析：**{bundle.chart_insights.get('platform', '')}")
-        with st.expander("📈 时间趋势（细节）", expanded=False):
+        with st.expander("📈 时间趋势", expanded=False):
             st.plotly_chart(trend_fig(s), width="stretch")
             st.markdown(f"**解析：**{bundle.chart_insights.get('trend', '')}")
-        with st.expander("🔥 情绪强度分布（细节）", expanded=False):
+        with st.expander("🔥 情绪强度分布", expanded=False):
             st.plotly_chart(intensity_fig(s), width="stretch")
             st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
-        with st.expander("🧩 维度分析（细节）", expanded=False):
+        with st.expander("🧩 维度分析", expanded=False):
             _render_dim_charts(s, bundle)
     # 非核心钻取区：结论视图折叠；全部视图展开（词云保持按需生成）
     pd_fig = platform_dim_fig(s)
     if pd_fig:
-        with st.expander("📊 平台 × 维度负面率（细节）", expanded=show_all):
+        with st.expander("📊 平台 × 维度负面率", expanded=show_all):
             st.plotly_chart(pd_fig, width="stretch")
             st.markdown(f"**解析：**{bundle.chart_insights.get('platform_dim', '')}")
-    with st.expander("🔤 高频情感词 Top20（细节）", expanded=show_all):
+    with st.expander("🔤 高频情感词 Top20", expanded=show_all):
         st.plotly_chart(words_fig(s), width="stretch")
         st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
-    with st.expander("☁️ 情感词云（细节，按需生成）", expanded=False):
+    with st.expander("☁️ 情感词云", expanded=False):
         if not st.session_state.get(f"wc_gen_{task_id}"):
             st.caption("词云图片生成较慢（3 张约 2~5 秒），点击后生成。")
             if st.button("生成词云图片", key=f"wc_gen_btn_{task_id}"):
@@ -887,7 +879,7 @@ def render_results():
                 st.caption("暂无词云数据（样本过少）。")
     co_fig = cooccurrence_fig(s)
     if co_fig:
-        with st.expander("🕸 讨论话题共现网络（细节）", expanded=show_all):
+        with st.expander("🕸 讨论话题共现网络", expanded=show_all):
             st.markdown(
                 terms.md_label("共现网络", "cooccurrence"),
                 unsafe_allow_html=True,
@@ -912,7 +904,7 @@ def render_results():
                     ]
                 )
     elif cooccurrence_plan(s)["kind"] == "pairs":
-        with st.expander("🕸 话题词对榜（细节）", expanded=show_all):
+        with st.expander("🕸 话题词对榜", expanded=show_all):
             st.caption(
                 "讨论结构样本不足，已显示话题词对榜："
                 f"{cooccurrence_plan(s)['reason']}。"
@@ -939,7 +931,7 @@ def render_results():
                 )
     src_fig = sentiment_sources_fig(s)
     if src_fig:
-        with st.expander("🗣 负面情绪来源话题榜（细节）", expanded=show_all):
+        with st.expander("🗣 负面情绪来源话题榜", expanded=show_all):
             st.plotly_chart(src_fig, width="stretch")
     narr_stats = s.get("narrative_stats") or {}
     narr_total = narr_stats.get("total", 0)

@@ -420,6 +420,11 @@ def _cjk_font() -> str | None:
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
         "C:/Windows/Fonts/msyh.ttf",
+        # macOS 自带中文字体（PingFang SC / 黑体-简 / 冬青黑体简体中文）
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
     ]:
         if Path(p).exists():
             return p

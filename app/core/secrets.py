@@ -65,22 +65,31 @@ def _unprotect(data: bytes) -> bytes:
 
 
 def save_cookie(key: str, value: str) -> None:
-    """DPAPI 加密保存一项敏感值（微博 Cookie / API Key 等）。"""
+    """保存一项敏感值：Windows 用 DPAPI 加密；macOS/Linux 降级为
+    仅当前用户可读（0600）的本地文件（弱于 Windows 加密，建议不存敏感凭据）。"""
     secrets_dir().mkdir(parents=True, exist_ok=True)
-    (secrets_dir() / f"{key}.bin").write_bytes(_protect(value.encode("utf-8")))
+    path = secrets_dir() / f"{key}.bin"
+    if _is_windows():
+        path.write_bytes(_protect(value.encode("utf-8")))
+        return
+    path.write_text(value, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def load_cookie(key: str) -> str:
-    """读取 DPAPI 加密值；不存在或解密失败返回空串（不抛异常）。"""
+    """读取保存值；不存在或解密失败返回空串（不抛异常）。"""
     path = secrets_dir() / f"{key}.bin"
     if not path.exists():
         return ""
     try:
-        return _unprotect(path.read_bytes()).decode("utf-8")
+        if _is_windows():
+            return _unprotect(path.read_bytes()).decode("utf-8")
+        return path.read_text(encoding="utf-8")
     except Exception:
         return ""
-
-
 def clear_cookie(key: str) -> None:
     path = secrets_dir() / f"{key}.bin"
     if path.exists():

@@ -63,7 +63,7 @@ def _demo_source_path() -> Path | None:
 ACCURACY_COMPARE = [
     {
         "mode": "词典模式（默认 · 离线免费）",
-        "accuracy": "约 35%~46%",
+        "accuracy": "约 47%~51%",
         "note": "无 Key 可跑、零数据出境；反讽/黑话/方言等难例判定偏弱",
     },
     {
