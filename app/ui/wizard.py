@@ -148,7 +148,10 @@ def reset_wizard() -> None:
         "kwopt_bilibili", "kwopt_weibo", "kwopt_xiaohongshu",
         "channel_ids", "channel_ids_opt", "date_range", "date_range_opt", "plan",
         "bundle", "output_files", "task_id",
-        "exclude_words", "exclude_words_opt",
+        "comments_enabled", "comments_per_post", "comments_enabled_opt", "comments_per_post_opt",
+        "ad_review_mode", "ad_review_mode_opt", "review_enabled_opt", "exclude_ad_opt",
+        "exclude_words", "exclude_words_opt", "exclude_words_text",
+        "channel_limits", "official_domains", "websearch_eval_suffix_toggle", "kwopt_weibo_toggle",
         "demo_report",
     ]:
         st.session_state.pop(key, None)
@@ -675,6 +678,11 @@ def render_stage2():
                             "处理（解除冷却 / 恢复 / 调整每日上限）。"
                         )
             st.divider()
+            # 控件卸载会清理 widget key：返回本页时用镜像键回填控件（2026-08-22 加固）
+            if "comments_enabled" not in st.session_state and "comments_enabled_opt" in st.session_state:
+                st.session_state.comments_enabled = st.session_state.comments_enabled_opt
+            if "comments_per_post" not in st.session_state and "comments_per_post_opt" in st.session_state:
+                st.session_state.comments_per_post = st.session_state.comments_per_post_opt
             c1, c2 = st.columns([1, 3])
             with c1:
                 comments_enabled = st.toggle(
@@ -697,11 +705,14 @@ def render_stage2():
             st.session_state.comments_per_post_opt = comments_per_post
             st.divider()
             st.markdown("**每关键词采集条数上限（按渠道）**")
+            _prev_limits = st.session_state.get("channel_limits", {})
             st.session_state.channel_limits = {}
             lim_cols = st.columns(min(len(selected), 4))
             for i, cid in enumerate(selected):
                 with lim_cols[i % 4]:
                     default = CHANNEL_LIMIT_DEFAULTS.get(cid, 10)
+                    if f"limit_{cid}" not in st.session_state and cid in _prev_limits:
+                        st.session_state[f"limit_{cid}"] = int(_prev_limits[cid])
                     is_ws = cid.startswith("websearch")
                     help_txt = CHANNEL_LIMIT_HELP.get(
                         cid, "每个关键词最多抓取多少条链接"
@@ -805,6 +816,8 @@ def render_stage2():
 
             # 2（2026-08-19）：词云排除词 / 广告与人工复核放到采集设置之后
             st.divider()
+            if "exclude_words" not in st.session_state and "exclude_words_text" in st.session_state:
+                st.session_state.exclude_words = st.session_state.exclude_words_text
             st.text_input(
                 "词云排除词（可选）",
                 key="exclude_words",
@@ -815,15 +828,19 @@ def render_stage2():
                 "用法：填写不想出现在词云/共现网络里的角色名或地名；"
                 "多个词用逗号、顿号或空格分隔，例如：黄金之地、夏萧因、顾时夜"
             )
+            _exclude_raw = st.session_state.get("exclude_words", "")
+            st.session_state.exclude_words_text = _exclude_raw
             st.session_state.exclude_words_opt = [
                 t.strip()
-                for t in re.split(r"[,，、\s]+", st.session_state.get("exclude_words", ""))
+                for t in re.split(r"[,，、\s]+", _exclude_raw)
                 if t.strip()
             ]
             # 广告/官方与人工复核（方案 A：单三选控件取代两个开关，2026-08-16）
             _review_on = bool(st.session_state.get("review_enabled_opt", False))
             _exclude_on = bool(st.session_state.get("exclude_ad_opt", False))
             _mode_default = 3 if _review_on else (2 if _exclude_on else 1)
+            if "ad_review_mode" not in st.session_state and "ad_review_mode_opt" in st.session_state:
+                st.session_state.ad_review_mode = st.session_state.ad_review_mode_opt
             _mode = st.radio(
                 "广告/官方与人工复核",
                 AD_REVIEW_MODES,
@@ -834,6 +851,7 @@ def render_stage2():
                     "人工复核时标记的广告/官方将从情感统计剔除（不标记的照常计入）。"
                 ),
             )
+            st.session_state.ad_review_mode_opt = _mode
             st.session_state.review_enabled_opt = _mode.startswith("人工复核")
             st.session_state.exclude_ad_opt = _mode != AD_REVIEW_MODES[0]
             st.caption(
@@ -980,7 +998,7 @@ def render_stage3():
         ),
         ("LLM 相关性复核", "开（随 LLM 自动开启）" if relevance_check_enabled else "关"),
         ("广告/官方与人工复核", AD_REVIEW_SHORT.get(
-            st.session_state.get("ad_review_mode", ""),
+            st.session_state.get("ad_review_mode_opt") or st.session_state.get("ad_review_mode", ""),
             AD_REVIEW_SHORT[AD_REVIEW_MODES[0]])),
         ("词云排除词", "、".join(st.session_state.get("exclude_words_opt", [])) or "未配置"),
         ("预计 LLM 费用", f"约 ¥{cost_est['estimated_cost']}（预估）"),
