@@ -858,6 +858,9 @@ class TaskRunner:
                     channel = get_channel(channel_configs[i].channel_id)
                     result = degraded_result(channel.id, f"采集异常: {exc}")
                 results[i] = result
+                warnings.extend(
+                    f"[{channel.name}] {w}" for w in (result.warnings or [])
+                )
                 completed += 1
                 with lock:
                     channel_fracs[i] = 1.0
@@ -986,6 +989,7 @@ class TaskRunner:
                 quality_dropped = [
                     d for d in (ch.dropped or [])
                     if is_quality_drop(d)
+                    and d.get("reason", "") != "疑似不相关（信息不足）"
                 ]
                 drop_rate = len(quality_dropped) / collected
                 limit = plan.per_keyword_limit

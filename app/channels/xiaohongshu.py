@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from threading import Event
@@ -97,6 +98,31 @@ def _note_id_from_url(url: str) -> str:
         r"/(?:search_result|explore|item|discovery/item)/([0-9a-f]+)", url
     )
     return m.group(1) if m else url
+
+
+def _norm_compact(text: str) -> str:
+    """匹配用归一化：NFKC（全角→半角）→ 去空白 → 小写。"""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or "")).lower()
+
+
+def _bigrams(text: str) -> set[str]:
+    s = _norm_compact(text)
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _detail_is_consistent(search_title: str, detail_title: str) -> bool:
+    """详情标题与搜索标题是否指向同一笔记（字符二元组重叠守卫）。
+
+    任一为空或过短时不阻断（详情缺标题时保留搜索标题即可）；两者均有
+    实质文本但无任何共同二元组 → 判定详情错配（opencli 返回了别的笔记）。
+    """
+    t, d = _norm_compact(search_title), _norm_compact(detail_title)
+    if not t or not d:
+        return True
+    if len(t) < 4 or len(d) < 4:
+        return True
+    return bool(_bigrams(t) & _bigrams(d))
+
 
 
 def _fields_to_dict(items: object) -> dict:
@@ -205,10 +231,11 @@ class XiaohongshuChannel(ChannelAdapter):
         stats: dict[str, int] = {
             "requested_limit": 0, "api_returned_cards": 0, "mblog_cards": 0,
             "skipped_other_type": 0, "skipped_dup": 0, "skipped_ad": 0,
-            "skipped_out_of_range": 0, "kept": 0,
+            "skipped_out_of_range": 0, "detail_mismatch": 0, "kept": 0,
         }
         seen_urls: set[str] = set(skip_urls or ())
         first_error = ""
+        warnings_note: list[str] = []
         # 2026-08-18：渠道策略展开后的查询串优先（channel_params.queries）
         cfg = next((c for c in plan.channels if c.channel_id == self.id), None)
         keywords = (cfg.params.get("queries") if cfg else None) \
@@ -232,6 +259,7 @@ class XiaohongshuChannel(ChannelAdapter):
                         channel_id=self.id, ok=False, posts=posts,
                         error=f"风控停止：{exc}", degraded=True, risk=True,
                         dropped=dropped_records, collection_stats=stats,
+                        warnings=warnings_note,
                     )
                 first_error = first_error or f"关键词「{keyword}」搜索失败：{exc}"
                 if on_progress:
@@ -307,14 +335,27 @@ class XiaohongshuChannel(ChannelAdapter):
                 if cancel_event and cancel_event.is_set():
                     break
                 try:
-                    detail = _note_detail(post.url)
+                    # search_result 路由偶发跳转到其它笔记：统一改用 /explore/ 规范链接
+                    detail_url = post.url.replace("/search_result/", "/explore/")
+                    detail = _note_detail(detail_url)
                 except (subprocess.TimeoutExpired, RuntimeError) as exc:
                     if is_ratelimit(str(exc)):
                         return ChannelResult(
                             channel_id=self.id, ok=False, posts=posts,
                             error=f"风控停止：{exc}", degraded=True, risk=True,
                             dropped=dropped_records, collection_stats=stats,
+                            warnings=warnings_note,
                         )
+                    continue
+                if detail and not _detail_is_consistent(
+                    str(post.title or ""), str(detail.get("title") or "")
+                ):
+                    # 详情错配：不覆盖搜索标题/正文，保留原样并计数（避免标题正文错位）
+                    stats["detail_mismatch"] = stats.get("detail_mismatch", 0) + 1
+                    post.platform_specific["detail_mismatch"] = True
+                    warnings_note.append(
+                        f"小红书 {post.url[:60]} 详情与搜索标题不一致，已保留搜索信息"
+                    )
                     continue
                 if detail.get("content"):
                     post.content = str(detail["content"])
@@ -350,6 +391,7 @@ class XiaohongshuChannel(ChannelAdapter):
                                 channel_id=self.id, ok=False, posts=posts,
                                 error=f"风控停止：{exc}", degraded=True, risk=True,
                                 dropped=dropped_records, collection_stats=stats,
+                                warnings=warnings_note,
                             )
                         pass
                     jittered_sleep(OPERATION_INTERVAL, 0.3)
@@ -367,10 +409,12 @@ class XiaohongshuChannel(ChannelAdapter):
                 error=first_error
                 or "小红书未采集到任何内容（关键词无结果或全部超出时间范围）",
                 degraded=True, dropped=dropped_records, collection_stats=stats,
+                warnings=warnings_note,
             )
         if on_progress:
             on_progress(f"小红书采集完成，共 {len(posts)} 条", 1.0)
         return ChannelResult(
             channel_id=self.id, ok=True, posts=posts,
             dropped=dropped_records, collection_stats=stats,
+            warnings=warnings_note,
         )

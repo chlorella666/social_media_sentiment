@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
 from datetime import datetime, timedelta
@@ -58,6 +59,67 @@ OFFICIAL_PAGE_RE = re.compile("|".join(OFFICIAL_PAGE_PATTERNS))
 
 # 第三方评价/评分聚合页特征：标题含这些词时，"XX官网/首页"更可能是聚合页而非官方页
 REVIEW_AGG_WORDS = ("评价", "评论", "评分", "讨论", "论坛", "测评", "攻略")
+
+# 品牌别名词典（2026-08-22 容错相关性判定）：常见缩写/玩家圈层别名。
+# 命中任一别名即视为与主体相关；后续可在设置/策略层扩展为可编辑。
+BRAND_ALIASES: dict[str, tuple[str, ...]] = {
+    "恋与深空": ("LYSK", "lys", "叠纸", "叠解", "狗叠", "恋与"),
+    "大疆": ("DJI", "dji"),
+    "瑞幸": ("luckin", "LUCKIN"),
+}
+
+
+def _compact_for_match(text: str) -> str:
+    """匹配用归一化：NFKC（全角→半角）→ 去空白 → 小写。"""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or "")).lower()
+
+
+def _lcs_len(a: str, b: str) -> int:
+    """最长公共子串长度（容错变体：空格/插字/简写）。"""
+    m = difflib.SequenceMatcher(None, a, b, autojunk=False).find_longest_match(
+        0, len(a), 0, len(b)
+    )
+    return m.size
+
+
+def _relevance_match(hay: str, subject: str, keywords: list[str]) -> str:
+    """容错相关性判定：归一化整词包含 / 别名 / 最长公共子串（前缀优先）。
+
+    返回命中依据；空串 = 未命中。规则（2026-08-22，替代原逐字硬匹配）：
+    - 归一化后整词包含仍是最强信号；
+    - 品牌别名（LYSK/叠纸/DJI 等）命中即相关；
+    - 最长公共子串 ≥2（中文）/≥3（字母数字）且为信号词前缀时视为相关，
+      覆盖「华润万家 vs 华润超市」「iPhone vs iphone」等变体。
+    """
+    hay_c = _compact_for_match(hay)
+    if not hay_c:
+        return ""
+    for sig in [s for s in ([subject] + list(keywords)) if s and s.strip()]:
+        sig_c = _compact_for_match(sig)
+        if not sig_c:
+            continue
+        if sig_c in hay_c:
+            return f"包含「{sig}」"
+        for alias in BRAND_ALIASES.get(sig.strip(), ()):
+            alias_c = _compact_for_match(alias)
+            if alias_c and alias_c in hay_c:
+                return f"包含别名「{alias}」（{sig}）"
+        if len(sig_c) >= 4:
+            thr = 3 if re.fullmatch(r"[a-z0-9 _\-]+", sig_c) else 2
+            m = difflib.SequenceMatcher(
+                None, sig_c, hay_c, autojunk=False
+            ).find_longest_match(0, len(sig_c), 0, len(hay_c))
+            if m.size >= thr:
+                matched = sig_c[m.a:m.a + m.size]
+                if sig_c.startswith(matched):
+                    return f"相似匹配「{sig}」"
+    return ""
+
+
+def _has_real_content(title: str, content: str) -> bool:
+    """正文是否为可判定依据的真实内容（非空、非仅标题、长度足够）。"""
+    ct, cc = _compact_for_match(title), _compact_for_match(content)
+    return bool(cc) and cc != ct and len(cc) >= 8
 
 
 def normalize_datetime(raw: str, now: datetime | None = None) -> str:
@@ -226,13 +288,17 @@ def clean_posts(
         short_limit = 5 if is_ws else 10
         if len(content) < short_limit and len(title) < short_limit:
             reasons.append("文本过短")
-        hay = title + content
+        match_hit = ""
         if subject or keywords:
-            relevant = (subject and subject in hay) or any(
-                kw and kw in hay for kw in keywords
-            )
-            if not relevant:
-                reasons.append("与品牌/关键词不相关")
+            match_hit = _relevance_match(title + content, subject, keywords)
+            if not match_hit:
+                if _has_real_content(title, content):
+                    # 有实质正文但未命中：保留并标记低相关，交由 LLM 复核或人工
+                    # 决定，避免「逐字硬匹配」误杀别名/变体相关的真实内容。
+                    post.platform_specific.setdefault("relevance", "weak")
+                elif not reasons:
+                    # 仅当无其它质量原因时才标「信息不足」，避免与样板/过短叠加
+                    reasons.append("疑似不相关（信息不足）")
 
         if not reasons:
             title_key = title[:50]
@@ -271,6 +337,8 @@ def clean_posts(
                     "keyword": post.keyword,
                     "query": (post.platform_specific or {}).get("query", ""),
                     "reason": "；".join(reasons),
+                    "content": content[:120],
+                    "match": match_hit or "",
                     # 2026-08-19（口径结构化）：去重原因只在无质量原因时出现，
                     # 按首条是否「重复」判定 duplicate/quality
                     "kind": (

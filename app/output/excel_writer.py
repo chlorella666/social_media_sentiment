@@ -223,6 +223,8 @@ def _dropped_rows(bundle: ReportBundle) -> list[dict]:
                     "关键词": d.get("keyword", ""),
                     "查询串": d.get("query", ""),
                     "丢弃原因": d.get("reason", ""),
+                    "正文摘要": d.get("content", ""),
+                    "判定依据": d.get("match", ""),
                 }
             )
     return rows

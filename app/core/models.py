@@ -131,6 +131,7 @@ class ChannelResult(BaseModel):
     # 采集透明度（2026-08-18）：采集层统计（API 返回/各原因跳过/保留），
     # 供报告"采集说明"解释"为什么没采满"；旧任务缺失时为空、向后兼容
     collection_stats: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)  # 渠道级提示（错配/风控等，2026-08-22）
     error: str = ""
     degraded: bool = False  # 自动降级标记
     risk: bool = False  # 2026-08-16：风控即停标记（保留已采部分，跳过补采，触发冷却）

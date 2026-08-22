@@ -432,7 +432,7 @@ def test_reconcile_channel_posts_consistency() -> None:
                  content="测试 评价 很好用，用了两周非常满意，续航和画质都很出色"),
             Post(id="b", platform="demo", keyword="测试 评价",
                  title="", url="https://demo/b",
-                 content="完全无关的文本，不包含关键词"),
+                 content="无关"),
         ],
         dropped=[{"platform": "demo", "url": "legacy", "title": "",
                   "reason": "旧轮次丢弃"}],

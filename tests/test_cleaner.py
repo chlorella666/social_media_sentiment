@@ -18,9 +18,9 @@ from app.coding import cleaner  # noqa: E402
 from app.core.models import Post  # noqa: E402
 
 
-def _post(platform: str, title: str, content: str) -> Post:
-    return Post(id="x", platform=platform, title=title, content=content,
-                url="https://x.example/1")
+def _post(platform: str, title: str, content: str, pid: str = "x") -> Post:
+    return Post(id=pid, platform=platform, title=title, content=content,
+                url=f"https://x.example/{pid}")
 
 
 def test_websearch_short_text_not_dropped() -> None:
@@ -77,6 +77,98 @@ def test_desensitize_text() -> None:
     assert d("模组码:8099410 【红石版】:821226 其余保持原样") == "模组码:8099410 【红石版】:821226 其余保持原样"
     print("✓ LLM 前脱敏（邮箱/手机/身份证/@/链接）且不误伤短数字码 通过")
 
+# ---------------------------------------------------------------------------
+# 2026-08-22：容错相关性判定（别名/变体/信息不足降级）+ 小红书详情一致性守卫
+# ---------------------------------------------------------------------------
+
+
+def _dropped_reasons(kept, dropped):
+    return [d.get("reason", "") for d in dropped]
+
+
+def test_relevance_alias_kept() -> None:
+    """别名（LYSK/叠纸）命中即保留，不再误杀。"""
+    kept, dropped = cleaner.clean_posts(
+        [
+            _post("websearch_zhihu", "LYSK乙游事件 - 知乎", "关于恋与深空运营的讨论", pid="a"),
+            _post("websearch_zhihu", "为什么叠纸一直致力于得罪玩家?", "玩家对恋与深空的不满", pid="b"),
+        ],
+        subject="恋与深空",
+    )
+    assert len(kept) == 2, _dropped_reasons(kept, dropped)
+
+
+def test_relevance_variant_kept() -> None:
+    """变体（空格/大小写/简称）经归一化+最长公共子串命中。"""
+    kept, dropped = cleaner.clean_posts(
+        [
+            _post("websearch", "华润超市怎么样", "华润 超市 购物体验", pid="c"),
+            _post("websearch", "iPhone 15 评测", "iphone15 拍照体验", pid="d"),
+            _post("websearch", "迈从X9机械键盘", "迈从 x9 手感不错", pid="e"),
+        ],
+        subject="华润万家",
+        keywords=["iphone", "迈从X9"],
+    )
+    assert len(kept) == 3, _dropped_reasons(kept, dropped)
+
+
+def test_relevance_unrelated_real_content_kept_weak() -> None:
+    """有实质正文但未命中：保留并标记 weak（交由 LLM/人工判定），不硬丢。"""
+    post = _post("websearch", "今日股市行情", "上证指数收盘上涨", pid="f")
+    kept, dropped = cleaner.clean_posts([post], subject="恋与深空")
+    assert len(kept) == 1 and not dropped
+    assert post.platform_specific.get("relevance") == "weak"
+
+
+def test_relevance_insufficient_info_reason() -> None:
+    """标题不含品牌且正文缺失/过短时，不再标「与品牌/关键词不相关」。"""
+    kept, dropped = cleaner.clean_posts(
+        [_post("xiaohongshu", "今天天气真好适合出去玩", "今天天气真好适合出去玩", pid="h")],
+        subject="恋与深空",
+    )
+    assert not kept and dropped
+    assert "信息不足" in dropped[0]["reason"]
+    assert "与品牌/关键词不相关" not in dropped[0]["reason"]
+    # 极短内容仍由「文本过短」兜底，也不会误标不相关
+    kept2, dropped2 = cleaner.clean_posts(
+        [_post("xiaohongshu", "快跑！！！", "快跑！！！", pid="i")],
+        subject="恋与深空",
+    )
+    assert not kept2 and dropped2
+    assert "与品牌/关键词不相关" not in dropped2[0]["reason"]
+
+
+def test_relevance_weak_content_kept_with_flag() -> None:
+    """有实质正文但未命中：保留并标记 low relevance，不误杀。"""
+    post = _post("xiaohongshu", "isa 你没有心", "刚买的这款耳机真的太难用了，音质很差")
+    kept, dropped = cleaner.clean_posts([post], subject="某品牌耳机")
+    assert len(kept) == 1 and not dropped
+    assert post.platform_specific.get("relevance") == "weak"
+
+
+def test_drop_record_has_content_and_match() -> None:
+    """丢弃记录补全正文摘要与判定依据，供人工核对。"""
+    _, dropped = cleaner.clean_posts(
+        [_post("xiaohongshu", "快跑！！！", "快跑！！！", pid="g")],
+        subject="恋与深空",
+    )
+    assert dropped
+    assert "content" in dropped[0]
+    assert "match" in dropped[0]
+
+
+def test_detail_consistency_guard() -> None:
+    """小红书详情一致性守卫：正常配对通过、错配被识别。"""
+    from app.channels.xiaohongshu import _detail_is_consistent
+
+    assert _detail_is_consistent("西村力五杀一帅", "#西村力 #西村力晚安")
+    assert _detail_is_consistent("恋与深空 七夕", "和哥哥过七夕吧~")
+    assert not _detail_is_consistent("全网无代餐极品阴湿男", "一直非常相信全棉时代的生产卫生")
+    assert not _detail_is_consistent("北海道温泉旅馆", "#恋与深空 #收谷")
+    # 任一为空/过短不阻断
+    assert _detail_is_consistent("", "任意详情")
+    assert _detail_is_consistent("短", "内容")
+
 
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -84,6 +176,13 @@ def main() -> None:
     test_official_page_review_aggregator_not_dropped()
     test_websearch_boilerplate_snippet_not_dropped()
     test_desensitize_text()
+    test_relevance_alias_kept()
+    test_relevance_variant_kept()
+    test_relevance_unrelated_real_content_kept_weak()
+    test_relevance_insufficient_info_reason()
+    test_relevance_weak_content_kept_with_flag()
+    test_drop_record_has_content_and_match()
+    test_detail_consistency_guard()
     print("清洗规则测试全部通过 ✅")
 
 
