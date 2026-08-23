@@ -4,7 +4,7 @@
 程度副词窗口 + 否定翻转 + tanh 归一化；词强度用词典自带分数调制。
 词典文件来源：
 - cnsenti 包 dictionary/hownet/pos.pkl|neg.pkl（知网 7k+12k 词，实测无功能词污染）
-- data/dicts/ecsd/DoUP|DoUN|DoUM|DoN（苏大电商情感词典）
+- app/coding/dicts/ecsd/DoUP|DoUN|DoUM|DoN（苏大电商情感词典）
 - _CURATED_WORDS（网络新词：绝绝子/yyds/塌房/割韭菜 等）
 
 词典第一刀（2026-08-15，2.6 主集正面召回专项处置 2）：
@@ -35,7 +35,7 @@ from pathlib import Path
 from app.coding.tokenizer import STOPWORDS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ECSD_DIR = PROJECT_ROOT / "data" / "dicts" / "ecsd"
+ECSD_DIR = Path(__file__).resolve().parent / "dicts" / "ecsd"
 MAX_WORD_LEN = 8  # 子串扫描的最大词长，控制开销
 USE_CNSENTI = False  # A/B 开关：是否加载 cnsenti 知网 19k 词（False=仅精选+ECSD）
 
@@ -171,6 +171,8 @@ def _word_scores() -> dict[str, float]:
                 scores.setdefault(word.lower(), -1.2)
         # DoUM（中性词）不进入评分
         NEGATION_WORDS.update(w.lower() for w in _read_lines(ECSD_DIR / "DoN"))
+    else:
+        print("[lexicon_v2] 警告：ECSD 词典缺失 " + str(ECSD_DIR) + "，词典降级运行（黄金集门禁可能 FAIL）")
     for word in CONTEXT_WORDS:
         scores.pop(word, None)
     return scores
