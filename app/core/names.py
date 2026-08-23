@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from functools import lru_cache
 
 from app.domains import loader
@@ -54,6 +56,19 @@ _EXTRA_DIM_CN = {
 def _dimension_map() -> dict[str, str]:
     """汇总全部预置 + 缓存领域 schema 的维度 id → 中文名（缓存；2.5 新领域自动纳入）。"""
     m = dict(_EXTRA_DIM_CN)
+    # 模块模板维度（content/physical/service）也纳入显示名映射，
+    # 优先级低于领域文件；修复模块任务维度显示英文 id（2026-08-24）
+    try:
+        templates = json.loads(
+            (loader.DOMAINS_DIR / "domain_templates.json").read_text(encoding="utf-8")
+        )
+        for tpl in templates.get("templates", []):
+            for dim in tpl.get("dimensions", []):
+                dim_id = dim.get("id", "")
+                if dim_id:
+                    m.setdefault(dim_id, dim.get("name", "") or dim_id)
+    except Exception:
+        pass
     for path in sorted(loader.DOMAINS_DIR.glob("*.json")):
         if path.name == "domain_templates.json":
             continue

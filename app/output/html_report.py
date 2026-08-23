@@ -169,14 +169,57 @@ def trend_fig(s: dict) -> go.Figure:
     return make_subplots_dual(df)
 
 
+TREND_WEEKLY_SPAN_DAYS = 90  # 趋势图：日期跨度超过该天数时按周聚合（2026-08-24 调整）
+
+
+def _trend_span_days(df: pd.DataFrame) -> int | None:
+    """日期跨度（首尾天数差）；解析失败返回 None。"""
+    try:
+        d = pd.to_datetime(df["日期"])
+        if len(d) == 0:
+            return None
+        return (d.max() - d.min()).days
+    except Exception:
+        return None
+
+
+def _trend_weekly(df: pd.DataFrame, max_span_days: int = TREND_WEEKLY_SPAN_DAYS) -> pd.DataFrame:
+    """日期跨度超过 max_span_days 天时按周聚合（周一首日），避免日粒度柱子过细。
+
+    平均评分为按内容量加权的周均分；跨度未超过阈值时保持逐日。
+    """
+    span = _trend_span_days(df)
+    if span is None or span <= max_span_days:
+        return df
+    d = pd.to_datetime(df["日期"])
+    wk = d.dt.to_period("W-SUN").dt.start_time
+    tmp = df.assign(_d=d, _w=wk)
+    g = tmp.groupby("_w", sort=True)
+    total = g["内容量"].sum()
+    weighted = (tmp["内容量"] * tmp["平均评分"]).groupby(tmp["_w"]).sum()
+    out = pd.DataFrame(
+        {
+            "日期": g["_d"].first().dt.strftime("%Y-%m-%d"),
+            "内容量": total,
+            "平均评分": (weighted / total).round(4),
+            "负面数": g["负面数"].sum(),
+        }
+    ).reset_index(drop=True)
+    return out
+
+
 def make_subplots_dual(df: pd.DataFrame) -> go.Figure:
     from plotly.subplots import make_subplots
 
+    weekly = (_trend_span_days(df) or 0) > TREND_WEEKLY_SPAN_DAYS
+    if weekly:
+        df = _trend_weekly(df)
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(x=df["日期"], y=df["内容量"], name="内容量", marker_color="rgba(43, 123, 214, 0.6)"), secondary_y=False)
     fig.add_trace(go.Scatter(x=df["日期"], y=df["平均评分"], name="平均评分", mode="lines+markers", line=dict(color=SENTIMENT_COLORS["negative"])), secondary_y=True)
     fig.update_layout(
-        title="情感趋势（内容量 + 平均评分）", height=380,
+        title="情感趋势（内容量 + 平均评分 · 按周汇总）" if weekly else "情感趋势（内容量 + 平均评分）",
+        height=380,
         margin=dict(l=20, r=20, t=50, b=20),
         xaxis=dict(tickangle=45, tickfont=dict(size=11)),
     )

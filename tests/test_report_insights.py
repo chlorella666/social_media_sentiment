@@ -488,6 +488,51 @@ def test_topic_cluster_union_doc_count() -> None:
     assert set(res["node_cluster"]) == set(node_count)
     print("✓ 话题簇并集口径：独立文本数/负面率 通过")
 
+def test_template_dimension_ids_have_cn_names():
+    """模块模板维度 id 应能映射中文名（2026-08-24：修复英文 id 显示）。"""
+    import json
+
+    from app.core.names import dimension_cn
+
+    tpl = json.loads(
+        (ROOT / "app" / "domains" / "domain_templates.json").read_text(encoding="utf-8")
+    )
+    bad = []
+    for t in tpl["templates"]:
+        for dim in t["dimensions"]:
+            if dimension_cn(dim["id"]) == dim["id"]:
+                bad.append(dim["id"])
+    assert not bad, f"模板维度无中文名: {bad}"
+    print("✓ 模板维度中文名映射（effectiveness 等） 通过")
+
+
+def test_trend_weekly_aggregation():
+    """趋势图：日期跨度>90 天按周聚合、≤90 天保持逐日（2026-08-24 阈值调整）。"""
+    import pandas as pd
+
+    from app.output.html_report import _trend_weekly
+
+    def _df(periods):
+        dates = pd.date_range("2026-01-01", periods=periods)
+        return pd.DataFrame(
+            {
+                "日期": [d.strftime("%Y-%m-%d") for d in dates],
+                "内容量": [1] * periods,
+                "平均评分": [0.5] * periods,
+                "负面数": [0] * periods,
+            }
+        )
+
+    long_df = _df(120)  # 跨度 119 天 > 90 → 按周
+    out = _trend_weekly(long_df)
+    assert len(out) < len(long_df), ">90 天跨度应聚合成周"
+    assert out["内容量"].sum() == 120
+    assert abs(out["平均评分"].iloc[0] - 0.5) < 1e-9
+    mid_df = _df(60)  # 跨度 59 天 ≤ 90 → 保持逐日
+    assert len(_trend_weekly(mid_df)) == 60, "≤90 天跨度保持逐日"
+    assert len(_trend_weekly(long_df.head(3))) == 3, "极短跨度保持逐日"
+    print("✓ 趋势图日期跨度>90 天按周聚合 通过")
+
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -502,4 +547,6 @@ if __name__ == "__main__":
     test_report_discussion_structure_branches()
     test_cluster_rows_deterministic()
     test_topic_cluster_union_doc_count()
+    test_template_dimension_ids_have_cn_names()
+    test_trend_weekly_aggregation()
     print("报告洞察测试通过 ✅")
