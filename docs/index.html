@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>社交媒体情感分析器 · 产品展示</title>
+<meta name="description" content="输入品牌/关键词，自动采集五大平台真实讨论，词典 + LLM 判定情感，输出带证据链的报告。个人独立完成的本地桌面级舆情分析工具。">
+<style>
+/* ============================================================
+   设计令牌（与 design_entries/ui-designer/design_tokens.css 同源）
+   ============================================================ */
+:root{
+  --brand-50:#EEF6FD; --brand-100:#D9EAFB; --brand-200:#B3D4F6;
+  --brand-500:#2B7BD6; --brand-600:#2263B1; --brand-700:#1B4F8F;
+  --gray-50:#F8FAFC; --gray-100:#F1F5F9; --gray-200:#E2E8F0;
+  --gray-300:#CBD5E1; --gray-400:#94A3B8; --gray-500:#64748B;
+  --gray-600:#475569; --gray-700:#334155; --gray-900:#0F172A;
+  --pos-500:#16A34A; --pos-100:#DCFCE7;
+  --neg-500:#DC2626; --neg-100:#FEE2E2;
+  --neu-500:#64748B; --neu-100:#F1F5F9;
+  --success-500:#15803D; --warning-500:#B45309; --warning-100:#FEF3C7;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif;
+  --text-xs:12px; --text-sm:13px; --text-base:14px; --text-md:16px;
+  --text-lg:18px; --text-xl:22px; --text-2xl:28px; --text-3xl:36px;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:20px; --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px;
+  --radius-sm:6px; --radius-md:8px; --radius-lg:12px; --radius-full:999px;
+  --shadow-sm:0 1px 2px 0 rgb(15 23 42/.05);
+  --shadow-md:0 2px 8px 0 rgb(15 23 42/.08);
+  --shadow-lg:0 8px 24px 0 rgb(15 23 42/.12);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--font);background:var(--gray-50);color:var(--gray-900);font-size:var(--text-base);line-height:1.7;-webkit-font-smoothing:antialiased}
+.num{font-variant-numeric:tabular-nums}
+a{color:var(--brand-500);text-decoration:none}
+a:hover{color:var(--brand-600)}
+.wrap{max-width:1100px;margin:0 auto;padding:0 var(--space-6)}
+
+/* ---------- 导航 ---------- */
+nav{position:sticky;top:0;z-index:50;background:rgb(255 255 255/.9);backdrop-filter:blur(8px);border-bottom:1px solid var(--gray-200)}
+.nav-in{display:flex;align-items:center;gap:var(--space-4);height:60px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;color:var(--gray-900)}
+.logo .mark{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--brand-500),var(--brand-700));display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-md)}
+.nav-links{display:flex;gap:var(--space-5);margin-left:auto;font-size:13px;font-weight:500}
+.nav-links a{color:var(--gray-600)}
+.nav-links a:hover{color:var(--brand-600)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:0 18px;border-radius:var(--radius-md);font-size:14px;font-weight:700;font-family:var(--font);cursor:pointer;border:1px solid transparent;transition:filter .15s ease,opacity .15s ease}
+.btn:focus-visible{outline:2px solid var(--brand-500);outline-offset:2px}
+.btn-primary{background:var(--brand-500);color:#fff}
+.btn-primary:hover{background:var(--brand-600);color:#fff}
+.btn-ghost{background:#fff;border-color:var(--brand-500);color:var(--brand-600)}
+.btn-ghost:hover{background:var(--brand-50)}
+.btn svg{width:15px;height:15px;flex:none}
+
+/* ---------- Hero ---------- */
+header.hero{background:linear-gradient(180deg,#fff,var(--gray-50));padding:var(--space-16) 0 var(--space-12);text-align:center}
+.pill{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--brand-600);background:var(--brand-50);border:1px solid var(--brand-200);border-radius:var(--radius-full);padding:5px 14px;margin-bottom:var(--space-6)}
+.pill .dot{width:6px;height:6px;border-radius:50%;background:var(--success-500)}
+.hero h1{font-size:clamp(30px,5vw,44px);line-height:1.25;margin:0 0 var(--space-4);letter-spacing:-.01em}
+.hero .sub{font-size:clamp(15px,2vw,18px);color:var(--gray-600);max-width:680px;margin:0 auto var(--space-8)}
+.hero .sub b{color:var(--gray-900)}
+.hero-cta{display:flex;gap:var(--space-3);justify-content:center;flex-wrap:wrap}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);max-width:880px;margin:var(--space-12) auto 0}
+.metric{background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius-lg);padding:var(--space-5);box-shadow:var(--shadow-sm)}
+.metric .v{font-size:30px;font-weight:700;color:var(--gray-900)}
+.metric .v .unit{font-size:16px;color:var(--gray-500);font-weight:600}
+.metric .k{font-size:12px;color:var(--gray-500);margin-top:2px}
+
+/* ---------- 区块通用 ---------- */
+section{padding:var(--space-16) 0}
+section:nth-of-type(even){background:#fff}
+.sec-head{max-width:640px;margin:0 auto var(--space-12);text-align:center}
+.sec-kicker{font-size:12px;font-weight:700;letter-spacing:.12em;color:var(--brand-500);text-transform:uppercase;margin:0 0 var(--space-2)}
+.sec-head h2{font-size:var(--text-2xl);margin:0 0 var(--space-3)}
+.sec-head p{color:var(--gray-600);margin:0;font-size:15px}
+
+/* ---------- 痛点 ---------- */
+.pains{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4)}
+.pain{background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-lg);padding:var(--space-5)}
+.pain .ic{width:40px;height:40px;border-radius:10px;background:var(--brand-50);color:var(--brand-600);display:flex;align-items:center;justify-content:center;margin-bottom:var(--space-4)}
+.pain h3{font-size:15px;margin:0 0 var(--space-2)}
+.pain p{font-size:13px;color:var(--gray-600);margin:0}
+
+/* ---------- 6 步流程 ---------- */
+.stepper-wrap{background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius-lg);box-shadow:var(--shadow-md);overflow:hidden}
+.stepper{display:flex;align-items:center;gap:0;padding:var(--space-6);flex-wrap:wrap;border-bottom:1px solid var(--gray-200)}
+.st{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--gray-500);font-weight:500}
+.st .n{width:26px;height:26px;border-radius:50%;border:1.5px solid var(--gray-300);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:#fff;flex:none;transition:all .3s ease}
+.st .n svg{width:13px;height:13px}
+.st.cur{color:var(--brand-600);font-weight:700}
+.st.cur .n{border-color:var(--brand-500);background:var(--brand-500);color:#fff;box-shadow:0 0 0 4px var(--brand-50)}
+.st.done{color:var(--success-500)}
+.st.done .n{border-color:var(--success-500);color:var(--success-500);background:var(--pos-100)}
+.ln{width:30px;height:1.5px;background:var(--gray-300);margin:0 10px;transition:background .3s ease}
+.ln.done{background:var(--success-500)}
+.stage-body{padding:var(--space-8);min-height:150px}
+.stage-body h3{margin:0 0 var(--space-2);font-size:17px}
+.stage-body p{margin:0;color:var(--gray-600);font-size:14px;max-width:560px}
+.stage-mock{margin-top:var(--space-6);background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-md);padding:var(--space-4)}
+.mock-row{display:flex;align-items:center;gap:var(--space-3);font-size:13px;color:var(--gray-700)}
+.mock-row .bar{flex:1;height:8px;border-radius:var(--radius-full);background:var(--gray-200);overflow:hidden}
+.mock-row .bar i{display:block;height:100%;width:0;background:var(--brand-500);border-radius:var(--radius-full);transition:width .5s ease}
+.mock-row .pct{font-size:12px;color:var(--gray-500);min-width:44px;text-align:right}
+.step-tip{display:flex;justify-content:space-between;align-items:center;padding:var(--space-4) var(--space-6);background:var(--gray-50);border-top:1px solid var(--gray-200);font-size:12px;color:var(--gray-500)}
+.step-tip .ctrl{display:flex;gap:6px}
+.step-dot{width:8px;height:8px;border-radius:50%;background:var(--gray-300);border:none;padding:0;cursor:pointer;transition:background .2s ease}
+.step-dot.on{background:var(--brand-500)}
+
+/* ---------- 演示报告 ---------- */
+.demo-note{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--gray-500);background:var(--warning-100);border-radius:var(--radius-sm);padding:6px 12px;margin-bottom:var(--space-6);width:fit-content}
+.conclusion-capsule{display:flex;align-items:center;gap:10px;background:var(--brand-50);border:1px solid var(--brand-200);color:var(--brand-600);border-radius:var(--radius-full);padding:10px 18px;font-size:14px;font-weight:600;margin-bottom:var(--space-8);width:fit-content}
+.charts{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--space-5)}
+.chart-card{background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius-lg);padding:var(--space-6);box-shadow:var(--shadow-sm)}
+.chart-card h3{margin:0 0 4px;font-size:15px}
+.chart-card .sub{font-size:12px;color:var(--gray-500);margin:0 0 var(--space-5)}
+.chart-card.wide{grid-column:1/-1}
+
+/* 情感三件套标签：符号 + 色点 + 文字（色弱可辨） */
+.tag{display:inline-flex;align-items:center;gap:6px;border-radius:var(--radius-full);padding:2px 10px;font-size:12px;font-weight:600}
+.tag .sym{font-weight:700}
+.tag-pos{color:var(--pos-500);background:var(--pos-100)}
+.tag-neg{color:var(--neg-500);background:var(--neg-100)}
+.tag-neu{color:var(--neu-500);background:var(--neu-100)}
+
+/* 环形图 */
+.donut-row{display:flex;align-items:center;gap:var(--space-8);flex-wrap:wrap}
+.donut{position:relative;width:190px;height:190px;flex:none}
+.donut svg{width:100%;height:100%;transform:rotate(-90deg)}
+.donut .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.donut .center .n{font-size:30px;font-weight:700}
+.donut .center .t{font-size:12px;color:var(--gray-500)}
+.legend{display:flex;flex-direction:column;gap:var(--space-3)}
+.legend .row{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--gray-700)}
+.legend .row .bar{width:110px;height:8px;border-radius:var(--radius-full);overflow:hidden}
+.legend .row .bar i{display:block;height:100%;border-radius:var(--radius-full)}
+.legend .row .pct{margin-left:auto;font-weight:600}
+
+/* 平台堆叠条 */
+.stack-list{display:flex;flex-direction:column;gap:var(--space-4)}
+.stack-item .lab{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px}
+.stack-item .lab b{color:var(--gray-900)}
+.stack-item .lab span{color:var(--gray-500);font-size:12px}
+.stack-track{display:flex;height:18px;border-radius:var(--radius-sm);overflow:hidden;background:var(--gray-100)}
+.stack-track div{height:100%;transition:width .8s ease}
+
+/* 维度负面率条形 */
+.dim-list{display:flex;flex-direction:column;gap:var(--space-4)}
+.dim-item .lab{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px}
+.dim-item .lab b{color:var(--gray-900)}
+.dim-item .lab span{font-weight:700}
+.dim-track{height:16px;border-radius:var(--radius-sm);background:var(--gray-100);overflow:hidden}
+.dim-track i{display:block;height:100%;width:0;border-radius:var(--radius-sm);transition:width .8s ease}
+.dim-item.worst .lab span{color:var(--neg-500)}
+.dim-item.worst .dim-track i{background:var(--neg-500)}
+
+/* 趋势折线 */
+.trend-wrap{position:relative}
+.trend-wrap svg{width:100%;height:auto;display:block}
+.trend-legend{display:flex;gap:var(--space-6);font-size:12px;color:var(--gray-500);margin-top:var(--space-3)}
+.trend-legend .k{display:inline-flex;align-items:center;gap:6px}
+.trend-legend .sw{width:16px;height:3px;border-radius:2px;display:inline-block}
+
+/* ---------- 质量 ---------- */
+.quality-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-10)}
+.q-card{background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius-lg);padding:var(--space-5);box-shadow:var(--shadow-sm);text-align:center}
+.q-card .v{font-size:30px;font-weight:700;line-height:1.2}
+.q-card .v.small{font-size:24px}
+.q-card .k{font-size:12px;color:var(--gray-500);margin-top:4px}
+.q-card .note{font-size:11px;color:var(--gray-400);margin-top:2px}
+.checks{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--space-3);max-width:860px;margin:0 auto}
+.check{display:flex;gap:10px;align-items:flex-start;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-md);padding:12px 14px;font-size:13px;color:var(--gray-700)}
+.check .ok{flex:none;width:18px;height:18px;border-radius:50%;background:var(--pos-100);color:var(--pos-500);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:2px}
+.check b{color:var(--gray-900)}
+
+/* ---------- 架构 ---------- */
+.pipeline{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;justify-content:center;margin-bottom:var(--space-10)}
+.pipe-step{flex:1;min-width:130px;max-width:200px;background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius-lg);padding:var(--space-5);text-align:center;box-shadow:var(--shadow-sm);position:relative}
+.pipe-step .ic{width:38px;height:38px;border-radius:10px;background:var(--brand-50);color:var(--brand-600);display:flex;align-items:center;justify-content:center;margin:0 auto var(--space-3)}
+.pipe-step h3{font-size:14px;margin:0 0 4px}
+.pipe-step p{font-size:12px;color:var(--gray-500);margin:0}
+.pipe-arrow{display:flex;align-items:center;color:var(--gray-400);padding:0 var(--space-2);font-size:18px;font-weight:700}
+.chips{display:flex;flex-wrap:wrap;gap:var(--space-2);justify-content:center;max-width:860px;margin:0 auto}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;background:var(--gray-100);border:1px solid var(--gray-300);border-radius:var(--radius-full);padding:5px 14px;color:var(--gray-700)}
+.chip.hl{background:var(--brand-50);border-color:var(--brand-200);color:var(--brand-600)}
+
+/* ---------- 底部 ---------- */
+footer{background:var(--gray-900);color:var(--gray-400);padding:var(--space-12) 0 var(--space-8)}
+footer .wrap{display:flex;flex-wrap:wrap;gap:var(--space-6);align-items:center;justify-content:space-between}
+footer .t{color:#fff;font-weight:700;display:flex;align-items:center;gap:8px}
+footer .fnote{font-size:12px;max-width:520px;line-height:1.7}
+footer a{color:var(--brand-200)}
+footer a:hover{color:#fff}
+
+/* ---------- 动效 ---------- */
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s ease,transform .6s ease}
+.reveal.in{opacity:1;transform:none}
+@media (max-width:860px){
+  .metrics,.pains,.quality-grid{grid-template-columns:repeat(2,1fr)}
+  .charts{grid-template-columns:1fr}
+  .chart-card.wide{grid-column:auto}
+  .nav-links{display:none}
+  .pipe-arrow{display:none}
+  .pipe-step{flex:1 1 45%}
+  section{padding:var(--space-12) 0}
+}
+@media (max-width:520px){
+  .metrics,.pains,.quality-grid{grid-template-columns:1fr}
+  .checks{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .reveal{opacity:1;transform:none}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ 导航 ============ -->
+<nav>
+  <div class="wrap nav-in">
+    <div class="logo">
+      <span class="mark">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      </span>
+      社交媒体情感分析器
+    </div>
+    <div class="nav-links">
+      <a href="#problem">痛点</a>
+      <a href="#flow">产品流程</a>
+      <a href="#demo">演示报告</a>
+      <a href="#quality">质量</a>
+      <a href="#arch">架构</a>
+    </div>
+    <a class="btn btn-primary" href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- ============ Hero ============ -->
+<header class="hero">
+  <div class="wrap">
+    <div class="pill"><span class="dot"></span>个人独立完成 · 2026.08 – 至今 · 本地优先</div>
+    <h1>输入品牌/关键词<br>自动生成社交媒体情感分析报告</h1>
+    <p class="sub">自动采集 <b>微博 / 小红书 / B站 / 知乎 / 全网搜索</b> 的真实讨论，
+      用 <b>词典 + LLM</b> 判定每条内容的情感，输出带证据链的
+      <b>Excel / HTML / Word</b> 三端报告——从 0 到 1 独立完成。</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="#demo">查看演示报告</a>
+      <a class="btn btn-ghost" href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">查看源码与文档</a>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="v num"><span data-count="5">5</span><span class="unit"> 渠道</span></div><div class="k">统一适配器 · 注册表接入</div></div>
+      <div class="metric"><div class="v num"><span data-count="6">6</span><span class="unit"> 步向导</span></div><div class="k">小白 5 分钟出一份报告</div></div>
+      <div class="metric"><div class="v num"><span data-count="84">84</span><span class="unit">–89%</span></div><div class="k">LLM 混合流水线准确率</div></div>
+      <div class="metric"><div class="v num"><span data-count="60">60</span><span class="unit">+ 份报告</span></div><div class="k">本地累计生成 · 已公开</div></div>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 痛点 ============ -->
+<section id="problem">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <p class="sec-kicker">Problem</p>
+      <h2>为什么做这个产品</h2>
+      <p>中小主体做品牌口碑调研，四个痛点长期存在</p>
+    </div>
+    <div class="pains">
+      <div class="pain reveal">
+        <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 9.5h4.5a2 2 0 0 1 0 4H10a2 2 0 0 0 0 4h4.5"/></svg></div>
+        <h3>商业工具太贵</h3>
+        <p>舆情 SaaS 年费数万起步、需商务报价，个人和小团队根本用不起。</p>
+      </div>
+      <div class="pain reveal">
+        <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 4H3v12h18zM7 20h10M12 16v4"/><path d="M8 9l3 3 5-5"/></svg></div>
+        <h3>人工整理不可持续</h3>
+        <p>手动搜索 + Excel 整理，耗时且主观，无法规模化复用到多个品牌。</p>
+      </div>
+      <div class="pain reveal">
+        <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        <h3>数据隐私顾虑</h3>
+        <p>云端 SaaS 要上传账号凭据与内容；本项目默认本地离线、加密存储。</p>
+      </div>
+      <div class="pain reveal">
+        <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg></div>
+        <h3>质量不透明</h3>
+        <p>多数工具不公布准确率、结论不可追溯；本项目自建评测集与基线门槛。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 产品流程 ============ -->
+<section id="flow">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <p class="sec-kicker">Product Flow</p>
+      <h2>6 步向导 · 从品牌到报告</h2>
+      <p>把"一次舆情分析"拆成可预期、可回退的结构化流程（动画为自动播放）</p>
+    </div>
+    <div class="stepper-wrap reveal" id="stepperWrap">
+      <div class="stepper" id="stepper"></div>
+      <div class="stage-body" id="stageBody"></div>
+      <div class="step-tip">
+        <span>步骤自动播放，可点击下方圆点切换</span>
+        <span class="ctrl" id="stepDots"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 演示报告 ============ -->
+<section id="demo">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <p class="sec-kicker">Live Demo</p>
+      <h2>演示报告 · 虚构品牌「云朵咖啡」</h2>
+      <p>内置演示数据与真实报告完全同链路：采集 → 清洗 → 编码 → 证据链</p>
+    </div>
+    <div class="demo-note reveal">仅演示用：虚构品牌与模拟数据，不包含任何真实用户信息</div>
+    <div class="conclusion-capsule reveal"><span>💡 分析结论</span>整体口碑健康但边际转弱，负面集中在「渠道与售后」与「价格价值」</div>
+    <div class="charts">
+      <div class="chart-card reveal">
+        <h3>整体情感分布</h3>
+        <p class="sub">编码 104 条文本 · 平均情感分 +0.07（偏正面）</p>
+        <div class="donut-row">
+          <div class="donut">
+            <svg viewBox="0 0 100 100" id="donutSvg"></svg>
+            <div class="center"><span class="n num" id="donutN">104</span><span class="t">编码文本</span></div>
+          </div>
+          <div class="legend" id="donutLegend"></div>
+        </div>
+      </div>
+      <div class="chart-card reveal">
+        <h3>平台分布</h3>
+        <p class="sub">四个平台 × 情感构成（已采集文本数）</p>
+        <div class="stack-list" id="stackList"></div>
+      </div>
+      <div class="chart-card reveal">
+        <h3>维度负面率</h3>
+        <p class="sub">负面率最高的维度是「渠道与售后」（60.9%）</p>
+        <div class="dim-list" id="dimList"></div>
+      </div>
+      <div class="chart-card reveal">
+        <h3>时间趋势 · 平均情感分</h3>
+        <p class="sub">近两周负面占比抬升，边际转弱信号明显</p>
+        <div class="trend-wrap">
+          <svg viewBox="0 0 560 190" id="trendSvg"></svg>
+          <div class="trend-legend">
+            <span class="k"><span class="sw" style="background:var(--brand-500)"></span>平均情感分</span>
+            <span class="k"><span class="sw" style="background:var(--neg-500)"></span>负面条数</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 质量 ============ -->
+<section id="quality">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <p class="sec-kicker">Quality</p>
+      <h2>可证明的质量，而不是"感觉还行"</h2>
+      <p>自建评测集 + 冻结基线 + 一键回归，每次改动都有保护</p>
+    </div>
+    <div class="quality-grid">
+      <div class="q-card reveal"><div class="v num"><span data-count="50.9" data-decimals="1">50.9</span><span class="unit">%</span></div><div class="k">词典直判准确率（黄金集三分类）</div><div class="note">从基线 35.4% 提升 +15.5pp</div></div>
+      <div class="q-card reveal"><div class="v num"><span data-count="84">84</span><span class="unit">–89%</span></div><div class="k">LLM 混合流水线准确率</div><div class="note">黄金集 / 边界集实测区间</div></div>
+      <div class="q-card reveal"><div class="v num"><span data-count="38">38</span><span class="unit"> 项</span></div><div class="k">自动化测试</div><div class="note">一键回归 · 失败自动重跑</div></div>
+      <div class="q-card reveal"><div class="v num small">¥<span data-count="0.3" data-decimals="1">0.3</span>–1</div><div class="k">单任务 LLM 成本</div><div class="note">词典直判降本 + 低置信路由</div></div>
+    </div>
+    <div class="checks">
+      <div class="check reveal"><span class="ok">✓</span><span><b>黄金集 / 边界集评测</b>：按渠道、领域、情感类别、语言现象细分跑分，附带 95% Wilson CI</span></div>
+      <div class="check reveal"><span class="ok">✓</span><span><b>冻结基线门槛</b>：词典准确率跌破基线 1pp 即失败，必须显式接受新基线</span></div>
+      <div class="check reveal"><span class="ok">✓</span><span><b>验证纪律</b>：hold-out 分层切分、冻结只读、使用次数受限，防止"用测试集调模型"</span></div>
+      <div class="check reveal"><span class="ok">✓</span><span><b>置信度校准</b>：词典直判展示置信度封顶 0.6，难例进入人工复核闭环</span></div>
+      <div class="check reveal"><span class="ok">✓</span><span><b>双平台 CI</b>：Windows + Ubuntu 双矩阵，改动推 GitHub 即自动回归</span></div>
+      <div class="check reveal"><span class="ok">✓</span><span><b>证据链报告</b>：每条结论可追溯到原文证据卡，不做"无源结论"</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 架构 ============ -->
+<section id="arch">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <p class="sec-kicker">Architecture</p>
+      <h2>管道化设计 · 端到端可控</h2>
+      <p>采集 → 清洗 → 编码 → 报告，每阶段独立、可回退、可观测</p>
+    </div>
+    <div class="pipeline">
+      <div class="pipe-step reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.5"/><path d="M21 3v6h-6"/></svg></div><h3>采集</h3><p>5 渠道注册表 · 配额预扣 · 风控退避</p></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M7 12h10M10 18h4"/></svg></div><h3>清洗</h3><p>去重 · 脱敏 · 相关性 · 补采</p></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 9.5h4.5a2 2 0 0 1 0 4H10a2 2 0 0 0 0 4h4.5"/></svg></div><h3>编码</h3><p>词典预筛 + LLM 精分析 · 维度情感</p></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 15v-4M12 15V8M17 15v-6"/></svg></div><h3>报告</h3><p>证据链 · 结论 · Excel / HTML / Word</p></div>
+    </div>
+    <div class="chips">
+      <span class="chip hl">SQLite 任务队列</span>
+      <span class="chip hl">常驻 worker · 崩溃恢复</span>
+      <span class="chip hl">领域维度 schema</span>
+      <span class="chip">关页面后台继续执行</span>
+      <span class="chip">一键重跑 · 复用原计划</span>
+      <span class="chip">人工相关性筛选</span>
+      <span class="chip">需复核人工闭环</span>
+      <span class="chip">DPAPI 密钥加密</span>
+      <span class="chip">LLM 发送前脱敏</span>
+      <span class="chip">采集透明度说明</span>
+      <span class="chip">关键词策略数据闭环</span>
+      <span class="chip">评测中心 · 错误下钻</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 底部 ============ -->
+<footer>
+  <div class="wrap">
+    <div>
+      <div class="t"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>社交媒体情感分析器</div>
+      <p class="fnote">个人独立完成的本地桌面级舆情分析工具。演示数据为虚构品牌，图表数据取自项目内置演示报告，与产品内「演示数据」同链路。开源仓库：<a href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">chlorella666/social_media_sentiment</a></p>
+    </div>
+    <a class="btn btn-primary" href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">GitHub · 查看源码</a>
+  </div>
+</footer>
+
+<script>
+/* ============ 演示数据（来自项目内置 demo_report，虚构品牌云朵咖啡） ============ */
+const DEMO = {
+  totalItems: 104, totalPosts: 26, avgScore: 0.07,
+  dist: [
+    {key:"pos", label:"正面", sym:"✓", n:47, pct:45.2, color:"var(--pos-500)", bg:"var(--pos-100)", cls:"tag-pos"},
+    {key:"neg", label:"负面", sym:"✗", n:38, pct:36.5, color:"var(--neg-500)", bg:"var(--neg-100)", cls:"tag-neg"},
+    {key:"neu", label:"中性", sym:"～", n:19, pct:18.3, color:"var(--neu-500)", bg:"var(--neu-100)", cls:"tag-neu"},
+  ],
+  platforms: [
+    {name:"微博",  posts:36, pos:17, neg:13, neu:6},
+    {name:"小红书", posts:28, pos:11, neg:11, neu:6},
+    {name:"B站",   posts:24, pos:9,  neg:9,  neu:6},
+    {name:"知乎",  posts:16, pos:10, neg:5,  neu:1},
+  ],
+  dims: [
+    {name:"渠道与售后", n:23, neg:14, rate:60.9},
+    {name:"价格价值",   n:20, neg:11, rate:55.0},
+    {name:"使用体验",   n:13, neg:4,  rate:30.8},
+    {name:"品牌与营销", n:11, neg:3,  rate:27.3},
+    {name:"产品品质",   n:45, neg:10, rate:22.2},
+    {name:"安全合规",   n:6,  neg:1,  rate:16.7},
+  ],
+  trend: [
+    ["07-21",0.375,1],["07-23",-0.125,2],["07-25",-0.15,2],["07-27",0.3375,1],
+    ["07-28",0.3,1],["07-30",0.225,1],["08-01",0.2,1],["08-03",0.425,1],
+    ["08-05",0.225,1],["08-07",0.5125,0],["08-08",0.3875,1],["08-10",0.4875,0],
+    ["08-11",0.0,2],["08-12",-0.3375,3],["08-13",-0.0063,2],["08-14",-0.1063,4],
+    ["08-15",0.025,2],["08-16",-0.1875,2],["08-17",-0.1187,4],["08-18",0.0042,5],
+    ["08-19",-0.3875,2],
+  ],
+};
+
+/* 6 步向导内容（与产品内 STEP_DEFS 对应） */
+const STEPS = [
+  {t:"① 品牌和分析维度", d:"输入品牌/产品名，选择分析模块（内容 / 实物 / 服务）与具体维度，也可自定义维度。", mock:"已选择模块：服务内容 · 已选维度 6 个"},
+  {t:"② 确认关键词", d:"按维度自动生成关键词建议，可手动增删；关键词决定采集广度与质量。", mock:"生成关键词 12 个 · 可一键展开/编辑"},
+  {t:"③ 渠道与时间", d:"勾选采集渠道（演示/B站/全网/微博/小红书），设置时间范围与条数上限，可一键安装 opencli。", mock:"已选 4 个渠道 · 上限 13 条/关键词"},
+  {t:"④ 确认运行", d:"查看计划摘要与费用估算，确认后提交任务；demo-only 任务有红色二次确认。", mock:"预计采集 156 条 · LLM 费用约 ¥0.3–1"},
+  {t:"⑤ 后台执行", d:"任务进入本地队列，关掉页面也不中断；可随时取消，失败可一键重跑。", mock:"后台执行中：清洗 88% · 已保留 120 条"},
+  {t:"⑥ 结果", d:"查看结论、指标、图表与证据链，下载 Excel / HTML / Word；难例可人工复核后重算。", mock:"报告已生成 · 证据卡 18 条 · 待复核 9 条"},
+];
+
+/* ============ 滚动出现 + 数字滚动 ============
+   首屏内元素：直接显示最终值（静态截图也正确）；
+   首屏以下元素：滚动进入视口时播放动画。 */
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+}), {threshold: 0.15});
+document.querySelectorAll(".reveal").forEach(el => {
+  const r = el.getBoundingClientRect();
+  if (r.bottom > 0 && r.top < innerHeight) {
+    el.style.transition = "none";
+    el.classList.add("in");
+  } else {
+    io.observe(el);
+  }
+});
+
+function animateCount(el) {
+  const target = parseFloat(el.dataset.count || "0");
+  const dec = parseInt(el.dataset.decimals || (Number.isInteger(target) ? 0 : 1), 10);
+  const dur = 1100, t0 = performance.now();
+  const step = now => {
+    const p = Math.min((now - t0) / dur, 1);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = (target * eased).toFixed(dec);
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+const cio = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { animateCount(e.target); cio.unobserve(e.target); }
+}), {threshold: 0.3});
+document.querySelectorAll("[data-count]").forEach(el => {
+  const r = el.getBoundingClientRect();
+  if (r.bottom > 0 && r.top < innerHeight) return;
+  cio.observe(el);
+});
+
+/* ============ 6 步向导自动播放 ============ */
+const stepperEl = document.getElementById("stepper");
+const stageBody = document.getElementById("stageBody");
+const dotsEl = document.getElementById("stepDots");
+let cur = 0;
+
+function renderStepper() {
+  stepperEl.innerHTML = STEPS.map((s, i) => `
+    ${i ? '<span class="ln' + (i <= cur ? ' done' : '') + '"></span>' : ''}
+    <span class="st ${i === cur ? 'cur' : i < cur ? 'done' : ''}">
+      <span class="n">${i < cur ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></svg>' : i + 1}</span>
+      ${s.t}
+    </span>`).join("");
+  stageBody.innerHTML = `
+    <h3>${STEPS[cur].t}</h3>
+    <p>${STEPS[cur].d}</p>
+    <div class="stage-mock"><div class="mock-row">
+      <span>${STEPS[cur].mock}</span>
+      <span class="bar"><i style="width:${cur === 4 ? 88 : cur === 5 ? 100 : 100}%"></i></span>
+      <span class="pct num">${cur === 4 ? '88%' : '完成'}</span>
+    </div></div>`;
+  dotsEl.innerHTML = STEPS.map((_, i) =>
+    `<button class="step-dot ${i === cur ? 'on' : ''}" data-i="${i}" aria-label="第${i + 1}步"></button>`).join("");
+}
+function next() { cur = (cur + 1) % STEPS.length; renderStepper(); }
+renderStepper();
+const timer = setInterval(next, 3200);
+dotsEl.addEventListener("click", e => {
+  const b = e.target.closest(".step-dot");
+  if (!b) return;
+  cur = +b.dataset.i; renderStepper();
+  clearInterval(timer); setInterval(next, 3200);
+});
+
+/* ============ 图表渲染 ============ */
+const COLORS = {pos:"var(--pos-500)", neg:"var(--neg-500)", neu:"var(--neu-500)"};
+
+/* 环形图 */
+const donut = document.getElementById("donutSvg");
+{
+  const r = 38, c = 2 * Math.PI * r, cx = 50, cy = 50;
+  let offset = 0;
+  DEMO.dist.forEach(d => {
+    const seg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    seg.setAttribute("cx", cx); seg.setAttribute("cy", cy); seg.setAttribute("r", r);
+    seg.setAttribute("fill", "none"); seg.setAttribute("stroke", d.color);
+    seg.setAttribute("stroke-width", "14"); seg.setAttribute("stroke-dasharray", `${c * d.pct / 100} ${c}`);
+    seg.setAttribute("stroke-dashoffset", -offset * c / 100);
+    seg.style.transition = "stroke-dasharray .9s ease";
+    donut.appendChild(seg);
+    offset += d.pct;
+  });
+  document.getElementById("donutLegend").innerHTML = DEMO.dist.map(d => `
+    <div class="row">
+      <span class="tag ${d.cls}"><span class="sym">${d.sym}</span>${d.label}</span>
+      <span class="bar"><i style="width:${d.pct / 45.2 * 100}%;background:${d.color}"></i></span>
+      <span class="pct num">${d.n} 条 · ${d.pct}%</span>
+    </div>`).join("");
+}
+
+/* 平台堆叠条 */
+document.getElementById("stackList").innerHTML = DEMO.platforms.map(p => {
+  const total = p.pos + p.neg + p.neu;
+  const seg = (v, col) => `<div style="width:${v / total * 100}%;background:${col}"></div>`;
+  return `
+    <div class="stack-item">
+      <div class="lab"><b>${p.name}</b><span class="num">${p.posts} 条 · 正 ${p.pos} / 负 ${p.neg} / 中 ${p.neu}</span></div>
+      <div class="stack-track">${seg(p.pos, COLORS.pos)}${seg(p.neg, COLORS.neg)}${seg(p.neu, COLORS.neu)}</div>
+    </div>`;
+}).join("");
+
+/* 维度负面率 */
+document.getElementById("dimList").innerHTML = DEMO.dims.map((d, i) => `
+  <div class="dim-item ${i === 0 ? 'worst' : ''}">
+    <div class="lab"><b>${d.name}</b><span class="num">${d.rate.toFixed(1)}% · n=${d.n}</span></div>
+    <div class="dim-track"><i data-w="${d.rate}" style="background:${i === 0 ? 'var(--neg-500)' : i < 2 ? 'var(--warning-500)' : 'var(--brand-500)'}"></i></div>
+  </div>`).join("");
+
+/* 趋势折线 */
+{
+  const W = 560, H = 190, padL = 34, padR = 12, padT = 14, padB = 26;
+  const pts = DEMO.trend;
+  const minS = -0.5, maxS = 0.6;
+  const x = i => padL + i * (W - padL - padR) / (pts.length - 1);
+  const y = s => padT + (maxS - s) / (maxS - minS) * (H - padT - padB);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+  const area = `${line} L${x(pts.length - 1)},${H - padB} L${x(0)},${H - padB} Z`;
+  const grid = [0.4, 0.2, 0, -0.2, -0.4].map(s => `
+    <line x1="${padL}" y1="${y(s)}" x2="${W - padR}" y2="${y(s)}" stroke="var(--gray-200)" stroke-width="1"/>
+    <text x="${padL - 6}" y="${y(s) + 4}" text-anchor="end" font-size="10" fill="var(--gray-400)">${s}</text>`).join("");
+  const dots = pts.map((p, i) => `<circle cx="${x(i)}" cy="${y(p[1])}" r="2.6" fill="var(--brand-500)"/>`).join("");
+  const negDots = pts.map((p, i) => p[2] >= 3
+    ? `<circle cx="${x(i)}" cy="${y(p[1])}" r="5" fill="none" stroke="var(--neg-500)" stroke-width="1.5"/>` : "").join("");
+  const labels = [0, 6, 12, 16, 20].map(i => `
+    <text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--gray-400)">${pts[i][0]}</text>`).join("");
+  document.getElementById("trendSvg").innerHTML = `
+    ${grid}
+    <path d="${area}" fill="var(--brand-50)" opacity="0.8"/>
+    <path d="${line}" fill="none" stroke="var(--brand-500)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    ${negDots}${dots}${labels}
+    <line x1="${x(12)}" y1="${padT}" x2="${x(12)}" y2="${H - padB}" stroke="var(--gray-300)" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="${x(12)}" y="${padT - 4}" text-anchor="middle" font-size="10" fill="var(--gray-500)">近两周负面抬升</text>`;
+}
+
+/* 维度条与堆叠条在进入视口后生长 */
+const dio = new IntersectionObserver(es => es.forEach(e => {
+  if (!e.isIntersecting) return;
+  e.target.querySelectorAll("[data-w]").forEach(i => i.style.width = i.dataset.w + "%");
+  e.target.querySelectorAll(".dim-track i").forEach(i => {
+    if (!i.dataset.w) i.style.width = "100%";
+  });
+  dio.unobserve(e.target);
+}), {threshold: 0.3});
+document.querySelectorAll(".chart-card").forEach(el => dio.observe(el));
+</script>
+</body>
+</html>
