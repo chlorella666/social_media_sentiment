@@ -1,0 +1,246 @@
+{
+ "mode_key": "edge_lexicon",
+ "mode": "边界集-词典直判（无 LLM）",
+ "golden": "tests/fixtures/edge_set_v1.csv",
+ "golden_fingerprint": "sha256:fbc9ca9729393e43|rows=297",
+ "version": "v1.3",
+ "created_at": "2026-08-16",
+ "accuracy": 0.5091,
+ "n": 220,
+ "by_subset": {
+  "dialect": {
+   "n": 17,
+   "accuracy": 0.7059,
+   "ci_pp": 23.72
+  },
+  "emoji": {
+   "n": 26,
+   "accuracy": 0.5769,
+   "ci_pp": 18.74
+  },
+  "irony": {
+   "n": 49,
+   "accuracy": 0.5102,
+   "ci_pp": 13.55
+  },
+  "jargon": {
+   "n": 46,
+   "accuracy": 0.6739,
+   "ci_pp": 14.42
+  },
+  "long": {
+   "n": 41,
+   "accuracy": 0.3415,
+   "ci_pp": 15.3
+  },
+  "lowconf": {
+   "n": 41,
+   "accuracy": 0.3659,
+   "ci_pp": 15.29
+  }
+ },
+ "calibration": {
+  "0.0-0.5": {
+   "n": 118,
+   "accuracy": 0.3898
+  },
+  "0.5-0.6": {
+   "n": 44,
+   "accuracy": 0.5
+  },
+  "0.6-0.7": {
+   "n": 15,
+   "accuracy": 0.6667
+  },
+  "0.7-0.8": {
+   "n": 3,
+   "accuracy": 0.6667
+  },
+  "0.8-0.9": {
+   "n": 0,
+   "accuracy": null
+  },
+  "0.9-1.0": {
+   "n": 40,
+   "accuracy": 0.8
+  },
+  "缺失置信度": {
+   "n": 0,
+   "accuracy": null
+  }
+ },
+ "note": "边界集词典基线 v1.3（2026-08-16）：edge_set 增 gold_revised_by_model 列（V2 列，内容零修订）→ 指纹变化重冻结；词典直判 50.9%（词典第一刀收口 + 3C 语体词后重测）。",
+ "dimension": {
+  "口径": "维度级情感（每维 positive/negative，2.4）",
+  "exact_match_rate": 0.1134,
+  "exact_match_n": 97,
+  "dimension_n": 97,
+  "micro_precision": 0.3474,
+  "micro_recall": 0.1988,
+  "micro_f1": 0.2529,
+  "per_dimension": {
+   "Bug/技术": {
+    "n_gold": 2,
+    "precision": 0.1667,
+    "recall": 0.5,
+    "f1": 0.25
+   },
+   "产品质量": {
+    "n_gold": 16,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0
+   },
+   "价格价值": {
+    "n_gold": 4,
+    "precision": 0.25,
+    "recall": 0.25,
+    "f1": 0.25
+   },
+   "使用体验": {
+    "n_gold": 18,
+    "precision": 0.4286,
+    "recall": 0.1667,
+    "f1": 0.24
+   },
+   "剧情评价": {
+    "n_gold": 14,
+    "precision": 0.4,
+    "recall": 0.2857,
+    "f1": 0.3333
+   },
+   "品牌形象": {
+    "n_gold": 16,
+    "precision": 0.5714,
+    "recall": 0.25,
+    "f1": 0.3478
+   },
+   "成分安全": {
+    "n_gold": 3,
+    "precision": 0.4,
+    "recall": 0.6667,
+    "f1": 0.5
+   },
+   "氪金体验": {
+    "n_gold": 17,
+    "precision": 0.5556,
+    "recall": 0.2941,
+    "f1": 0.3846
+   },
+   "渠道服务": {
+    "n_gold": 10,
+    "precision": 1.0,
+    "recall": 0.1,
+    "f1": 0.1818
+   },
+   "玩法体验": {
+    "n_gold": 13,
+    "precision": 0.125,
+    "recall": 0.0769,
+    "f1": 0.0952
+   },
+   "竞品对比": {
+    "n_gold": 5,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0
+   },
+   "美术反馈": {
+    "n_gold": 14,
+    "precision": 0.3333,
+    "recall": 0.2857,
+    "f1": 0.3077
+   },
+   "角色偏好": {
+    "n_gold": 16,
+    "precision": 0.3333,
+    "recall": 0.1875,
+    "f1": 0.24
+   },
+   "运营与社区": {
+    "n_gold": 18,
+    "precision": 0.3333,
+    "recall": 0.2222,
+    "f1": 0.2667
+   }
+  },
+  "mention": {
+   "口径": "维度提及识别（旧口径，2.3 及之前）",
+   "micro_precision": 0.4632,
+   "micro_recall": 0.2651,
+   "micro_f1": 0.3372,
+   "per_dimension": {
+    "Bug/技术": {
+     "precision": 0.1667,
+     "recall": 0.5,
+     "f1": 0.25
+    },
+    "产品质量": {
+     "precision": 0.0,
+     "recall": 0.0,
+     "f1": 0.0
+    },
+    "价格价值": {
+     "precision": 0.25,
+     "recall": 0.25,
+     "f1": 0.25
+    },
+    "使用体验": {
+     "precision": 0.4286,
+     "recall": 0.1667,
+     "f1": 0.24
+    },
+    "剧情评价": {
+     "precision": 0.6,
+     "recall": 0.4286,
+     "f1": 0.5
+    },
+    "品牌形象": {
+     "precision": 0.5714,
+     "recall": 0.25,
+     "f1": 0.3478
+    },
+    "成分安全": {
+     "precision": 0.6,
+     "recall": 1.0,
+     "f1": 0.75
+    },
+    "氪金体验": {
+     "precision": 0.6667,
+     "recall": 0.3529,
+     "f1": 0.4615
+    },
+    "渠道服务": {
+     "precision": 1.0,
+     "recall": 0.1,
+     "f1": 0.1818
+    },
+    "玩法体验": {
+     "precision": 0.5,
+     "recall": 0.3077,
+     "f1": 0.381
+    },
+    "竞品对比": {
+     "precision": 0.0,
+     "recall": 0.0,
+     "f1": 0.0
+    },
+    "美术反馈": {
+     "precision": 0.5833,
+     "recall": 0.5,
+     "f1": 0.5385
+    },
+    "角色偏好": {
+     "precision": 0.4444,
+     "recall": 0.25,
+     "f1": 0.32
+    },
+    "运营与社区": {
+     "precision": 0.3333,
+     "recall": 0.2222,
+     "f1": 0.2667
+    }
+   }
+  }
+ }
+}

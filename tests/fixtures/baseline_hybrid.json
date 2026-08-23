@@ -1,0 +1,20 @@
+{
+ "mode_key": "hybrid",
+ "mode": "混合流水线（词典+LLM）",
+ "golden": "tests/fixtures/golden_set_v1.csv",
+ "golden_fingerprint": "sha256:7c4ad245342b51e7|rows=187",
+ "version": "v3.0",
+ "prompt_version": 14,
+ "created_at": "2026-08-21",
+ "accuracy": 0.8686,
+ "n": 175,
+ "dimension": {
+  "exact_match_rate": 0.4425,
+  "exact_match_n": 95,
+  "dimension_n": 95,
+  "micro_precision": 0.675,
+  "micro_recall": 0.545,
+  "micro_f1": 0.603
+ },
+ "note": "主集混合基线 v3.0（2026-08-21）：Prompt v3.8 确认轮（PROMPT_VERSION=14，默认配置 19a,19c,19d,19e,19f,19g,19h,20，19b 经消融移出默认——单独双输：整条 82.9%/维度 F1 0.54）。两轮 86.86/86.86 → 均值 86.9%（vs v2.0 86.0，+0.9pp）。维度微平均 F1 两轮 0.588/0.618 → 均值 0.603（vs v2.0 0.558，+4.5pp；召回 0.531/0.559、精度 0.658/0.692、精确命中 43.2/45.3）。观察项：边界集整条较 v2.0 降约 2pp（噪声内，见 baseline_edge_hybrid v3.0 note）；game 领域 82.2 仍低于 consumer 90.2，记入下一轮取证。"
+}

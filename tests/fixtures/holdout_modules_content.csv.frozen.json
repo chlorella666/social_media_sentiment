@@ -1,0 +1,9 @@
+{
+  "frozen": true,
+  "fingerprint": "sha256:768d19564c043e40|rows=18",
+  "frozen_at": "2026-08-17T18:32:25",
+  "uses": 1,
+  "max_uses": 2,
+  "note": "冻结后只读：hold-out 错误不进失败模式、不据此改规则；每里程碑重切、≤2 次验收（benchmark --golden holdout_*.csv 自动计数）",
+  "last_used_at": "2026-08-17T22:46:10"
+}

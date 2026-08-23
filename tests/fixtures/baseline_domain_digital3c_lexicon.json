@@ -1,0 +1,11 @@
+{
+ "mode_key": "domain_digital3c_lexicon",
+ "mode": "自定义领域评测（词典）",
+ "golden": "tests/fixtures/coldstart_digital3c_golden.csv",
+ "golden_fingerprint": "sha256:12940f1571116719|rows=970",
+ "version": "v4",
+ "created_at": "2026-08-17",
+ "accuracy": 0.471,
+ "n": 811,
+ "note": "数码3C 词典基线 v4（2026-08-17）：golden v4（970 条，可评分 811）词典直判 47.1%（含 3C 语体词第二轮；新增苹果卷）。"
+}

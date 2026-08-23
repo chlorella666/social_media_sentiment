@@ -1,0 +1,10 @@
+{
+  "mode": "lexicon",
+ "accuracy": 0.509,
+  "n": 175,
+  "golden": "tests/fixtures/golden_set_v1.csv",
+  "tolerance_pp": 1.0,
+  "created_at": "2026-08-10T16:20:00+08:00",
+  "commit": "379fdb4",
+ "note": "词典直判基线（黄金集 v1.3 主评分 175 条，2026-08-16 主集维度治理后重测 50.9%）。词典第一刀收口版（ECSD 单字过滤 + 精选单字 + 粉丝向黑话正名 + 官方/介绍语体压置信）；边界集词典 50.9%、3C 词典 42.4%（A 档参考）。跌破 tolerance 需 --accept-baseline 显式更新"
+}

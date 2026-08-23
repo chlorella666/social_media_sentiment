@@ -1,0 +1,20 @@
+{
+ "mode_key": "domain_digital3c_hybrid",
+ "mode": "自定义领域评测（混合）",
+ "golden": "tests/fixtures/coldstart_digital3c_golden.csv",
+ "golden_fingerprint": "sha256:12940f1571116719|rows=970",
+ "version": "v4.1",
+ "prompt_version": 7,
+ "created_at": "2026-08-17",
+ "accuracy": 0.802,
+ "n": 811,
+ "note": "数码3C 混合基线 v4.1（2026-08-17）：路由改动——3C 词典直判全部改送 LLM（校准 spike 证据：直判 conf≥0.8 错误率 49%、贡献 29% 错误）。golden v4（970 条，可评分 811）两轮 80.4/80.0 → 均值 80.2%（vs v4.0 74.7% +5.5pp，ΔCI ±4.2pp 显著）；direct_rate=0，LLM 调用 +15%（费用仍受控）；主集 81.7%、边界集 86.4% 不回退。",
+ "dimension": {
+  "exact_match_rate": 0.4522,
+  "exact_match_n": 366,
+  "dimension_n": 366,
+  "micro_precision": 0.54,
+  "micro_recall": 0.5894,
+  "micro_f1": 0.5636
+ }
+}
