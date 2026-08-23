@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import re
 import subprocess
 import sys
@@ -207,13 +209,14 @@ def apply_sheet(sheet: Path, cache_dir: Path, proposal: dict | None = None) -> P
     return save_cached_schema(schema, cache_dir=cache_dir)
 
 
-def search_evidence(query: str, node: str = r"C:\Users\13509\.nodejs\node.exe",
-                    cli: str = r"C:\Users\13509\.nodejs\node_modules\mcporter\dist\cli.js",
-                    num: int = 6) -> list[dict]:
+def search_evidence(query: str, node: str = "", cli: str = "", num: int = 6) -> list[dict]:
     """可选：调用 mcporter/Exa 拉取网页证据（agent-reach 集成入口）。
 
     返回 [{title,url,text}]；失败返回空并打印告警（不阻塞提案）。
+    node/cli 为空时按 PATH / 环境变量（SMS_NODE_BIN、SMS_MCPORTER_CLI）解析。
     """
+    node = node or os.environ.get("SMS_NODE_BIN") or shutil.which("node") or "node"
+    cli = cli or os.environ.get("SMS_MCPORTER_CLI") or "mcporter"
     payload = json.dumps({"query": query, "numResults": num}, ensure_ascii=False)
     try:
         r = subprocess.run(
