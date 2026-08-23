@@ -127,6 +127,16 @@ class TestDemoReport(unittest.TestCase):
             str(ROOT / "app" / "main.py"), default_timeout=90
         )
         at.run()
+        # 1.5 首次确认门禁：全新环境（CI）只渲染《使用边界》确认页，
+        # 先勾选并确认再进入应用（已确认环境无复选框，自动跳过）
+        agree = [c for c in at.checkbox if c.label.startswith("我已阅读并同意")]
+        if agree:
+            agree[0].set_value(True).run()
+            confirm = next(
+                (b for b in at.button if b.label == "确认并进入应用"), None
+            )
+            self.assertIsNotNone(confirm, "首次确认页应有「确认并进入应用」按钮")
+            confirm.click().run()
         button_labels = [b.label for b in at.button]
         self.assertNotIn("▶️ 一键体验", button_labels, "「一键体验」按钮应已移除")
         marks = " ".join(str(m.value) for m in at.markdown)
