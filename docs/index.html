@@ -97,6 +97,17 @@ section:nth-of-type(even){background:#fff}
 .stage-body{padding:var(--space-8);min-height:150px}
 .stage-body h3{margin:0 0 var(--space-2);font-size:17px}
 .stage-body p{margin:0;color:var(--gray-600);font-size:14px;max-width:560px}
+.stage-cols{display:grid;grid-template-columns:280px 1fr;gap:var(--space-8);align-items:start}
+.stage-info h3{margin:0 0 var(--space-2);font-size:17px}
+.stage-info p{margin:0;color:var(--gray-600);font-size:14px;max-width:320px}
+.shot-note{font-size:12px;color:var(--gray-500);margin-top:var(--space-4);line-height:1.7}
+.shot-frame{border:1px solid var(--gray-200);border-radius:var(--radius-md);overflow:hidden;box-shadow:var(--shadow-md);background:#fff}
+.shot-bar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--gray-100);border-bottom:1px solid var(--gray-200)}
+.shot-bar .dot{width:10px;height:10px;border-radius:50%}
+.shot-bar .r{background:#F87171}.shot-bar .y{background:#FBBF24}.shot-bar .g{background:#34D399}
+.shot-url{font-size:11px;color:var(--gray-500);margin-left:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shot-frame img{display:block;width:100%;height:auto}
+@media (max-width:860px){.stage-cols{grid-template-columns:1fr}.stage-info p{max-width:none}}
 .stage-mock{margin-top:var(--space-6);background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-md);padding:var(--space-4)}
 .mock-row{display:flex;align-items:center;gap:var(--space-3);font-size:13px;color:var(--gray-700)}
 .mock-row .bar{flex:1;height:8px;border-radius:var(--radius-full);background:var(--gray-200);overflow:hidden}
@@ -523,13 +534,20 @@ function renderStepper() {
       ${s.t}
     </span>`).join("");
   stageBody.innerHTML = `
-    <h3>${STEPS[cur].t}</h3>
-    <p>${STEPS[cur].d}</p>
-    <div class="stage-mock"><div class="mock-row">
-      <span>${STEPS[cur].mock}</span>
-      <span class="bar"><i style="width:${cur === 4 ? 88 : cur === 5 ? 100 : 100}%"></i></span>
-      <span class="pct num">${cur === 4 ? '88%' : '完成'}</span>
-    </div></div>`;
+    <div class="stage-cols">
+      <div class="stage-info">
+        <h3>${STEPS[cur].t}</h3>
+        <p>${STEPS[cur].d}</p>
+        <div class="shot-note">▲ 应用真实界面截图<br>演示数据 · 虚构品牌「云朵咖啡」</div>
+      </div>
+      <div class="shot-frame">
+        <div class="shot-bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="shot-url">社交媒体情感分析器 · 第 ${cur + 1} 步</span>
+        </div>
+        <img src="screenshots/step${cur + 1}.png" alt="${STEPS[cur].t}">
+      </div>
+    </div>`;
   dotsEl.innerHTML = STEPS.map((_, i) =>
     `<button class="step-dot ${i === cur ? 'on' : ''}" data-i="${i}" aria-label="第${i + 1}步"></button>`).join("");
 }
