@@ -253,7 +253,7 @@ footer a:hover{color:#fff}
 <!-- ============ Hero ============ -->
 <header class="hero">
   <div class="wrap">
-    <div class="pill"><span class="dot"></span>个人独立完成 · 2026.08 – 至今 · 本地优先</div>
+    <div class="pill"><span class="dot"></span>独立项目 · 2026.08 – 至今 · 本地优先</div>
     <h1>输入品牌/关键词<br>自动生成社交媒体情感分析报告</h1>
     <p class="sub">自动采集 <b>微博 / 小红书 / B站 / 知乎 / 全网搜索</b> 的真实讨论，
       用 <b>词典 + LLM</b> 判定每条内容的情感，输出带证据链的
@@ -265,7 +265,7 @@ footer a:hover{color:#fff}
     <div class="metrics">
       <div class="metric"><div class="v num"><span data-count="5">5</span><span class="unit"> 渠道</span></div><div class="k">统一适配器 · 注册表接入</div></div>
       <div class="metric"><div class="v num"><span data-count="6">6</span><span class="unit"> 步向导</span></div><div class="k">小白 5 分钟出一份报告</div></div>
-      <div class="metric"><div class="v num"><span data-count="84">84</span><span class="unit">–89%</span></div><div class="k">LLM 混合流水线准确率</div></div>
+      <div class="metric"><div class="v num"><span data-count="84–89">84–89</span><span class="unit">%</span></div><div class="k">LLM 混合流水线准确率</div></div>
       <div class="metric"><div class="v num"><span data-count="60">60</span><span class="unit">+ 份报告</span></div><div class="k">本地累计生成 · 已公开</div></div>
     </div>
   </div>
@@ -553,12 +553,18 @@ function renderStepper() {
 }
 function next() { cur = (cur + 1) % STEPS.length; renderStepper(); }
 renderStepper();
-const timer = setInterval(next, 3200);
+const stepperWrap = document.getElementById("stepperWrap");
+let timer = null;
+function startAuto() { stopAuto(); timer = setInterval(next, 8000); }
+function stopAuto() { if (timer) { clearInterval(timer); timer = null; } }
+startAuto();
+stepperWrap.addEventListener("mouseenter", stopAuto);
+stepperWrap.addEventListener("mouseleave", startAuto);
 dotsEl.addEventListener("click", e => {
   const b = e.target.closest(".step-dot");
   if (!b) return;
   cur = +b.dataset.i; renderStepper();
-  clearInterval(timer); setInterval(next, 3200);
+  startAuto();
 });
 
 /* ============ 图表渲染 ============ */
