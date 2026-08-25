@@ -1,4 +1,4 @@
-# 社交媒体情感分析器（Social Media Sentiment Analyzer）
+﻿# 社交媒体情感分析器（Social Media Sentiment Analyzer）
 
 ![CI](https://github.com/chlorella666/social_media_sentiment/actions/workflows/ci.yml/badge.svg)
 
@@ -116,7 +116,7 @@ python -m streamlit run app/main.py
 | 演示数据 | 无 | 内置模拟数据，跑通流程用 |
 | B站 | 无 | 公开接口，零登录，最省心 |
 | WebSearch | 无 | 搜索摘要供给（不支持抓取评论），直接可用，风控下采集量可能偏少 |
-| 微博 | 自己的微博 Cookie | 页面有图文指引；建议用小号，避免账号风险 |
+| 微博 | 自己的微博 Cookie | 应用内有小白指引（Application/Storage 5 步取 SUB 值）；建议用小号，避免账号风险 |
 | 小红书 | Chrome 登录态 + opencli | 门槛最高：需要浏览器保持登录 + 额外安装 opencli；采集量受平台风控影响 |
 
 **加量建议**：提高单关键词上限容易触发平台风控，正确做法是**增加关键词**（应用内有「关键词优化」开关帮你扩词）。

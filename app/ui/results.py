@@ -652,7 +652,7 @@ def render_results():
         task_id = st.session_state.get("task_id")
         focus = bool(st.session_state.get(f"nr_focus_{task_id}"))
         with st.expander(
-            f"🔍 需复核样本（{len(nr_items)} 条：词典直判/低置信/反讽/黑话/问句/短句等难例）",
+            f"🔍 需复核样本（{len(nr_items)} 条：低置信/反讽/黑话/问句/短句等难例）",
             expanded=len(nr_items) <= 20 or focus,
         ):
             if _is_demo:
@@ -664,6 +664,10 @@ def render_results():
                 st.caption(
                     "人工确认后回填情感并标记已复核；**全部确认后报告统计/图表/Excel/HTML "
                     "会按复核结果自动重算**（确认最后一条即自动刷新，无需手动操作）。"
+                )
+                st.caption(
+                    "词典模式说明：此处仅列出低置信/反讽/黑话等难例；"
+                    "普通词典判定不进入复核区（如需逐条审核请开启「人工筛选」）。"
                 )
             unreviewed = [it for it in nr_items if not it.reviewed_by]
             shown = unreviewed[:50]

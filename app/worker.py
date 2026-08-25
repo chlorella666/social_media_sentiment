@@ -626,7 +626,7 @@ def run_loop(
     log.info("worker 退出：%s", worker_id)
 
 
-def main() -> None:
+def _run_worker_main() -> None:
     logging_utils.init_file_logging()
     # 防重复启动：以 pidfile 的进程存活为准（崩溃后残留 pid 自动接管，
     # 不依赖心跳窗口，避免崩溃后长时间无法重启）
@@ -656,6 +656,30 @@ def main() -> None:
     finally:
         PID_FILE.unlink(missing_ok=True)
         log.info("pid 文件已清理")
+
+
+def _log_launcher_failure(exc: BaseException) -> None:
+    """F-004（2026-08-26）：worker 启动失败留痕——pythonw 无声崩溃时，
+    data/logs/launcher.log 仍可查原因（黑窗提示与后续排障共用）。"""
+    try:
+        path = PROJECT_ROOT / "data" / "logs" / "launcher.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(
+                f"[{datetime.now():%Y-%m-%d %H:%M:%S}] worker 启动失败：{exc}\n"
+            )
+            f.write(traceback.format_exc())
+            f.write("\n")
+    except Exception:
+        pass
+
+
+def main() -> None:
+    try:
+        _run_worker_main()
+    except Exception as exc:
+        log.exception("worker 启动失败：%s", exc)
+        _log_launcher_failure(exc)
 
 
 if __name__ == "__main__":

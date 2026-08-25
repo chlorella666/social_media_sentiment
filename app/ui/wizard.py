@@ -622,14 +622,15 @@ def render_stage2():
                     st.rerun()
                 with st.expander("❓ 怎么获取微博 Cookie？（小白版）"):
                     st.markdown(
-                        "1. 用 Chrome / Edge 打开 **m.weibo.cn** 并登录你的微博账号\n"
-                        "2. 按 **F12** 打开开发者工具，点上方 **Network（网络）** 标签\n"
-                        "3. **刷新页面（F5）**\n"
-                        "4. 在请求列表里**筛选 XHR/API 请求**，点一条指向 "
-                        "`m.weibo.cn/api/...` 的请求\n"
-                        "5. 在右侧 **Headers → Request Headers** 里找到 **Cookie** 一栏，"
-                        "把整段 Cookie 值复制下来（或只复制 `SUB=...` 到分号前的这一段）\n"
-                        "6. 粘贴到上面的输入框（直接粘整段最稳；不要复制 `Cookie:` 前缀）\n\n"
+                        "1. 登录微博：电脑浏览器打开 **m.weibo.cn** 并完成登录\n"
+                        "2. 打开开发者工具：按 **F12**，或右键页面选「检查」\n"
+                        "3. 点顶部 **Application（应用程序）** 标签"
+                        "（某些浏览器显示为「存储 / Storage」）\n"
+                        "4. 左侧展开 **Storage → Cookies**，选择 https://m.weibo.cn\n"
+                        "5. 找到 **SUB** 这一行，复制它对应的 **VALUE** 值，"
+                        "粘贴到上方微博 Cookie 文本框\n\n"
+                        "💡 直接粘贴 VALUE 即可（程序会自动补 `SUB=` 前缀）；"
+                        "如果只看到整行 Cookie，也可以整段粘贴。\n"
                         "⚠️ Cookie 相当于账号凭证，请只在你自己电脑上使用；"
                         "程序会以 Windows DPAPI 加密仅保存在本机，仅供后台采集使用，"
                         "不会写入报告或上传。\n"
@@ -1007,7 +1008,10 @@ def render_stage3():
             f"链接约 {est_items} 条、评论约 {est_comments} 条，耗时约 {est_min} 分钟",
         ),
         ("时间段", f"{date_range[0]} ~ {date_range[1]}" if isinstance(date_range, tuple) else "不限"),
-        ("LLM 精分析", "开" if llm_enabled else "关（词典模式）"),
+        ("LLM 精分析", (
+            "开（未配置 Key → 降级词典）" if (llm_enabled and not api_key)
+            else ("开" if llm_enabled else "关（词典模式）")
+        )),
         ("叙事/归因", "开" if narrative_enabled else "关"),
         ("LLM 服务", f"{model_name} @ {base_url}" if llm_enabled else "—"),
     ]
@@ -1021,7 +1025,10 @@ def render_stage3():
         st.markdown(cost_est["assumptions"])
         st.caption("预估仅供参考，实际费用以 DeepSeek 官方计费与实际 token 用量为准；单价可能随时调整。")
     if llm_enabled and not api_key:
-        st.warning("已开启 LLM 精分析但未填写 API Key，将自动使用词典模式")
+        st.error(
+            "❌ 已开启 LLM 精分析但**未填写 API Key**：本次将全程使用词典模式，"
+            "维度结论仅供参考。请返回侧边栏「大模型设置」填写并保存 Key 后再提交。"
+        )
     with st.expander("关键词清单"):
         for i, k in enumerate(keywords, 1):
             st.markdown(f"{i}. {k}")

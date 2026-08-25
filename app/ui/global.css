@@ -252,3 +252,9 @@ button[data-testid^="stBaseButton"], [data-testid="stExpander"], [data-testid="s
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+
+/* F-005（2026-08-26）：结果页图表容器最小高度，避免首帧 iframe 高度未定导致底部截断/滚动不到 */
+.stPlotlyChart {
+  min-height: 420px;
+}

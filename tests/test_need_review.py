@@ -34,13 +34,17 @@ def test_need_review_reason_logic() -> None:
     assert "反讽" in need_review_reason("真是好厉害啊，像XX一样", 0.9)
     assert need_review_reason("这是一段完全普通的文本内容", 0.9) == ""
     assert "黑话" in need_review_reason("这波水军带节奏，挤牙膏", 0.9)
-    assert "词典直判" in need_review_reason(
-        "这是一段完全普通的文本内容", 0.9, direct=True, domain="digital3c")
+    # F-007：普通词典直判（无难例信号）不再触发 need_review（避免无 Key 用户全量待复核）
+    assert need_review_reason(
+        "这是一段完全普通的文本内容", 0.9, direct=True, domain="digital3c") == ""
+    # 词典直判 + 确有难例信号：仍进复核区，并在原因前置备注「未送LLM」
+    assert "词典直判(未送LLM)" in need_review_reason(
+        "随便一句话", 0.3, direct=True, domain="digital3c")
     # 领域分权：问句/短句文本信号仅 digital3c 生效
     assert "短句" in need_review_reason("依旧", 0.9, domain="digital3c")
     assert "问句" in need_review_reason("这个值得买吗？", 0.9, domain="digital3c")
     assert "问句" not in need_review_reason("这个值得买吗？", 0.9, domain="other")
-    print("✓ need_review 原因判定（低置信/反讽/黑话/词典直判/领域分权）通过")
+    print("✓ need_review 原因判定（低置信/反讽/黑话/词典直判难例备注/领域分权）通过")
 
 
 def test_coder_marks_low_confidence() -> None:

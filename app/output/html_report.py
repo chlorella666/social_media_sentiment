@@ -1119,69 +1119,88 @@ def date_dim_heatmap_fig(s: dict) -> go.Figure | None:
     return fig
 
 
+def _plot_html(fig, include_plotlyjs: bool) -> str:
+    """F-005（2026-08-26）：非主图脚本改为收集到 __plotlyQueue，
+    由模板尾部 requestAnimationFrame 逐个分片渲染，避免同步阻塞主线程。
+    主图（include_plotlyjs=True，内联 plotly.js）保持同步渲染不替换，
+    避免正则误伤 plotly.js 内部源码。"""
+    html = to_html(fig, full_html=False, include_plotlyjs=include_plotlyjs)
+    if not include_plotlyjs:
+        # plotly 6.x 输出：`Plotly.newPlot(..., config)\n }`（无分号、外层 if 包裹）。
+        # 只把调用本身包进队列函数，保留外层 if 结构，替换结果合法。
+        html = re.sub(
+            r"Plotly\.newPlot\((.*?)\)",
+            lambda m: "window.__plotlyQueue.push(function(){ Plotly.newPlot("
+            + m.group(1) + ") });",
+            html,
+            flags=re.S,
+        )
+    return html
+
+
 def _chart_overall(s: dict) -> str:
-    return to_html(overall_fig(s), full_html=False, include_plotlyjs=True)
+    return _plot_html(overall_fig(s), True)
 
 
 def _chart_platform(s: dict) -> str:
-    return to_html(platform_fig(s), full_html=False, include_plotlyjs=False)
+    return _plot_html(platform_fig(s), False)
 
 
 def _chart_trend(s: dict) -> str:
-    return to_html(trend_fig(s), full_html=False, include_plotlyjs=False)
+    return _plot_html(trend_fig(s), False)
 
 
 def _chart_dimensions(s: dict) -> str:
     fig = dimensions_fig(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def _chart_heatmap(s: dict) -> str:
     fig = heatmap_fig(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def _chart_words(s: dict) -> str:
-    return to_html(words_fig(s), full_html=False, include_plotlyjs=False)
+    return _plot_html(words_fig(s), False)
 
 
 def _chart_intensity(s: dict) -> str:
-    return to_html(intensity_fig(s), full_html=False, include_plotlyjs=False)
+    return _plot_html(intensity_fig(s), False)
 
 
 def _chart_radar(s: dict) -> str:
     fig = radar_fig(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def _chart_platform_dim(s: dict) -> str:
     fig = platform_dim_fig(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def _chart_cooccurrence(s: dict) -> str:
     fig = cooccurrence_fig(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def _chart_sources(s: dict) -> str:
     fig = sentiment_sources_fig(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def _chart_narrative_actor(s: dict) -> str:
     fig = narrative_actor_fig(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def _chart_narrative_heatmap(s: dict) -> str:
     fig = narrative_frame_actor_heatmap(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def _chart_date_dim(s: dict) -> str:
     fig = date_dim_heatmap_fig(s)
-    return to_html(fig, full_html=False, include_plotlyjs=False) if fig else ""
+    return _plot_html(fig, False) if fig else ""
 
 
 def keyword_rows(bundle: ReportBundle) -> tuple[list[dict], int]:

@@ -170,6 +170,14 @@ if ($LeanRuntime) {
 } else {
     Remove-Item -LiteralPath $leanMarker -Force -ErrorAction SilentlyContinue
 }
+# F-008（2026-08-26）：预编译主要依赖字节码，首启秒开（体积小幅回增）
+$py = Join-Path $RUNTIME "python.exe"
+$compileTargets = @("streamlit","plotly","pandas","numpy","matplotlib","PIL","jieba","wordcloud","networkx","lxml","pydantic","requests","openpyxl","docx","jinja2","cnsenti","fontTools")
+foreach ($pkg in $compileTargets) {
+    $dir = Join-Path $RUNTIME "Lib\site-packages\$pkg"
+    if (Test-Path $dir) { & $py -m compileall -q -f $dir 2>$null }
+}
+Write-Host "依赖字节码预编译完成（F-008）"
 $maxLen = 0; $maxPath = ""
 Get-ChildItem -Path $RUNTIME -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { if ($_.FullName.Length -gt $maxLen) { $maxLen = $_.FullName.Length; $maxPath = $_.FullName } }
 Write-Host "runtime 最长路径: $maxLen ($maxPath)"
@@ -204,6 +212,7 @@ Get-ChildItem -Path (Join-Path $PKG_PATH "app") -Recurse -Force -Directory -Filt
 Step "生成启动/退出脚本与使用说明"
 $launcher = @'
 @echo off
+setlocal enabledelayedexpansion
 rem 保持系统默认代码页（bat 为 OEM/GBK 编码，避免乱码）
 cd /d "%~dp0"
 
@@ -216,7 +225,8 @@ rem 实例检测：端口 8501 已占用则提示退出（防重复双击）
 netstat -ano | findstr "LISTENING" | findstr ":8501" >nul 2>nul
 if not errorlevel 1 (
     echo [提示] 检测到应用已在运行（端口 8501 已占用），请勿重复启动。
-    echo        已在浏览器打开的话直接使用即可；若确实无法访问，请先运行「退出.bat」。
+    echo        若浏览器未打开，请手动访问 http://localhost:8501；
+    echo        彻底退出请双击「退出.bat」，浏览器标签可手动关闭。
     pause
     exit /b 1
 )
@@ -224,8 +234,23 @@ if not errorlevel 1 (
 echo 正在启动后台任务进程（隐藏窗口）...
 start "" "%~dp0runtime\pythonw.exe" "%~dp0app\worker.py"
 
+rem F-004：worker 自检（等待约 2~3 秒后检查 pid 与进程存活，失败写 launcher.log）
+ping -n 3 127.0.0.1 >nul
+set WORKER_OK=0
+if exist "data\worker.pid" (
+    set /p WPID=<"data\worker.pid"
+    tasklist /FI "PID eq !WPID!" 2>nul | findstr "!WPID!" >nul && set WORKER_OK=1
+)
+if not "!WORKER_OK!"=="1" (
+    echo [警告] 后台进程未能自动启动（可能被安全软件拦截或启动失败）。
+    echo        请在应用内点「🔄 启动后台进程」，或手动运行：
+    echo        runtime\pythonw.exe app\worker.py
+    echo        失败详情已写入 data\logs\launcher.log
+    >> "data\logs\launcher.log" echo [%date% %time%] worker 自检失败：pid 文件缺失或进程未存活
+)
+
 echo 正在启动社交媒体情感分析器，浏览器将自动打开（首次约 5~15 秒）...
-"%~dp0runtime\python.exe" -m streamlit run "%~dp0app\main.py" --server.port 8501
+"%~dp0runtime\python.exe" -m streamlit run "%~dp0app\main.py" --server.port 8501 <nul
 
 echo.
 echo 应用已退出。后台任务进程仍在运行，请双击「退出.bat」彻底结束。
@@ -277,10 +302,14 @@ $notice = @'
   - 完整《使用边界》见随包「docs\使用边界.md」（首次启动确认页展示同一文件内容）。
 
 常见问题（FAQ）：
+  Q：黑窗出现 Email 提示？  A：直接回车即可（本版本已默认关闭该提示）。
   Q：双击后没反应/白屏？  A：确认 data/ 下有 logs 目录；重试前先双击「退出.bat」。
   Q：端口被占用？        A：先运行「退出.bat」，再重新双击「启动应用.bat」。
   Q：Word 报告生成慢？   A：首次渲染图表图片约 30~60 秒，属正常。
   Q：想用小红书？        A：见向导③渠道页「一键安装」提示；首轮不建议。
+  Q：微博 Cookie 怎么获取？ A：见向导③「怎么获取微博 Cookie？（小白版）」，
+                              Application/Storage 5 步，直接复制 SUB 的 VALUE 即可。
+  Q：报告/结果页滚不到底？  A：等图表加载完（约几秒），仍不行刷新一次。
   Q：想卸载？            A：删除整个文件夹即可（无注册表、无系统服务）。
 
 测试完成后请按反馈表回传：卡在哪一步 / 截图（遮挡原文）/ 是否顺利出报告；

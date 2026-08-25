@@ -1,4 +1,4 @@
-# Streamlit 主题配置（P0-1 落地件，直接采用 design_entries/ui-designer/streamlit_config.toml）
+﻿# Streamlit 主题配置（P0-1 落地件，直接采用 design_entries/ui-designer/streamlit_config.toml）
 # 说明：Streamlit 原生主题只暴露以下变量；控件级细节（圆角/间距/侧边栏宽度）
 #       由 app/ui/global.css 注入兜底。
 
@@ -16,3 +16,5 @@ gatherUsageStats = false
 [server]
 # 本地工具默认行为，按需调整
 maxUploadSize = 100
+# F-001（2026-08-26）：关闭首次运行 Email 订阅提示，避免黑窗阻塞等输入、浏览器不自动打开
+showEmailPrompt = false

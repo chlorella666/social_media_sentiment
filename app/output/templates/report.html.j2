@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>社交媒体情感分析报告 — {{ subject }}</title>
   <style>
+    /* F-005（2026-08-26）：常驻纵向滚动条，避免首帧高度未定导致底部截断 */
+    html, body { overflow-y: scroll; }
+    /* F-005：图表容器最小高度，渲染完成后内容可正常滚动到底 */
+    .plotly-graph-div { min-height: 420px; }
+
     :root {
       /* 设计令牌（design_tokens.css 单一来源；派生色仅限令牌 alpha/透明） */
       --color-background-page: #F8F9FA;
@@ -89,6 +94,7 @@
   </style>
 </head>
 <body>
+  <script>window.__plotlyQueue = window.__plotlyQueue || [];</script>
   <div class="wrap">
     <div class="cover">
       <div class="band"></div>
@@ -458,5 +464,17 @@
 
     <footer>由社交媒体情感分析器自动生成</footer>
   </div>
+  <script>
+    (function () {
+      var q = window.__plotlyQueue || [];
+      var i = 0;
+      function next() {
+        if (i >= q.length) return;
+        try { q[i++](); } catch (e) {}
+        requestAnimationFrame(next);
+      }
+      if (q.length) requestAnimationFrame(next);
+    })();
+  </script>
 </body>
 </html>

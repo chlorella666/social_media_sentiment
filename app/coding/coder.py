@@ -80,9 +80,11 @@ def need_review_reason_v2(text: str, confidence: float) -> str:
 
 def need_review_reason_v3(text: str, confidence: float, direct: bool = False,
                           domain: str = "") -> str:
+    # F-007（2026-08-26）：词典直判不再无条件标记「未送LLM」——
+    # 无 Key 用户全程词典模式时不再 100 条全标 need_review。
+    # 仅当确有难例信号（低置信/反讽/黑话/问句/短句）时才进入复核区，
+    # 并在原因前置备注「词典直判(未送LLM)」方便复核时判断。
     reasons: list[str] = []
-    if direct:
-        reasons.append("词典直判(未送LLM)")
     if confidence < NEED_REVIEW_CONFIDENCE_V2:
         reasons.append(f"低置信(conf={confidence:.2f})")
     if lexicon.has_irony_marker(text):
@@ -94,6 +96,8 @@ def need_review_reason_v3(text: str, confidence: float, direct: bool = False,
             reasons.append("问句/求助")
         if len((text or "").strip()) < SHORT_TEXT_LEN:
             reasons.append("短句无上下文")
+    if direct and reasons:
+        reasons.insert(0, "词典直判(未送LLM)")
     return "；".join(reasons)
 
 
