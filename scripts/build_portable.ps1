@@ -175,7 +175,9 @@ $py = Join-Path $RUNTIME "python.exe"
 $compileTargets = @("streamlit","plotly","pandas","numpy","matplotlib","PIL","jieba","wordcloud","networkx","lxml","pydantic","requests","openpyxl","docx","jinja2","cnsenti","fontTools")
 foreach ($pkg in $compileTargets) {
     $dir = Join-Path $RUNTIME "Lib\site-packages\$pkg"
-    if (Test-Path $dir) { & $py -m compileall -q -f $dir 2>$null }
+    if (Test-Path $dir) {
+        try { & $py -m compileall -q -f $dir 2>&1 | Out-Null } catch { }
+    }
 }
 Write-Host "依赖字节码预编译完成（F-008）"
 $maxLen = 0; $maxPath = ""
