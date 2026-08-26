@@ -24,6 +24,7 @@ from app.coding.llm_analyzer import (
 )
 from app.coding.tokenizer import (
     GENERIC_NOUNS,
+    SYNONYM_GROUPS,
     build_cooccurrence,
     build_phrase_cooccurrence,
     build_word_freq,
@@ -435,7 +436,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
             for _a in _alist:
                 _aliases[_a] = _std
             _aliases[_std] = _std
-        topics = encode_phrases(phrase_data, _dim_kw, _aliases)
+        topics = encode_phrases(phrase_data, _dim_kw, _aliases, SYNONYM_GROUPS)
     except Exception:
         topics = []
 
@@ -543,13 +544,19 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     )
     sentiment_sources = sentiment_sources[:12]
 
-    # 共现网络（F-009：优先短语节点；短语不足回退单词级）
+    # 共现网络（F-019：优先主题名节点，与代表观点/词云同一主题口径；
+    # 主题不足回退短语节点 F-009；再回退单词级）
     phrase_edges: list[dict] = []
     phrase_node_count: dict[str, int] = {}
-    if phrase_data and len(phrase_data) >= 2:
+    _co_nodes: list[dict] = []
+    if topics and len(topics) >= 2:
+        _co_nodes = [{"phrase": t["name"]} for t in topics]
+    elif phrase_data and len(phrase_data) >= 2:
+        _co_nodes = phrase_data
+    if _co_nodes:
         try:
             phrase_edges, phrase_node_count = build_phrase_cooccurrence(
-                content_texts, phrase_data, top_n=30, min_count=1,
+                content_texts, _co_nodes, top_n=30, min_count=1,
             )
         except Exception:
             phrase_edges, phrase_node_count = [], {}
@@ -702,17 +709,29 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
             if _neg_phrases else neg_w.most_common(10)
         ),
         "positive_wordcloud": (
-            [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _pos_phrases[:40]]
-            if _pos_phrases else pos_cloud.most_common(40)
+            [(t["name"].replace(" ", "\u3000"), t["count"]) for t in topics
+             if t.get("polarity") == "positive"][:40]
+            if topics else (
+                [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _pos_phrases[:40]]
+                if _pos_phrases else pos_cloud.most_common(40)
+            )
         ),
         "negative_wordcloud": (
-            [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _neg_phrases[:40]]
-            if _neg_phrases else neg_cloud.most_common(40)
+            [(t["name"].replace(" ", "\u3000"), t["count"]) for t in topics
+             if t.get("polarity") == "negative"][:40]
+            if topics else (
+                [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _neg_phrases[:40]]
+                if _neg_phrases else neg_cloud.most_common(40)
+            )
         ),
         "worst_dim_id": worst_dim,
         "worst_dim_wordcloud": (
-            [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _neg_phrases[:40]]
-            if _neg_phrases else worst_cloud.most_common(40)
+            [(t["name"].replace(" ", "\u3000"), t["count"]) for t in topics
+             if t.get("polarity") == "negative"][:40]
+            if topics else (
+                [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _neg_phrases[:40]]
+                if _neg_phrases else worst_cloud.most_common(40)
+            )
         ),
         "word_dims": word_dims,
         "narrative_stats": narr_stats,
@@ -809,7 +828,11 @@ def generate_report_text(
         ids = "、".join(display_finding_id(f.get("id", "")) for f in findings[:3])
         lines.append(f"具体证据与行动建议见下方「核心发现」（{ids} 等）。")
     else:
-        lines.append("开启 LLM 精分析可获得可归因的结论与行动建议。")
+        # F-018（2026-08-26，修订版）：词典模式单区合并——解读区承载统计结论
+        lines.append(
+            "具体解读见下方「解读与建议」区；"
+            "开启 LLM 精分析可获得可归因的结论与行动建议。"
+        )
     return "\n".join(lines)
 
 

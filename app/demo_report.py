@@ -841,20 +841,8 @@ def build_demo_bundle() -> ReportBundle:
             cost_from_usage(26000, 3400), 3
         ),
     }
-    # F-010/F-015（2026-08-26）：演示报告为 LLM 模式成品展示——structured_summary
-    # 采用演示级文案（模拟 LLM 执行摘要），source=llm 与 insight_mode=llm 一致；
-    # 数字字段由规则计算填充（混合架构），保证四端解读区渲染且数字与 summary 一致。
-    from app.coding.rule_insights import build_structured_summary
-    _demo_ss = build_structured_summary(summary, evidence, summary.get("top_phrases"))
-    _demo_ss["overall"] = (
-        "整体口碑健康但出现边际转弱信号：正面讨论占主导，近一周负面占比抬升，"
-        "集中在涨价沟通、门店排队与外卖体验。"
-    )
-    _demo_ss["improvements"] = [
-        "优先处理调价公告与高峰产能两个可快速见效的触点（微博/小红书渠道发布说明）；",
-        "跟进同款产品口味一致性，避免口碑从「话题热度」转入「质量质疑」；",
-        "对排队/外卖负面高频渠道（大众点评/外卖平台）配置客服响应与补偿机制。",
-    ]
+    # F-018（2026-08-26，修订版回退）：LLM 模式不再产出 structured_summary——
+    # 演示报告为 LLM 模式成品展示，解读由 findings + conclusion 承担。
     return ReportBundle(
         plan=plan,
         channel_results=channel_results,
@@ -866,8 +854,8 @@ def build_demo_bundle() -> ReportBundle:
         findings=findings,
         evidence=evidence,
         insight_mode="llm",
-        structured_summary=_demo_ss,
-        structured_summary_source="llm",
+        structured_summary={},
+        structured_summary_source="rule",
         llm_usage=llm_usage,
         warnings=[],
     )

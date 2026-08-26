@@ -304,48 +304,63 @@ def heatmap_fig(s: dict) -> go.Figure | None:
 
 @_styled
 def words_fig(s: dict) -> go.Figure:
-    """代表观点（短语）：正/负 Top 展示（F-009 短语口径 + F-015 P1 口径）。
+    """主题观点卡（F-019）：正/负主题 Top 展示（主题名 + 占比 + 代表短语 hover）。
 
-    P1（2026-08-26）：count 为主、% 为辅；占比分母=所属情感子集（正面短语÷
-    正面文本数、负面短语÷负面文本数），图注显式标注分母。
+    - 主题优先（同义归并口径，与词云/共现网络/主题卡同一口径）；
+    - 主题不足时回退原始短语（证据层兜底）；
+    - count 为主、% 为辅；占比分母=所属情感子集（正面÷正面、负面÷负面）。
     """
     from plotly.subplots import make_subplots
 
+    topics = s.get("topics") or []
     tp = s.get("top_phrases") or {}
     dist = s.get("sentiment_distribution") or {}
     pos_total = max(int(dist.get("positive", {}).get("count") or 0), 1)
     neg_total = max(int(dist.get("negative", {}).get("count") or 0), 1)
-    total = max(int(s.get("total_items") or 0), 1)
     pos = [
-        (p["phrase"], p["count"], p["count"] / pos_total)
-        for p in (tp.get("positive") or [])[:10]
-    ]
+        (t["name"], t["count"], t["count"] / pos_total,
+         "、".join(t.get("phrases") or [])[:60])
+        for t in topics if t.get("polarity") == "positive"
+    ][:10]
     neg = [
-        (p["phrase"], p["count"], p["count"] / neg_total)
-        for p in (tp.get("negative") or [])[:10]
-    ]
+        (t["name"], t["count"], t["count"] / neg_total,
+         "、".join(t.get("phrases") or [])[:60])
+        for t in topics if t.get("polarity") == "negative"
+    ][:10]
     if not pos:
-        pos = [(w, c, c / pos_total) for w, c in (s.get("positive_words") or [])[:10]]
+        pos = [(p["phrase"], p["count"], p["count"] / pos_total, "")
+               for p in (tp.get("positive") or [])[:10]]
     if not neg:
-        neg = [(w, c, c / neg_total) for w, c in (s.get("negative_words") or [])[:10]]
+        neg = [(p["phrase"], p["count"], p["count"] / neg_total, "")
+               for p in (tp.get("negative") or [])[:10]]
+    if not pos:
+        pos = [(w, c, c / pos_total, "") for w, c in (s.get("positive_words") or [])[:10]]
+    if not neg:
+        neg = [(w, c, c / neg_total, "") for w, c in (s.get("negative_words") or [])[:10]]
     if not pos and not neg:
-        return go.Figure().update_layout(title="暂无代表观点")
+        return go.Figure().update_layout(title="暂无主题观点")
     fig = make_subplots(
         rows=2,
         subplot_titles=(
-            f"正面代表观点（短语） {SENTIMENT_SYMBOL['positive']} Top（占正面讨论，n={pos_total}）",
-            f"负面代表观点（短语） {SENTIMENT_SYMBOL['negative']} Top（占负面讨论，n={neg_total}）",
+            f"正面主题观点 {SENTIMENT_SYMBOL['positive']} Top（占正面讨论，n={pos_total}）",
+            f"负面主题观点 {SENTIMENT_SYMBOL['negative']} Top（占负面讨论，n={neg_total}）",
         ),
         vertical_spacing=0.24,
     )
     if pos:
         fig.add_trace(
             go.Bar(
-                x=[c for _, c, _ in reversed(pos)],
-                y=[w for w, _, _ in reversed(pos)],
+                x=[c for _, c, _, _ in reversed(pos)],
+                y=[w for w, _, _, _ in reversed(pos)],
                 orientation="h",
-                text=[f"{c} 条 · {r:.0%}" for _, c, r in reversed(pos)],
+                text=[f"{c} 条 · {r:.0%}" for _, c, r, _ in reversed(pos)],
                 textposition="outside",
+                customdata=[ph for _, _, _, ph in reversed(pos)],
+                hovertemplate=(
+                    "%{y}<br>%{x} 条 · %{text}"
+                    + ("<br>代表短语：%{customdata}" if any(d for _, _, _, d in pos) else "")
+                    + "<extra></extra>"
+                ),
                 marker_color=SENTIMENT_COLORS["positive"],
                 name="正面",
             ),
@@ -355,11 +370,17 @@ def words_fig(s: dict) -> go.Figure:
     if neg:
         fig.add_trace(
             go.Bar(
-                x=[c for _, c, _ in reversed(neg)],
-                y=[w for w, _, _ in reversed(neg)],
+                x=[c for _, c, _, _ in reversed(neg)],
+                y=[w for w, _, _, _ in reversed(neg)],
                 orientation="h",
-                text=[f"{c} 条 · {r:.0%}" for _, c, r in reversed(neg)],
+                text=[f"{c} 条 · {r:.0%}" for _, c, r, _ in reversed(neg)],
                 textposition="outside",
+                customdata=[ph for _, _, _, ph in reversed(neg)],
+                hovertemplate=(
+                    "%{y}<br>%{x} 条 · %{text}"
+                    + ("<br>代表短语：%{customdata}" if any(d for _, _, _, d in neg) else "")
+                    + "<extra></extra>"
+                ),
                 marker_color=SENTIMENT_COLORS["negative"],
                 name="负面",
             ),
@@ -1352,6 +1373,10 @@ def build_html(bundle: ReportBundle) -> str:
     cluster_rows = topic_cluster_rows(s)
     pairs_rows = topic_pairs(s)
     evidence_by_id = {c["id"]: c for c in bundle.evidence}
+    evidence_list = [
+        c for c in bundle.evidence
+        if c.get("kind") == "stat" or c.get("kind") == "text"
+    ][:40]
     dim_evidence: dict[str, list[dict]] = {}
     for c in bundle.evidence:
         if c.get("dimension") and c.get("sentiment") == "negative":
@@ -1432,6 +1457,7 @@ def build_html(bundle: ReportBundle) -> str:
         insight_mode=bundle.insight_mode,
         findings=bundle.findings,
         evidence_by_id=evidence_by_id,
+        evidence_list=evidence_list,
         dim_evidence=dim_evidence,
         conclusion_title=findings_section_title(bundle.insight_mode),
         display_finding_id=display_finding_id,

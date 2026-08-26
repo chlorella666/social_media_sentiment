@@ -59,16 +59,16 @@ def test_report_contains_chart_insights_and_conclusion() -> None:
     assert bundle.chart_insights.get("overall")
     assert bundle.chart_insights.get("intensity")
     assert bundle.chart_insights.get("cooccurrence")
-    assert bundle.conclusion
-    # 报告证据链：findings 结构 + n 守卫 + 词典模式措辞
+    # F-018（2026-08-26，修订版）：词典模式单区合并——findings 置空、
+    # conclusion 空（structured_summary 唯一承担统计结论与解读）
     assert bundle.insight_mode == "lexicon"
-    assert bundle.findings, "词典模式应生成规则 findings"
-    for f in bundle.findings:
-        assert f["id"].startswith("F")
-        assert f["claim"]
-        assert isinstance(f["evidence_refs"], list)
-        assert f["action"], "词典模式应含方向性提示"
-    assert bundle.evidence, "应有证据卡"
+    assert bundle.findings == [], "词典模式 findings 应置空（单区合并）"
+    assert not bundle.conclusion, "词典模式 conclusion 应为空（解读区承担）"
+    assert bundle.structured_summary and bundle.structured_summary.get("overall"), (
+        "词典模式 structured_summary 应非空"
+    )
+    assert bundle.structured_summary_source == "rule"
+    assert bundle.evidence, "应有证据卡（解读区「查看证据与原文」支撑）"
     for c in bundle.evidence:
         assert c["id"].startswith("E") or c["id"].startswith("S")
         assert c["text"]
@@ -79,19 +79,19 @@ def test_report_contains_chart_insights_and_conclusion() -> None:
             assert c["platform"] and c["judge"] in ("llm", "lexicon")
             assert c["n"] >= 1
     assert any(c.get("kind") == "stat" for c in bundle.evidence)
-    # 病灶 E 回归：负面>正面时不得出现"中性/正面为主"
+    # 病灶 E 回归：负面>正面时 structured_summary 不得出现"中性/正面为主"
     dist = bundle.summary["sentiment_distribution"]
     if dist["negative"]["count"] > dist["positive"]["count"]:
-        assert "中性/正面为主" not in bundle.conclusion
+        assert "中性/正面为主" not in bundle.structured_summary.get("overall", "")
     # 病灶 A 回归：不得出现万能句
     assert "扩大采集范围后复测" not in bundle.report_text
-    assert "扩大采集范围后复测" not in bundle.conclusion
+    assert "扩大采集范围后复测" not in bundle.structured_summary.get("overall", "")
 
     html = build_html(bundle)
-    assert "数据发现（词典模式）" in html
+    assert "解读与建议" in html
     assert "本次为词典模式，维度情感与结论仅供参考" in html
-    assert "核心发现" in html or "数据发现" in html
-    assert "报告统计" in html
+    assert "查看证据与原文（支撑材料）" in html
+    assert "支撑材料" in html
     assert 'class="insight"' in html
     assert "情感与分布" in html
     assert "情绪强度" in html
@@ -573,13 +573,17 @@ def test_structured_summary_lexicon_discipline() -> None:
             "neutral": {"count": 5},
             "negative": {"count": 5},
         },
-        "dimensions": {"quality": {"count": 12, "negative_rate": 0.6}},
+        "dimensions": {"performance": {"count": 12, "negative_rate": 0.6}},
     }
     a = build_structured_summary(summary2)
     b = build_structured_summary(summary2)
     assert a == b, "确定性失败"
     assert a["top_issues"] and a["top_issues"][0]["cause"], a
-    print("✓ F-010 规则解读：措辞纪律 / 小样本 / 确定性 通过")
+    # F-016（2026-08-26）：top_issues 维度显示中文名，不含英文 id
+    for _iss in a["top_issues"]:
+        assert _iss["name"] != _iss.get("dimension"), f"维度仍为英文 id: {_iss}"
+        assert not _iss["name"].isascii(), f"维度名疑似英文: {_iss['name']}"
+    print("✓ F-010 规则解读：措辞纪律 / 小样本 / 确定性 / 维度中文名 通过")
 
 
 def test_structured_contract_four_states() -> None:
@@ -625,6 +629,40 @@ def test_structured_contract_four_states() -> None:
     print("✓ LLM 结构化总结契约：四态 + 混合架构（数字系统覆盖）通过")
 
 
+def test_lexicon_single_zone_merge() -> None:
+    """F-018（修订版）：词典模式合并为单一「解读与建议」区——findings 置空、
+    structured_summary 非空且 source=rule（统计结论由 structured_summary 唯一承担）。"""
+    from app.coding.insights import build_report_content
+    from app.coding.llm_analyzer import MockAnalyzer
+
+    summary = {
+        "total_items": 30,
+        "total_posts": 10,
+        "sentiment_distribution": {
+            "positive": {"count": 20, "ratio": 20 / 30},
+            "neutral": {"count": 5, "ratio": 5 / 30},
+            "negative": {"count": 5, "ratio": 5 / 30},
+        },
+        "avg_score": 0.5,
+        "overall_sentiment": "正面",
+        "platforms": {},
+        "trend": {},
+        "dimensions": {"quality": {"count": 12, "negative": 5, "negative_rate": 0.6}},
+        "intensity_distribution": {},
+        "platform_dim": {},
+        "date_dim": {},
+        "cooccurrence": [],
+        "top_phrases": {},
+        "topics": [],
+    }
+    rc = build_report_content(MockAnalyzer(), None, summary, [])
+    assert rc["insight_mode"] == "lexicon"
+    assert rc["findings"] == [], "词典模式 findings 应置空（单区合并）"
+    assert rc["structured_summary"] and rc["structured_summary"].get("overall"), "structured_summary 应非空"
+    assert rc["structured_summary_source"] == "rule"
+    print("✓ F-018 词典单区合并：findings 置空 + structured_summary 唯一承担 通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_report_contains_chart_insights_and_conclusion()
@@ -642,4 +680,5 @@ if __name__ == "__main__":
     test_trend_weekly_aggregation()
     test_structured_summary_lexicon_discipline()
     test_structured_contract_four_states()
+    test_lexicon_single_zone_merge()
     print("报告洞察测试通过 ✅")

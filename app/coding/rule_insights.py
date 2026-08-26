@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from app.core.names import dimension_cn
+
 MIN_DIM_RATING = 3
 FORBIDDEN_STRONG = ("必须", "立即", "停止", "务必", "一定")
 
@@ -91,7 +93,8 @@ def build_structured_summary(
                 continue
             rows.append({
                 "dimension": dim,
-                "name": dim,
+                # F-016（2026-08-26）：top_issues 维度显示中文名（调用方已 register_custom_dim_names）
+                "name": dimension_cn(dim),
                 "count": n,
                 "rate": rate,
                 "has_refs": any(

@@ -82,6 +82,26 @@ def test_extract_phrases_p0_filters() -> None:
     print("✓ F-015 P0 短语质量：碎片/泛词/实体过滤 通过")
 
 
+def test_synonym_group_merge() -> None:
+    """F-019：同义词组归并——电池掉电快 与 续航不行 归并到同一主题。"""
+    from app.coding.tokenizer import SYNONYM_GROUPS, encode_phrases, extract_phrases
+    texts = [
+        "电池掉电快，一天两充", "电池掉电快，很麻烦",
+        "续航不行，出门就得带充电宝", "续航不行，太短了",
+        "屏幕易碎，要小心", "屏幕易碎，摔一下就坏",
+        "拍照很好看", "拍照很清晰",
+    ]
+    sents = ["negative"] * 6 + ["positive", "positive"]
+    ph = extract_phrases(texts, sentiments=sents, brand="某手机", keywords=["手机"])
+    topics = encode_phrases(ph, {}, None, SYNONYM_GROUPS)
+    battery = [t for t in topics if t["name"] == "续航"]
+    assert battery, "应生成「续航」主题"
+    assert "电池掉电快" in battery[0]["phrases"], battery[0]["phrases"]
+    assert "续航不行" in battery[0]["phrases"], battery[0]["phrases"]
+    assert battery[0]["count"] >= 4, "同义表达应合并计数"
+    print("✓ F-019 同义词组归并（电池掉电快 + 续航不行 → 续航）通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_segment_filters_stopwords()
@@ -89,4 +109,5 @@ if __name__ == "__main__":
     test_cooccurrence()
     test_extract_phrases_fixture()
     test_extract_phrases_p0_filters()
+    test_synonym_group_merge()
     print("jieba 分词器测试全部通过 ✅")

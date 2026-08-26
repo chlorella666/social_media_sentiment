@@ -84,8 +84,14 @@ def render_sidebar():
             col_save, col_clear = st.columns(2)
             if col_save.button("💾 保存到本机", width="stretch"):
                 if api_key and api_key.strip():
-                    save_api_key(api_key.strip())
-                    st.success("已加密保存到本机（Windows DPAPI）")
+                    try:
+                        save_api_key(api_key.strip())
+                    except Exception:
+                        # F-017（2026-08-26）：保存失败明确报错，不静默吞掉
+                        st.error("保存失败（权限/只读目录）：请检查 data/secrets/ 目录可写后重试。")
+                    else:
+                        st.success("已加密保存到本机（Windows DPAPI）")
+                        st.rerun()  # 保存后立即刷新配置中心状态区
                 else:
                     st.warning("未填写 API Key，无需保存")
             if col_clear.button("🗑 清除已保存", width="stretch"):
@@ -144,9 +150,28 @@ def render_sidebar():
         st.session_state.setdefault("cfg_center_expander", True)
         with st.expander("⚙️ 配置中心", key="cfg_center_expander"):
             st.caption("凭据与运行环境状态（凭据仅本机加密保存）")
+            # F-017（2026-08-26）：区分「输入框已填（未保存）」与「已保存」——
+            # 配置中心回答的是「本机是否已持久化」，但用户心智中"填了=配了"，
+            # 因此输入框有值但未保存时状态行明示，保存后 st.rerun() 实时变绿。
+            _llm_st = llm_status()
+            _api_input = str(st.session_state.get("api_key_input", "") or "")
+            if not _llm_st["has_key"] and _api_input.strip():
+                _llm_st = {
+                    "level": "warn",
+                    "text": "⚠️ LLM API Key：输入框已填（未保存）——点击「保存到本机」后生效",
+                    "has_key": False,
+                }
+            _wb_st = weibo_status()
+            _wb_input = str(st.session_state.get("weibo_cookie", "") or "")
+            if not _wb_st["has_key"] and _wb_input.strip():
+                _wb_st = {
+                    "level": "warn",
+                    "text": "⚠️ 微博 Cookie：输入框已填（未保存）——勾选「记住 Cookie」或提交时保存",
+                    "has_key": False,
+                }
             _cfg_rows = [
-                llm_status(),
-                weibo_status(),
+                _llm_st,
+                _wb_st,
                 node_status(),
                 opencli_status(),
             ]

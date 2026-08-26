@@ -358,32 +358,32 @@ def build_report_content(
                 conclusion = findings_to_conclusion(findings)
             else:
                 conclusion = out.get("conclusion") or findings_to_conclusion(findings)
-        # F-010/F-015（2026-08-26）：混合架构——LLM 写文案、系统填数字；
-        # LLM 缺失/校验失败回退规则，source 按真实来源标注
-        from app.coding.structured_contract import merge_structured_summary
-        _ss, _ss_source = merge_structured_summary(
-            out.get("structured_summary_text"), summary, evidence
-        )
+        # F-018（2026-08-26，修订版回退）：LLM 模式不再产出 structured_summary——
+        # 保留 findings（深度发现+行动）+ conclusion；structured_summary 为词典
+        # 模式补偿物，LLM 模式渲染它会造成三区重复（修订版裁决）。
         return {
             "chart_insights": chart_insights,
             "conclusion": conclusion,
             "findings": findings,
             "insight_mode": mode,
-            "structured_summary": _ss,
-            "structured_summary_source": _ss_source,
+            "structured_summary": {},
+            "structured_summary_source": "rule",
         }
-    # 词典模式（MockAnalyzer / 无 Key）：规则 findings，零新增 LLM
+    # 词典模式（MockAnalyzer / 无 Key）：
+    # F-018（2026-08-26，修订版）：词典模式合并为单一「解读与建议」区——
+    # structured_summary 为主干；findings 停止产出统计总结型 claim（统计结论
+    # 由 structured_summary 唯一承担），findings 置空，证据由解读区折叠支撑。
     ci = template_chart_insights(descriptors)
-    findings = build_findings(evidence, summary, mode="lexicon")
     from app.coding.rule_insights import build_structured_summary
     return {
         "chart_insights": ci,
-        "conclusion": findings_to_conclusion(findings),
-        "findings": findings,
+        "conclusion": "",
+        "findings": [],
         "insight_mode": "lexicon",
         "structured_summary": build_structured_summary(
             summary, evidence, summary.get("top_phrases")
         ),
+        "structured_summary_source": "rule",
     }
 
 

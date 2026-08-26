@@ -420,8 +420,13 @@ def test_build_report_content_mock_mode() -> None:
         "intensity", "radar", "platform_dim", "date_dim", "wordcloud",
         "cooccurrence",
     }
-    assert content["findings"] and content["conclusion"]
-    print("✓ 词典模式统一入口通过")
+    # F-018（2026-08-26，修订版）：词典模式单区合并——findings 置空、conclusion 空，
+    # structured_summary 唯一承担统计结论与解读
+    assert content["findings"] == [], "词典模式 findings 应置空"
+    assert not content["conclusion"], "词典模式 conclusion 应为空"
+    assert content["structured_summary"] and content["structured_summary"].get("overall")
+    assert content["structured_summary_source"] == "rule"
+    print("✓ 词典模式统一入口通过（F-018 单区合并）")
 
 
 def test_display_finding_helpers() -> None:

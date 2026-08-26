@@ -320,10 +320,13 @@ def extract_phrases(
         # 原始 PMI：log(c*N/(c1*c2))；min_count 已防低频高估，add-1 平滑会误压真实短语
         pmi = math.log((c * n) / (c1 * c2)) if c1 > 0 and c2 > 0 else 0.0
         if pmi < pmi_min:
-            continue
-        strong = any(sig and sig in _clean_match(ph) for sig in signals_c)
-        if signals_c and not strong and pmi < pmi_min:
-            continue
+            # F-019（2026-08-26）：结构校验通过的语义短语（含信号词/品牌信号）
+            # 放宽 PMI 门槛到 1.2——「电池掉电快/续航不行」等真实短语 PMI≈1.4，
+            # 按 1.5 会被误杀，同义归并无从谈起；无信号短语维持 pmi_min。
+            has_signal = any(w in _PHRASE_SIGNAL_WORDS for w in _phrase_words(ph))
+            has_brand_sig = any(sig and sig in _clean_match(ph) for sig in signals_c)
+            if not (has_signal or has_brand_sig) or pmi < 1.2:
+                continue
         weights: dict[str, float] = {}
         if sentiments:
             buckets = Counter(sentiments[i] for i in docs if i < len(sentiments))
@@ -400,6 +403,21 @@ def build_phrase_cooccurrence(
 
 
 # ---------------------------------------------------------------------------
+# F-019（2026-08-26）：同义词组——把同一语义的不同表达归并到同一编码
+# （"电池掉电快"与"续航不行"统计到同一主题，用户可感知的归并案例）
+SYNONYM_GROUPS: dict[str, tuple[str, ...]] = {
+    "续航": ("续航", "电池", "耗电", "掉电", "待机", "电量", "充电", "耐用"),
+    "屏幕": ("屏幕", "显示", "黑屏", "花屏", "烧屏", "碎屏", "漏液"),
+    "拍照": ("拍照", "相机", "摄像头", "像素", "成像", "夜景", "防抖", "广角", "变焦"),
+    "性能": ("性能", "卡顿", "流畅", "帧率", "发热", "散热", "降频", "死机", "重启"),
+    "音质": ("音质", "声音", "扬声器", "外放", "耳机"),
+    "手感": ("手感", "重量", "厚度", "轻薄", "机身", "握持"),
+    "价格": ("价格", "价钱", "定价", "售价", "性价比", "贵", "便宜", "涨价", "降价", "溢价"),
+    "服务": ("服务", "客服", "售后", "维修", "保修", "物流", "发货", "快递", "门店"),
+    "外观": ("外观", "颜值", "颜色", "配色", "设计", "做工"),
+    "质量": ("质量", "品控", "瑕疵", "故障", "缩水", "虚标"),
+}
+
 # F-015 P2（2026-08-26）：短语编码归并 → 主题层（保守，不自动聚类）
 # ---------------------------------------------------------------------------
 
@@ -407,38 +425,52 @@ def encode_phrases(
     phrases: list[dict],
     dimension_keywords: dict[str, list[str]] | None = None,
     aliases: dict[str, str] | None = None,
+    synonym_groups: dict[str, tuple[str, ...]] | None = None,
     min_count: int = 2,
 ) -> list[dict]:
     """短语→编码标签→主题（保守归并，取消自动聚类）。
 
-    - 编码 = 命中的维度关键词（用户语言，如「续航」「屏幕」）+ 品牌别名归一；
+    - 编码优先级：同义词组（F-019，如 续航/电池/耗电/掉电/待机 → 组名「续航」）
+      优先于维度关键词；主题名=组名（用户语言，不生成新词）；
+    - 维度信号：短语同时命中维度关键词时挂靠维度 id，否则 dimension="";
     - 情感一致性：同一编码下短语主极性不一致则拆成独立主题（转折/反讽/黑话
       不自动归并，保留原短语与原文证据）；
-    - 主题名 = 编码词（不生成新词），挂靠维度 id（呈现时映射维度中文名）；
     - 返回按提及量降序的 [{dimension, name, encode, polarity, phrases, count,
-      sentiment_weights, sample_text_ids}]；无维度信号短语不进主题层
+      sentiment_weights, sample_text_ids}]；无信号短语不进主题层
       （保留在短语证据层 top_phrases）。
     """
     from collections import Counter
 
+    synonym_groups = synonym_groups or {}
     groups: dict[tuple[str, str], list[dict]] = {}
     for p in phrases:
         pc = _clean_match(p.get("phrase", ""))
         if not pc:
             continue
-        hit: tuple[str, str] | None = None
+        hit_dim: str | None = None
+        hit_kw: str | None = None
         for dim_id, kws in (dimension_keywords or {}).items():
             for kw in kws:
                 kc = _clean_match(kw)
                 if kc and kc in pc:
-                    hit = (dim_id, kw)
+                    hit_dim, hit_kw = dim_id, kw
                     break
-            if hit:
+            if hit_dim:
                 break
-        if hit is None:
+        syn_name: str | None = None
+        for group_name, words in synonym_groups.items():
+            if any(w and _clean_match(w) in pc for w in words):
+                syn_name = group_name
+                break
+        if syn_name:
+            # 同义词组优先：主题名=组名；维度挂靠命中的维度（若有）
+            key = (f"__syn__{hit_dim or ''}", syn_name)
+        elif hit_dim:
+            key = (hit_dim, hit_kw or hit_dim)
+        else:
             continue
-        norm = (aliases or {}).get(pc) or (aliases or {}).get(hit[1]) or hit[1]
-        groups.setdefault((hit[0], norm), []).append(p)
+        norm = (aliases or {}).get(pc) or (aliases or {}).get(key[1]) or key[1]
+        groups.setdefault((key[0], norm), []).append(p)
 
     def _main_polarity(p: dict) -> str:
         w = p.get("sentiment_weights") or {}
@@ -467,8 +499,9 @@ def encode_phrases(
                     buckets[k] += v
             tot = sum(buckets.values()) or 1
             weights = {k: round(v / tot, 3) for k, v in buckets.items()}
+            _dim_out = dim_id.replace("__syn__", "")
             topics.append({
-                "dimension": dim_id,
+                "dimension": _dim_out,
                 "name": norm,
                 "encode": norm,
                 "polarity": pol_key,

@@ -54,7 +54,7 @@ CHART_BUILDERS = [
     ("radar", "各维度负面率/平均分雷达图", radar_fig),
     ("platform_dim", "平台 × 维度负面率", platform_dim_fig),
     ("date_dim", "日期 × 维度负面率热力图", date_dim_heatmap_fig),
-    ("words", "代表观点（短语）Top20", words_fig),
+    ("words", "主题观点 Top20（同义归并）", words_fig),
     ("sources", "负面情绪来源话题榜", sentiment_sources_fig),
     ("cooccurrence", "关键词共现网络图", cooccurrence_fig),
     ("narrative_actor", "归因主体分布（用户主要把问题归给谁）", narrative_actor_fig),

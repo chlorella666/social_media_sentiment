@@ -197,16 +197,18 @@ def rebuild_report_after_review(
             rule_mode, new_mode = "review", "review_refresh"
         else:
             rule_mode, new_mode = "lexicon", "lexicon"
-        findings = build_findings(evidence, new_summary, mode=rule_mode)
+        # F-018（2026-08-26，修订版）：规则路径单区合并——findings 不再产出
+        # 统计总结型 claim（structured_summary 唯一承担统计结论），置空由解读区承载
         from app.coding.rule_insights import build_structured_summary
         report_content = {
             "chart_insights": template_chart_insights(build_descriptors(new_summary)),
-            "findings": findings,
-            "conclusion": findings_to_conclusion(findings),
+            "findings": [],
+            "conclusion": "",
             "insight_mode": new_mode,
             "structured_summary": build_structured_summary(
                 new_summary, evidence, new_summary.get("top_phrases")
             ),
+            "structured_summary_source": "rule",
         }
     new_bundle = bundle.model_copy(update={
         "summary": new_summary,
@@ -828,16 +830,75 @@ def render_results():
                 if f.get("action"):
                     st.markdown(f"**建议：**{display_action(f.get('action'))}")
 
-    # F-010/F-015（2026-08-26）：解读与建议（与 HTML/Excel/Word 同源：structured_summary；
-    # LLM 模式为 AI 归因，词典/回退为规则推测）
-    if bundle.insight_mode == "llm" and not bundle.structured_summary:
-        st.caption("旧版数据：该报告生成时无结构化总结，未渲染解读区。")
+
+    # —— ③ 整体情感主图（结论视图唯一默认展开） ——
+    st.markdown("### 整体情感占比")
+    st.plotly_chart(overall_fig(s), width="stretch")
+    st.markdown(f"**解析：**{bundle.chart_insights.get('overall', '')}")
+
+    # —— 其余图：全部视图展开；结论视图折叠钻取 ——
+    if show_all:
+        col1, col2 = st.columns(2)
+        with col2:
+            st.plotly_chart(platform_fig(s), width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('platform', '')}")
+        st.plotly_chart(trend_fig(s), width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('trend', '')}")
+        st.plotly_chart(intensity_fig(s), width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
+        _render_dim_charts(s, bundle)
+    else:
+        with st.expander("📊 各平台情感分布", expanded=False):
+            st.plotly_chart(platform_fig(s), width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('platform', '')}")
+        with st.expander("📈 时间趋势", expanded=False):
+            st.plotly_chart(trend_fig(s), width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('trend', '')}")
+        with st.expander("🔥 情绪强度分布", expanded=False):
+            st.plotly_chart(intensity_fig(s), width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
+        with st.expander("🧩 维度分析", expanded=False):
+            _render_dim_charts(s, bundle)
+    # 非核心钻取区：结论视图折叠；全部视图展开（词云保持按需生成）
+    pd_fig = platform_dim_fig(s)
+    if pd_fig:
+        with st.expander("📊 平台 × 维度负面率", expanded=show_all):
+            st.plotly_chart(pd_fig, width="stretch")
+            st.markdown(f"**解析：**{bundle.chart_insights.get('platform_dim', '')}")
+    # F-019（2026-08-26）：主题上主视觉——代表观点区默认可见（主题观点卡），
+    # 原始短语降级为证据层（hover 代表短语 + 主题洞察可展开）
+    st.markdown("### 🧩 主题观点（代表观点）")
+    st.plotly_chart(words_fig(s), width="stretch")
+    st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
+    st.caption(
+        "观点按主题（同义归并）聚合展示；悬停查看代表短语，"
+        "下方「主题洞察」可展开代表短语与原文，占比分母为所属情感子集。"
+    )
+    # F-015 P2：主题洞察（短语归并卡）
+    _topics = s.get("topics") or []
+    if _topics:
+        with st.expander("🧩 主题洞察（短语归并）", expanded=True):
+            st.caption(
+                "主题 = 维度关键词保守归并：同一主题下短语情感极性一致才归并；"
+                "提及量按去重文本计，占比分母为所属情感子集。"
+            )
+            for _t in _topics[:8]:
+                _tpol = {"positive": "正面", "negative": "负面", "neutral": "中性"}.get(
+                    _t.get("polarity", ""), "中性"
+                )
+                st.markdown(
+                    f"**{_t.get('name', '')}**（{dimension_cn(_t.get('dimension', ''))}）· "
+                    f"{_t.get('count', 0)} 条 · {_tpol}主导"
+                )
+                st.caption("、".join(_t.get("phrases") or []))
+
+    # F-018（2026-08-26，修订版）：词典/规则模式合并为单一「解读与建议」区——
+    # structured_summary 为主干（一句话结论 → 正负反馈 → 重点问题归因 → 改进建议）；
+    # LLM 模式无 structured_summary（保留 findings + conclusion），本区不渲染。
     if bundle.structured_summary:
         _ss = bundle.structured_summary
         _ss_src = bundle.structured_summary_source or "rule"
-        _ss_label = (
-            "AI 归因（LLM 解读）" if _ss_src == "llm" else "规则推测（非 AI 归因）"
-        )
+        _ss_label = "规则推测（非 AI 归因）"
         with st.expander(f"📊 解读与建议（{_ss_label}）", expanded=True):
             st.markdown(f"**一句话结论：**{_ss.get('overall', '')}")
             _pos = _ss.get("positive") or {}
@@ -876,61 +937,24 @@ def render_results():
                 for _im in _ss["improvements"]:
                     st.markdown(f"- {_im}")
             st.caption("原因基于统计特征的规则推测，非 AI 归因，请结合报告原文验证。")
-
-    # —— ③ 整体情感主图（结论视图唯一默认展开） ——
-    st.markdown("### 整体情感占比")
-    st.plotly_chart(overall_fig(s), width="stretch")
-    st.markdown(f"**解析：**{bundle.chart_insights.get('overall', '')}")
-
-    # —— 其余图：全部视图展开；结论视图折叠钻取 ——
-    if show_all:
-        col1, col2 = st.columns(2)
-        with col2:
-            st.plotly_chart(platform_fig(s), width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('platform', '')}")
-        st.plotly_chart(trend_fig(s), width="stretch")
-        st.markdown(f"**解析：**{bundle.chart_insights.get('trend', '')}")
-        st.plotly_chart(intensity_fig(s), width="stretch")
-        st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
-        _render_dim_charts(s, bundle)
-    else:
-        with st.expander("📊 各平台情感分布", expanded=False):
-            st.plotly_chart(platform_fig(s), width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('platform', '')}")
-        with st.expander("📈 时间趋势", expanded=False):
-            st.plotly_chart(trend_fig(s), width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('trend', '')}")
-        with st.expander("🔥 情绪强度分布", expanded=False):
-            st.plotly_chart(intensity_fig(s), width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('intensity', '')}")
-        with st.expander("🧩 维度分析", expanded=False):
-            _render_dim_charts(s, bundle)
-    # 非核心钻取区：结论视图折叠；全部视图展开（词云保持按需生成）
-    pd_fig = platform_dim_fig(s)
-    if pd_fig:
-        with st.expander("📊 平台 × 维度负面率", expanded=show_all):
-            st.plotly_chart(pd_fig, width="stretch")
-            st.markdown(f"**解析：**{bundle.chart_insights.get('platform_dim', '')}")
-    with st.expander("🔤 代表观点（短语）Top20", expanded=show_all):
-        st.plotly_chart(words_fig(s), width="stretch")
-        st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
-    # F-015 P2：主题洞察（短语归并卡）
-    _topics = s.get("topics") or []
-    if _topics:
-        with st.expander("🧩 主题洞察（短语归并）", expanded=show_all):
-            st.caption(
-                "主题 = 维度关键词保守归并：同一主题下短语情感极性一致才归并；"
-                "提及量按去重文本计，占比分母为所属情感子集。"
-            )
-            for _t in _topics[:8]:
-                _tpol = {"positive": "正面", "negative": "负面", "neutral": "中性"}.get(
-                    _t.get("polarity", ""), "中性"
-                )
-                st.markdown(
-                    f"**{_t.get('name', '')}**（{dimension_cn(_t.get('dimension', ''))}）· "
-                    f"{_t.get('count', 0)} 条 · {_tpol}主导"
-                )
-                st.caption("、".join(_t.get("phrases") or []))
+            # F-018（2026-08-26，修订版）：findings 降级为证据支撑——
+            # 「查看证据与原文」折叠明确标注为支撑材料而非第二结论
+            if bundle.evidence:
+                with st.expander("查看证据与原文（支撑材料）", expanded=False):
+                    st.caption("以下为支撑上述解读的统计卡与原文摘录，非第二结论。")
+                    for _c in bundle.evidence[:40]:
+                        if _c.get("kind") == "stat":
+                            st.markdown(f"📊 {_c.get('text', '')}（n={_c.get('n')}）")
+                        else:
+                            _j = (
+                                "LLM 判定" if _c.get("judge") == "llm"
+                                else "词典判定 · 仅供参考"
+                            )
+                            st.markdown(
+                                f"「{_c.get('text', '')}」\n\n"
+                                f"来源：{_c.get('platform', '')} · "
+                                f"{_c.get('date') or '日期未知'} · {_j}"
+                            )
     with st.expander("☁️ 情感词云", expanded=False):
         if not st.session_state.get(f"wc_gen_{task_id}"):
             st.caption("词云图片生成较慢（3 张约 2~5 秒），点击后生成。")
