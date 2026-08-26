@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import os
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -239,23 +240,65 @@ def install_node(on_output=None) -> dict:
     if res["ok"]:
         res["message"] = "Node.js 安装完成 ✅ 请重启应用（终端重新启动 Streamlit），再点「一键安装 opencli」。已安装则忽略。"
     return res
+def _winget_version() -> tuple[int, int]:
+    """探测 winget 主版本（如 v1.6.3 -> (1, 6)）；失败返回 (0, 0)。"""
+    try:
+        winget = shutil.which("winget")
+        if not winget:
+            return (0, 0)
+        out = subprocess.run([winget, "--version"], capture_output=True, text=True, timeout=15)
+        m = re.search(r"v?(\d+)\.(\d+)", out.stdout or out.stderr or "")
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+    except Exception:
+        pass
+    return (0, 0)
+
+
+def _classify_winget_error(res: dict) -> str:
+    """F-012：按输出文本关键词分类 winget 失败，给出可执行指引（不只按退出码）。"""
+    out = (str(res.get("output") or "") + " " + str(res.get("error") or ""))
+    lower = out.lower()
+    if "\u65e0\u6cd5\u8bc6\u522b\u53c2\u6570\u540d\u79f0" in lower or "unrecognized" in lower or "unknown argument" in lower:
+        return "winget \u7248\u672c\u8fc7\u65e7\uff1a\u8bf7\u5230 Microsoft Store \u66f4\u65b0\u300c\u5e94\u7528\u5b89\u88c5\u7a0b\u5e8f\u300d\uff0c\u6216\u5230 https://nodejs.org \u624b\u52a8\u4e0b\u8f7d\u5b89\u88c5\uff08\u5b89\u88c5\u65f6\u52fe\u9009 Add to PATH\uff09"
+    if "\u8fde\u63a5" in out or "\u7f51\u7edc" in out or "timed out" in lower or "network" in lower or "source" in lower and "\u4e0d\u53ef\u7528" in out:
+        return "\u7f51\u7edc/\u6e90\u4e0d\u53ef\u7528\uff1a\u8bf7\u7a0d\u540e\u91cd\u8bd5\uff0c\u6216\u5230 https://nodejs.org \u624b\u52a8\u4e0b\u8f7d"
+    if "\u62d2\u7edd\u8bbf\u95ee" in out or "\u9700\u8981\u7ba1\u7406\u5458" in out or "access is denied" in lower or "admin" in lower:
+        return "\u6743\u9650\u4e0d\u8db3\uff1a\u8bf7\u4ee5\u7ba1\u7406\u5458\u8eab\u4efd\u91cd\u65b0\u8fd0\u884c\u540e\u91cd\u8bd5\uff0c\u6216\u624b\u52a8\u5b89\u88c5"
+    return "\u5b89\u88c5\u5931\u8d25\uff08\u672a\u77e5\u539f\u56e0\uff09\uff1a\u8bf7\u5230 https://nodejs.org \u624b\u52a8\u4e0b\u8f7d\u5b89\u88c5\uff08\u52fe\u9009 Add to PATH\uff09\uff0c\u6216\u590d\u5236\u4e0b\u65b9\u9519\u8bef\u4fe1\u606f\u56de\u4f20"
+
+
 def install_node_winget(on_output=None) -> dict:
-    """Windows 10/11：winget 一键安装 Node.js LTS。"""
+    """Windows 10/11：winget \u4e00\u952e\u5b89\u88c5 Node.js LTS（F-012\uff1a\u65e7\u7248 winget \u517c\u5bb9\uff09\u3002"""
     winget = shutil.which("winget")
     if not winget:
         return {
             "ok": False,
-            "message": "未找到 winget（需要 Windows 10/11）：请到 https://nodejs.org 手动下载安装",
+            "message": "\u672a\u627e\u5230 winget\uff08\u9700\u8981 Windows 10/11\uff09\uff1a\u8bf7\u5230 https://nodejs.org \u624b\u52a8\u4e0b\u8f7d\u5b89\u88c5",
             "output": "",
         }
-    cmd = [
-        winget, "install", "OpenJS.NodeJS.LTS",
-        "--accept-source-agreements", "--accept-package-agreements",
-        "--disable-interactivity", "--silent",
-    ]
+    major, minor = _winget_version()
+    cmd = [winget, "install", "OpenJS.NodeJS.LTS",
+           "--accept-source-agreements", "--accept-package-agreements",
+           "--silent"]
+    # --disable-interactivity 需 winget >= 1.6；旧版不传，避免参数不识别中止
+    if (major, minor) >= (1, 6):
+        cmd.append("--disable-interactivity")
     res = _run_streaming(cmd, on_output=on_output)
     if res["ok"]:
-        res["message"] = "Node.js 安装完成 ✅ 请重启应用（关闭后重新 run.bat），再点「安装 opencli」。已安装则忽略。"
+        # F-012 \u6210\u529f\u81ea\u68c0\uff1a\u786e\u8ba4 node \u53ef\u7528\u5e76\u5199\u5165\u7248\u672c
+        try:
+            ver = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=15)
+            version = (ver.stdout or ver.stderr or "").strip()
+        except Exception:
+            version = ""
+        res["message"] = (
+            "Node.js \u5b89\u88c5\u5b8c\u6210 ✅"
+            + (f"\uff08{version}\uff09" if version else "")
+            + "\uff1a\u8bf7\u91cd\u542f\u5e94\u7528\uff08\u5173\u95ed\u540e\u91cd\u65b0 run.bat\uff09\uff0c\u518d\u70b9\u300c\u5b89\u88c5 opencli\u300d\u3002\u5df2\u5b89\u88c5\u5219\u5ffd\u7565\u3002"
+        )
+    else:
+        res["message"] = _classify_winget_error(res)
     return res
 def check_channel_rich(channel_id: str, params: dict | None = None) -> dict:
     """单渠道诊断（统一返回 {ok, level, msg, detail}）；demo 不发起网络探测。"""

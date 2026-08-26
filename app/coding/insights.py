@@ -88,7 +88,7 @@ def _words_descriptor(summary: dict) -> str:
         parts.append("负面：" + "、".join(f"{w}（{c}）" for w, c in neg[:8]))
     if pos:
         parts.append("正面：" + "、".join(f"{w}（{c}）" for w, c in pos[:8]))
-    return "高频情感词（|情感分| 加权）：" + "；".join(parts) if parts else "无明显高频情感词"
+    return "代表观点（短语）：" + "；".join(parts) if parts else "无明显代表观点"
 
 
 def _wordcloud_descriptor(summary: dict) -> str:
@@ -263,7 +263,7 @@ def template_chart_insights(descriptors: dict) -> dict:
             "该维度可作为下一阶段舆情跟踪与产品/服务改进的重点方向。"
         ),
         "words": (
-            f"高频词显示：{d('words')}。"
+            f"代表观点显示：{d('words')}。"
             "正面词主导说明口碑基础良好，负面词集中说明存在具体槽点。"
         ),
         "intensity": (
@@ -285,7 +285,7 @@ def template_chart_insights(descriptors: dict) -> dict:
             "若负面集中在特定日期，说明与当时的营销/事件节点可能相关，可复盘该节点。"
         ),
         "wordcloud": (
-            f"内容高频词显示：{d('wordcloud')}。"
+            f"代表观点词云显示：{d('wordcloud')}。"
             "主题词集中在产品/体验相关词时，说明讨论围绕实际使用；集中在营销词时说明认知主要来自传播。"
         ),
         "cooccurrence": (
@@ -348,11 +348,15 @@ def build_report_content(
     # 词典模式（MockAnalyzer / 无 Key）：规则 findings，零新增 LLM
     ci = template_chart_insights(descriptors)
     findings = build_findings(evidence, summary, mode="lexicon")
+    from app.coding.rule_insights import build_structured_summary
     return {
         "chart_insights": ci,
         "conclusion": findings_to_conclusion(findings),
         "findings": findings,
         "insight_mode": "lexicon",
+        "structured_summary": build_structured_summary(
+            summary, evidence, summary.get("top_phrases")
+        ),
     }
 
 

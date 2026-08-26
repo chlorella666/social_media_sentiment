@@ -25,7 +25,9 @@ from app.coding.llm_analyzer import (
 from app.coding.tokenizer import (
     GENERIC_NOUNS,
     build_cooccurrence,
+    build_phrase_cooccurrence,
     build_word_freq,
+    extract_phrases,
     segment,
 )
 from app.coding import lexicon_v2
@@ -392,6 +394,30 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
             elif pol < 0:
                 neg_w[kw] += w
 
+    # F-009（2026-08-26）：短语级统计（bigram~5gram + PMI + 情感权重）
+    phrase_data: list[dict] = []
+    try:
+        phrase_data = extract_phrases(
+            [it.text for it in stat_items],
+            sentiments=[it.sentiment.value for it in stat_items],
+            brand=plan.subject,
+            keywords=plan.keywords,
+        )
+    except Exception:
+        phrase_data = []
+    _pos_phrases = [
+        p for p in phrase_data
+        if (p.get("sentiment_weights") or {}).get("positive", 0) >= 0.5
+    ]
+    _neg_phrases = [
+        p for p in phrase_data
+        if (p.get("sentiment_weights") or {}).get("negative", 0) >= 0.5
+    ]
+    top_phrases = {
+        "positive": _pos_phrases[:8],
+        "negative": _neg_phrases[:8],
+    }
+
     # 主题/泛词过滤（词云与共现网络共用）
     extra_stop = _subject_stopwords(plan)
 
@@ -496,15 +522,28 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     )
     sentiment_sources = sentiment_sources[:12]
 
-    # 共现网络（文档级去重后的讨论结构；PMI 加权 + 主题过滤）
-    cooccurrence_raw, node_count = build_cooccurrence(
-        content_texts,
-        window=3,
-        top_n=30,
-        extra_stopwords=extra_stop,
-        min_count=3,
-        return_counts=True,
-    )
+    # 共现网络（F-009：优先短语节点；短语不足回退单词级）
+    phrase_edges: list[dict] = []
+    phrase_node_count: dict[str, int] = {}
+    if phrase_data and len(phrase_data) >= 2:
+        try:
+            phrase_edges, phrase_node_count = build_phrase_cooccurrence(
+                content_texts, phrase_data, top_n=30, min_count=1,
+            )
+        except Exception:
+            phrase_edges, phrase_node_count = [], {}
+    if phrase_edges:
+        cooccurrence_raw = phrase_edges
+        node_count = phrase_node_count
+    else:
+        cooccurrence_raw, node_count = build_cooccurrence(
+            content_texts,
+            window=3,
+            top_n=30,
+            extra_stopwords=extra_stop,
+            min_count=3,
+            return_counts=True,
+        )
     # 方案 Part B（2026-08-19）：节点 top20（按文档频次）+ 固定取 PMI 前 20 条边
     # （不追节点数——门槛判定交给 build_topic_clusters：边≥12 且 节点≥15 才聚类，
     #  否则走词对榜；追节点数会自相矛盾地把小图扩到门槛以上）。
@@ -631,12 +670,28 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         "node_positive_count": {n: pos_docs[n] for n in node_set},
         "sentiment_sources": sentiment_sources,
         "node_negative_rate": node_negative_rate,
-        "positive_words": pos_w.most_common(10),
-        "negative_words": neg_w.most_common(10),
-        "positive_wordcloud": pos_cloud.most_common(40),
-        "negative_wordcloud": neg_cloud.most_common(40),
+        "top_phrases": top_phrases,
+        "positive_words": (
+            [(p["phrase"], p["count"]) for p in _pos_phrases[:10]]
+            if _pos_phrases else pos_w.most_common(10)
+        ),
+        "negative_words": (
+            [(p["phrase"], p["count"]) for p in _neg_phrases[:10]]
+            if _neg_phrases else neg_w.most_common(10)
+        ),
+        "positive_wordcloud": (
+            [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _pos_phrases[:40]]
+            if _pos_phrases else pos_cloud.most_common(40)
+        ),
+        "negative_wordcloud": (
+            [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _neg_phrases[:40]]
+            if _neg_phrases else neg_cloud.most_common(40)
+        ),
         "worst_dim_id": worst_dim,
-        "worst_dim_wordcloud": worst_cloud.most_common(40),
+        "worst_dim_wordcloud": (
+            [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _neg_phrases[:40]]
+            if _neg_phrases else worst_cloud.most_common(40)
+        ),
         "word_dims": word_dims,
         "narrative_stats": narr_stats,
         "keyword_stats": {
@@ -717,9 +772,17 @@ def generate_report_text(
             for r in sources[:3]
         )
         lines.append(f"负面情绪来源话题：{top}。")
-    if summary["top_words"]:
+    tp = summary.get("top_phrases") or {}
+    tp_pos = tp.get("positive") or []
+    tp_neg = tp.get("negative") or []
+    if tp_pos or tp_neg:
+        top = "、".join(
+            p["phrase"] for p in (tp_pos + tp_neg)[:5]
+        )
+        lines.append(f"代表观点（短语）：{top}。")
+    elif summary["top_words"]:
         top = "、".join(w for w, _ in summary["top_words"][:5])
-        lines.append(f"高频情感词：{top}。")
+        lines.append(f"代表观点（短语）：样本少，未形成短语，回退单词词频：{top}。")
     if findings:
         ids = "、".join(display_finding_id(f.get("id", "")) for f in findings[:3])
         lines.append(f"具体证据与行动建议见下方「核心发现」（{ids} 等）。")
@@ -1249,6 +1312,7 @@ class TaskRunner:
             findings=report_content["findings"],
             evidence=evidence,
             insight_mode=report_content["insight_mode"],
+            structured_summary=report_content.get("structured_summary") or {},
             llm_usage=llm_usage,
             warnings=warnings,
         )

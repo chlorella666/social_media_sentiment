@@ -473,5 +473,61 @@ def build_excel(bundle: ReportBundle) -> BytesIO:
         pd.DataFrame({"统计汇总": summary_rows}).to_excel(
             writer, sheet_name="统计汇总", index=False
         )
+
+        # F-010（2026-08-26）：解读与建议 sheet（与 HTML/Word 同源：structured_summary）
+        if bundle.structured_summary:
+            _ss = bundle.structured_summary
+            _ss_rows: list[dict[str, str]] = [
+                {"项目": "一句话结论", "内容": _ss.get("overall", "")}
+            ]
+            _pos = _ss.get("positive") or {}
+            _neg = _ss.get("negative") or {}
+            if _pos:
+                _ss_rows.append(
+                    {"项目": "正面反馈占比", "内容": f"{_pos.get('ratio', 0) * 100:.1f}%"}
+                )
+                for _p in _pos.get("phrases") or []:
+                    _ss_rows.append(
+                        {
+                            "项目": "正面代表短语",
+                            "内容": (
+                                f"{_p.get('phrase', '')}"
+                                f"（{_p.get('count', 0)} 条/{_p.get('ratio', 0) * 100:.0f}%）"
+                            ),
+                        }
+                    )
+            if _neg:
+                _ss_rows.append(
+                    {"项目": "负面反馈占比", "内容": f"{_neg.get('ratio', 0) * 100:.1f}%"}
+                )
+                for _p in _neg.get("phrases") or []:
+                    _ss_rows.append(
+                        {
+                            "项目": "负面代表短语",
+                            "内容": (
+                                f"{_p.get('phrase', '')}"
+                                f"（{_p.get('count', 0)} 条/{_p.get('ratio', 0) * 100:.0f}%）"
+                            ),
+                        }
+                    )
+            for _issue in _ss.get("top_issues") or []:
+                _ss_rows.append(
+                    {
+                        "项目": f"重点问题：{_issue.get('name', '')}",
+                        "内容": (
+                            f"负面率 {_issue.get('rate', 0) * 100:.0f}%"
+                            f"（n={_issue.get('count', 0)}）"
+                        ),
+                    }
+                )
+                if _issue.get("cause"):
+                    _ss_rows.append({"项目": "可能原因（规则推测）", "内容": _issue["cause"]})
+                if _issue.get("direction"):
+                    _ss_rows.append({"项目": "建议", "内容": _issue["direction"]})
+            for _im in _ss.get("improvements") or []:
+                _ss_rows.append({"项目": "改进建议", "内容": _im})
+            pd.DataFrame(_ss_rows).to_excel(
+                writer, sheet_name="解读与建议", index=False
+            )
     out.seek(0)
     return out

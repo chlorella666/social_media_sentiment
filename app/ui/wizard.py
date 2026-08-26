@@ -10,6 +10,7 @@ from app.core import (jobs, plans_store)
 from app.core.keyword_effects import (expand_channel_queries, expand_websearch_keywords)
 from app.core.planner import (build_plan, parse_custom_dimensions)
 from app.core.pricing import estimate_cost
+from app.core.config_status import node_status, opencli_status, weibo_status
 from app.core.secrets import (clear_cookie, load_cookie, save_api_key, save_cookie)
 from app.domains.composer import (MAX_DIMENSIONS, MODULE_DESC, compose_schema, filter_schema_dims, module_name)
 from app.domains.loader import save_cached_schema
@@ -546,17 +547,22 @@ def render_stage2():
             st.info(t)
 
         if "xiaohongshu" in selected:
-            _xhs_ok, _xhs_msg = health.opencli_status()
-            if not _xhs_ok:
+            _node_st = node_status()
+            _ocl_st = opencli_status()
+            st.markdown(f"**Node.js：**{_node_st['text']}")
+            st.markdown(f"**opencli：**{_ocl_st['text']}")
+            if not _ocl_st["has_key"]:
                 with st.expander("🔧 opencli 未就绪：一键安装（小白友好）", expanded=False):
                     st.caption("小红书采集依赖 opencli 命令行工具。点击按钮自动安装，全程无需手动敲命令。")
-                    if not health.node_ready():
-                        st.caption("Windows 10/11 内置一键安装；更老的 Windows（7/8）请到 nodejs.org 手动安装。")
+                    st.caption("⚠️ 将安装系统级软件（Node.js 走 winget / opencli 走 npm），请确认本机允许。")
+                    if not _node_st["has_key"]:
+                        st.caption("Windows 10/11 内置一键安装；更老的 Windows（7/8）请到 nodejs.org 手动安装（勾选 Add to PATH）。")
                         if st.button("安装 Node.js（约 1~2 分钟）", key="install_node_btn", width="stretch"):
                             with st.spinner("正在安装 Node.js…"):
                                 _res = health.install_node()
                             if _res["ok"]:
                                 st.success(_res["message"])
+                                st.rerun()
                             else:
                                 st.error(_res["message"])
                                 if _res["output"]:
@@ -593,49 +599,70 @@ def render_stage2():
             st.session_state.date_range_opt = date_range
         with col2:
             if "weibo" in selected:
-                if not st.session_state.get("weibo_cookie"):
-                    saved_cookie = load_cookie("weibo")
-                    if saved_cookie:
-                        st.session_state.weibo_cookie = saved_cookie
-                cookie = st.text_input(
-                    "微博 Cookie（粘贴已登录的 Cookie）",
-                    type="password",
-                    value=st.session_state.get("weibo_cookie", ""),
-                    help="用于后台采集；将以 Windows DPAPI 加密仅保存在本机，"
-                    "不会写入报告或上传",
-                )
-                st.session_state.weibo_cookie = cookie
-                remember = st.checkbox(
-                    "记住 Cookie（Windows DPAPI 加密，仅本机可解）",
-                    value=bool(st.session_state.get("weibo_cookie_remember", False)),
-                )
-                st.session_state.weibo_cookie_remember = remember
-                if remember and cookie.strip():
-                    try:
-                        save_cookie("weibo", cookie.strip())
-                    except Exception:
-                        st.warning("Cookie 加密保存失败（本会话仍可使用）")
-                if st.button("清除已保存的 Cookie"):
-                    clear_cookie("weibo")
-                    st.session_state.weibo_cookie = ""
-                    st.session_state.weibo_cookie_remember = False
-                    st.rerun()
-                with st.expander("❓ 怎么获取微博 Cookie？（小白版）"):
-                    st.markdown(
-                        "1. 登录微博：电脑浏览器打开 **m.weibo.cn** 并完成登录\n"
-                        "2. 打开开发者工具：按 **F12**，或右键页面选「检查」\n"
-                        "3. 点顶部 **Application（应用程序）** 标签"
-                        "（某些浏览器显示为「存储 / Storage」）\n"
-                        "4. 左侧展开 **Storage → Cookies**，选择 https://m.weibo.cn\n"
-                        "5. 找到 **SUB** 这一行，复制它对应的 **VALUE** 值，"
-                        "粘贴到上方微博 Cookie 文本框\n\n"
-                        "💡 直接粘贴 VALUE 即可（程序会自动补 `SUB=` 前缀）；"
-                        "如果只看到整行 Cookie，也可以整段粘贴。\n"
-                        "⚠️ Cookie 相当于账号凭证，请只在你自己电脑上使用；"
-                        "程序会以 Windows DPAPI 加密仅保存在本机，仅供后台采集使用，"
-                        "不会写入报告或上传。\n"
-                        "⏳ Cookie 会过期（通常几天到几周），失效后需重新获取。"
+                _wb_saved = load_cookie("weibo")
+                if not st.session_state.get("weibo_cookie") and _wb_saved:
+                    st.session_state.weibo_cookie = _wb_saved
+                # F-011：无 Cookie 黄色警示条（配置后实时消失）
+                if not st.session_state.get("weibo_cookie", "") and not _wb_saved:
+                    st.warning(
+                        "⚠️ 未配置微博 Cookie：该渠道采集会失败。请按下方 5 步获取"
+                        "（Application/Storage 路径），或取消勾选微博。"
                     )
+                with st.container(border=True):
+                    st.markdown("🔐 **微博 Cookie（该渠道采集必需）**")
+                    st.caption(
+                        "填写才能采集微博；不填则微博渠道采集会失败。"
+                        "Cookie 将以 Windows DPAPI 加密仅保存在本机，不会写入报告或上传。"
+                    )
+                    cookie = st.text_input(
+                        "微博 Cookie（粘贴已登录的 Cookie）",
+                        type="password",
+                        value=st.session_state.get("weibo_cookie", ""),
+                        help="用于后台采集；将以 Windows DPAPI 加密仅保存在本机，"
+                        "不会写入报告或上传",
+                    )
+                    st.session_state.weibo_cookie = cookie
+                    remember = st.checkbox(
+                        "记住 Cookie（Windows DPAPI 加密，仅本机可解）",
+                        value=bool(st.session_state.get("weibo_cookie_remember", False)),
+                    )
+                    st.session_state.weibo_cookie_remember = remember
+                    if remember and cookie.strip():
+                        try:
+                            save_cookie("weibo", cookie.strip())
+                        except Exception:
+                            st.warning("Cookie 加密保存失败（本会话仍可使用）")
+                    cc1, cc2 = st.columns(2)
+                    if cc1.button("🔍 校验 Cookie 是否有效", key="weibo_check_btn", width="stretch"):
+                        if cookie.strip():
+                            _ck = health.check_weibo_rich(cookie.strip())
+                            if _ck["ok"]:
+                                st.success("微博登录态有效 ✅")
+                            else:
+                                st.error(f"Cookie 无效或已过期：{_ck['msg']}")
+                        else:
+                            st.warning("请先粘贴 Cookie 再校验")
+                    if cc2.button("清除已保存的 Cookie", width="stretch"):
+                        clear_cookie("weibo")
+                        st.session_state.weibo_cookie = ""
+                        st.session_state.weibo_cookie_remember = False
+                        st.rerun()
+                    with st.expander("❓ 怎么获取微博 Cookie？（小白版）"):
+                        st.markdown(
+                            "1. 登录微博：电脑浏览器打开 **m.weibo.cn** 并完成登录\n"
+                            "2. 打开开发者工具：按 **F12**，或右键页面选「检查」\n"
+                            "3. 点顶部 **Application（应用程序）** 标签"
+                            "（某些浏览器显示为「存储 / Storage」）\n"
+                            "4. 左侧展开 **Storage → Cookies**，选择 https://m.weibo.cn\n"
+                            "5. 找到 **SUB** 这一行，复制它对应的 **VALUE** 值，"
+                            "粘贴到上方微博 Cookie 文本框\n\n"
+                            "💡 直接粘贴 VALUE 即可（程序会自动补 `SUB=` 前缀）；"
+                            "如果只看到整行 Cookie，也可以整段粘贴。\n"
+                            "⚠️ Cookie 相当于账号凭证，请只在你自己电脑上使用；"
+                            "程序会以 Windows DPAPI 加密仅保存在本机，仅供后台采集使用，"
+                            "不会写入报告或上传。\n"
+                            "⏳ Cookie 会过期（通常几天到几周），失效后需重新获取。"
+                        )
 
         if selected:
             st.divider()
@@ -1072,6 +1099,26 @@ def render_stage3():
     else:
         st.session_state.demo_only_confirm = False
 
+    # F-011：微博无 Cookie 阻断 + 逃生口二次确认
+    # （与 demo-only 互斥：计划含真实微博渠道即非全 demo，两套勾选天然不同时出现）
+    _weibo_no_cookie = (
+        "weibo" in channel_ids
+        and not st.session_state.get("weibo_cookie", "")
+        and not load_cookie("weibo")
+    )
+    if _weibo_no_cookie:
+        st.error(
+            "❌ 已选择微博渠道但未配置微博 Cookie：该渠道采集会失败。"
+            "请返回 ③ 配置 Cookie（Application/Storage → SUB VALUE），"
+            "或勾选下方逃生口后提交。"
+        )
+        st.session_state.weibo_escape_confirm = st.checkbox(
+            "我了解该渠道会失败，仍要提交（不勾选则提交被拦截）",
+            key="weibo_escape_confirm_box",
+        )
+    else:
+        st.session_state.weibo_escape_confirm = False
+
     # UX 5.2 预期管理：同类任务历史耗时均值（供"通常多久跑完"预期）
     _dur = jobs.history_duration_stats(plan)
     if _dur.get("avg_minutes") is not None:
@@ -1118,6 +1165,12 @@ def render_stage3():
             st.stop()
         if demo_only and not st.session_state.get("demo_only_confirm"):
             st.error("本次为演示数据任务：请先勾选「我确认本次只跑演示数据」再启动。")
+            st.stop()
+        if _weibo_no_cookie and not st.session_state.get("weibo_escape_confirm"):
+            st.error(
+                "已选择微博渠道但未配置微博 Cookie：请返回 ③ 配置 Cookie，"
+                "或勾选「我了解该渠道会失败，仍要提交」后重试。"
+            )
             st.stop()
         # LLM Key：DPAPI 加密存本机供后台 worker 读取（不落库、不落明文）
         if api_key and api_key.strip():

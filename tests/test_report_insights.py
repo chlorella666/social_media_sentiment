@@ -534,6 +534,54 @@ def test_trend_weekly_aggregation():
     print("✓ 趋势图日期跨度>90 天按周聚合 通过")
 
 
+def test_structured_summary_lexicon_discipline() -> None:
+    """F-010：规则解读措辞纪律 / 小样本不推测 / 确定性。"""
+    from app.coding.rule_insights import (
+        FORBIDDEN_STRONG,
+        build_structured_summary,
+        dimension_interpretation,
+    )
+
+    # n<3 不推测
+    d1 = dimension_interpretation("价格", 0.8, 2, has_refs=False)
+    assert d1 == {"cause": "", "direction": ""}, d1
+    # 措辞黑名单：原因必须带"可能"，禁强动作词
+    d2 = dimension_interpretation("价格", 0.7, 20, has_refs=True)
+    assert d2["cause"] and "可能" in d2["cause"], d2
+    for w in FORBIDDEN_STRONG:
+        assert w not in d2["cause"] and w not in d2["direction"], w
+    # 负面率<50% 不断言"问题归因"
+    d3 = dimension_interpretation("服务", 0.3, 20, has_refs=True)
+    assert "问题归因" not in d3["cause"], d3
+    # 小样本 degrade：不生成 top_issues
+    summary = {
+        "total_items": 5,
+        "sentiment_distribution": {
+            "positive": {"count": 1},
+            "neutral": {"count": 2},
+            "negative": {"count": 2},
+        },
+        "dimensions": {"price": {"count": 5, "negative_rate": 0.8}},
+    }
+    ss = build_structured_summary(summary)
+    assert ss["degraded"] is True and not ss["top_issues"], ss
+    # 确定性：同输入两次输出一致，且≥50% 负面率给出问题归因
+    summary2 = {
+        "total_items": 30,
+        "sentiment_distribution": {
+            "positive": {"count": 20},
+            "neutral": {"count": 5},
+            "negative": {"count": 5},
+        },
+        "dimensions": {"quality": {"count": 12, "negative_rate": 0.6}},
+    }
+    a = build_structured_summary(summary2)
+    b = build_structured_summary(summary2)
+    assert a == b, "确定性失败"
+    assert a["top_issues"] and a["top_issues"][0]["cause"], a
+    print("✓ F-010 规则解读：措辞纪律 / 小样本 / 确定性 通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_report_contains_chart_insights_and_conclusion()
@@ -549,4 +597,5 @@ if __name__ == "__main__":
     test_topic_cluster_union_doc_count()
     test_template_dimension_ids_have_cn_names()
     test_trend_weekly_aggregation()
+    test_structured_summary_lexicon_discipline()
     print("报告洞察测试通过 ✅")

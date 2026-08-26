@@ -198,11 +198,15 @@ def rebuild_report_after_review(
         else:
             rule_mode, new_mode = "lexicon", "lexicon"
         findings = build_findings(evidence, new_summary, mode=rule_mode)
+        from app.coding.rule_insights import build_structured_summary
         report_content = {
             "chart_insights": template_chart_insights(build_descriptors(new_summary)),
             "findings": findings,
             "conclusion": findings_to_conclusion(findings),
             "insight_mode": new_mode,
+            "structured_summary": build_structured_summary(
+                new_summary, evidence, new_summary.get("top_phrases")
+            ),
         }
     new_bundle = bundle.model_copy(update={
         "summary": new_summary,
@@ -211,6 +215,7 @@ def rebuild_report_after_review(
         "conclusion": report_content["conclusion"],
         "findings": report_content["findings"],
         "insight_mode": report_content["insight_mode"],
+        "structured_summary": report_content.get("structured_summary") or {},
         "report_text": generate_report_text(
             bundle.plan, new_summary, report_content["findings"]),
     })
@@ -604,8 +609,8 @@ def render_results():
 
     if bundle.insight_mode == "lexicon":
         st.warning(
-            "本次为词典模式，维度情感与结论仅供参考；"
-            "开启 LLM 精分析可获得可归因的结论与行动建议。"
+            "配置中心：未填 API Key → 无 LLM 深度分析。本次为词典模式，"
+            "维度情感与结论仅供参考；填写 Key 后开启 LLM 精分析可获得可归因的结论与行动建议。"
         )
     elif bundle.insight_mode == "template_fallback":
         st.warning(
@@ -822,6 +827,48 @@ def render_results():
                 if f.get("action"):
                     st.markdown(f"**建议：**{display_action(f.get('action'))}")
 
+    # F-010（2026-08-26）：词典模式解读与建议（与 HTML/Excel/Word 同源：structured_summary）
+    if bundle.structured_summary:
+        _ss = bundle.structured_summary
+        with st.expander("📊 解读与建议（规则推测，非 AI 归因）", expanded=True):
+            st.markdown(f"**一句话结论：**{_ss.get('overall', '')}")
+            _pos = _ss.get("positive") or {}
+            _neg = _ss.get("negative") or {}
+            if _pos:
+                _pp = "；".join(
+                    f"{p.get('phrase', '')}（{p.get('count', 0)} 条/"
+                    f"{p.get('ratio', 0) * 100:.0f}%）"
+                    for p in _pos.get("phrases") or []
+                )
+                st.markdown(
+                    f"**正面反馈**：占比 {_pos.get('ratio', 0) * 100:.1f}%"
+                    + (f"；{_pp}" if _pp else "")
+                )
+            if _neg:
+                _np = "；".join(
+                    f"{p.get('phrase', '')}（{p.get('count', 0)} 条/"
+                    f"{p.get('ratio', 0) * 100:.0f}%）"
+                    for p in _neg.get("phrases") or []
+                )
+                st.markdown(
+                    f"**负面反馈**：占比 {_neg.get('ratio', 0) * 100:.1f}%"
+                    + (f"；{_np}" if _np else "")
+                )
+            for _issue in _ss.get("top_issues") or []:
+                st.markdown(
+                    f"**{_issue.get('name', '')}**"
+                    f"（负面率 {_issue.get('rate', 0) * 100:.0f}%，n={_issue.get('count', 0)}）"
+                )
+                if _issue.get("cause"):
+                    st.markdown(f"*可能原因：{_issue['cause']}*")
+                if _issue.get("direction"):
+                    st.markdown(f"建议：{_issue['direction']}")
+            if _ss.get("improvements"):
+                st.markdown("**改进建议**")
+                for _im in _ss["improvements"]:
+                    st.markdown(f"- {_im}")
+            st.caption("原因基于统计特征的规则推测，非 AI 归因，请结合报告原文验证。")
+
     # —— ③ 整体情感主图（结论视图唯一默认展开） ——
     st.markdown("### 整体情感占比")
     st.plotly_chart(overall_fig(s), width="stretch")
@@ -856,7 +903,7 @@ def render_results():
         with st.expander("📊 平台 × 维度负面率", expanded=show_all):
             st.plotly_chart(pd_fig, width="stretch")
             st.markdown(f"**解析：**{bundle.chart_insights.get('platform_dim', '')}")
-    with st.expander("🔤 高频情感词 Top20", expanded=show_all):
+    with st.expander("🔤 代表观点（短语）Top20", expanded=show_all):
         st.plotly_chart(words_fig(s), width="stretch")
         st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
     with st.expander("☁️ 情感词云", expanded=False):
@@ -900,7 +947,7 @@ def render_results():
                     [
                         {
                             "簇名": r["name"],
-                            "代表词": r["words"],
+                            "代表短语": r["words"],
                             "涉及文本数": r["doc_count"],
                             "负面率": r["negative_rate"],
                         }

@@ -517,8 +517,12 @@ def build_findings(
             }
         )
     rows.sort(key=lambda r: (-r["normal"], -r["score"], r["dim"]))
+    from app.coding.rule_insights import dimension_interpretation
     for i, r in enumerate(rows[: FINDINGS_MAX - 1], start=2):
         refs = ([r["stat_ref"]] if r["stat_ref"] else []) + r["refs"]
+        interp = dimension_interpretation(
+            r["name"], r["rate"], r["n"], has_refs=bool(r["refs"])
+        )
         findings.append(
             {
                 "id": f"F{i}",
@@ -527,6 +531,8 @@ def build_findings(
                 ),
                 "evidence_refs": refs,
                 "action": _directional_hint(mode, small_sample=not r["normal"]),
+                "cause": interp["cause"],
+                "direction": interp["direction"],
                 "narrative_label": "",
             }
         )

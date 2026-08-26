@@ -304,27 +304,35 @@ def heatmap_fig(s: dict) -> go.Figure | None:
 
 @_styled
 def words_fig(s: dict) -> go.Figure:
-    """高频情感词：按词典极性分"正面 Top / 负面 Top"展示（|情感分| 加权）。"""
+    """代表观点（短语）：正/负 Top 展示（F-009 短语口径 + 提及占比）。"""
     from plotly.subplots import make_subplots
 
-    pos = s.get("positive_words") or []
-    neg = s.get("negative_words") or []
+    tp = s.get("top_phrases") or {}
+    total = max(int(s.get("total_items") or 0), 1)
+    pos = [(p["phrase"], p["count"], p["count"] / total) for p in (tp.get("positive") or [])[:10]]
+    neg = [(p["phrase"], p["count"], p["count"] / total) for p in (tp.get("negative") or [])[:10]]
+    if not pos:
+        pos = [(w, c, c / total) for w, c in (s.get("positive_words") or [])[:10]]
+    if not neg:
+        neg = [(w, c, c / total) for w, c in (s.get("negative_words") or [])[:10]]
     if not pos and not neg:
-        return go.Figure().update_layout(title="暂无高频情感词")
+        return go.Figure().update_layout(title="暂无代表观点")
     fig = make_subplots(
         rows=2,
         subplot_titles=(
-            f"正面情感词 {SENTIMENT_SYMBOL['positive']} Top 10",
-            f"负面情感词 {SENTIMENT_SYMBOL['negative']} Top 10",
+            f"正面代表观点（短语） {SENTIMENT_SYMBOL['positive']} Top",
+            f"负面代表观点（短语） {SENTIMENT_SYMBOL['negative']} Top",
         ),
         vertical_spacing=0.22,
     )
     if pos:
         fig.add_trace(
             go.Bar(
-                x=[c for _, c in reversed(pos)],
-                y=[w for w, _ in reversed(pos)],
+                x=[c for _, c, _ in reversed(pos)],
+                y=[w for w, _, _ in reversed(pos)],
                 orientation="h",
+                text=[f"{r:.0%}" for _, _, r in reversed(pos)],
+                textposition="outside",
                 marker_color=SENTIMENT_COLORS["positive"],
                 name="正面",
             ),
@@ -334,9 +342,11 @@ def words_fig(s: dict) -> go.Figure:
     if neg:
         fig.add_trace(
             go.Bar(
-                x=[c for _, c in reversed(neg)],
-                y=[w for w, _ in reversed(neg)],
+                x=[c for _, c, _ in reversed(neg)],
+                y=[w for w, _, _ in reversed(neg)],
                 orientation="h",
+                text=[f"{r:.0%}" for _, _, r in reversed(neg)],
+                textposition="outside",
                 marker_color=SENTIMENT_COLORS["negative"],
                 name="负面",
             ),
@@ -344,7 +354,7 @@ def words_fig(s: dict) -> go.Figure:
             col=1,
         )
     fig.update_layout(
-        title="高频情感词（情感分加权，按正负分列）",
+        title="代表观点（短语）Top20（按正负分列）",
         height=540,
         showlegend=False,
         margin=dict(l=20, r=20, t=60, b=20),
@@ -506,6 +516,8 @@ def wordcloud_png_bytes(s: dict, which: str = "positive") -> bytes | None:
             collocations=False,
             random_state=42,
             color_func=lambda *_a, **_k: _wc_color,
+            # F-009：短语以全角空格连接、作为单个 token 渲染（避免 wordcloud 按空白拆词）
+            regexp=r"[\u4e00-\u9fffA-Za-z0-9]+(?:[\u3000][\u4e00-\u9fffA-Za-z0-9]+){0,4}",
         )
         img = wc.generate_from_frequencies(words).to_image()
         buf = io.BytesIO()
@@ -605,7 +617,7 @@ def topic_pairs(s: dict) -> list[dict]:
 
 
 def _hub_score(s: dict, node: str) -> int:
-    """hub 分 = 度数 × 文档频次（标签/代表词排序用）。"""
+    """hub 分 = 度数 × 文档频次（标签/代表短语排序用）。"""
     deg = sum(
         1
         for e in (s.get("cooccurrence") or [])
@@ -1344,6 +1356,7 @@ def build_html(bundle: ReportBundle) -> str:
         f"其中 {trust['llm_ratio']}% 经大模型精分析。"
     )
     return template.render(
+          structured_summary=bundle.structured_summary,
           subject=bundle.plan.subject,
           created_at=bundle.created_at.strftime("%Y-%m-%d %H:%M"),
           report_no=report_no,

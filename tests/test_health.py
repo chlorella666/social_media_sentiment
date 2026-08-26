@@ -140,7 +140,7 @@ def test_opencli_installer() -> None:
 
 
 def test_install_node_winget() -> None:
-    """一键安装 Node：winget 命令与缺 winget 分支。"""
+    """一键安装 Node：winget 命令（新/旧版本分支）与缺 winget 分支。"""
     calls: list[list[str]] = []
 
     class FakeProc:
@@ -154,16 +154,47 @@ def test_install_node_winget() -> None:
         calls.append(cmd)
         return FakeProc()
 
+    # 旧版 winget：不附加 --disable-interactivity（F-012 兼容修复）
     with mock.patch.object(health.shutil, "which", return_value="C:/Windows/System32/winget.exe"), \
-         mock.patch.object(health.subprocess, "Popen", side_effect=fake_popen):
+         mock.patch.object(health, "_winget_version", return_value=(1, 2)), \
+         mock.patch.object(health.subprocess, "Popen", side_effect=fake_popen), \
+         mock.patch.object(health.subprocess, "run", return_value=mock.Mock(stdout="v18.20.0", stderr="")):
         r = health.install_node_winget()
     assert r["ok"] is True and "重启应用" in r["message"]
-    assert calls[0][0].endswith("winget.exe")
-    assert "OpenJS.NodeJS.LTS" in calls[0]
-    with mock.patch.object(health.shutil, "which", return_value=None):
+    install_cmd = calls[0]
+    assert install_cmd[0].endswith("winget.exe")
+    assert "OpenJS.NodeJS.LTS" in install_cmd
+    assert "--silent" in install_cmd
+    assert "--disable-interactivity" not in install_cmd
+
+    # 新版 winget（>=1.6）：附加 --disable-interactivity
+    calls.clear()
+    with mock.patch.object(health.shutil, "which", return_value="C:/Windows/System32/winget.exe"), \
+         mock.patch.object(health, "_winget_version", return_value=(1, 6)), \
+         mock.patch.object(health.subprocess, "Popen", side_effect=fake_popen), \
+         mock.patch.object(health.subprocess, "run", return_value=mock.Mock(stdout="v18.20.0", stderr="")):
         r2 = health.install_node_winget()
-    assert r2["ok"] is False and "winget" in r2["message"]
-    print("✓ 一键安装 Node（winget）：命令与缺 winget 分支 通过")
+    assert r2["ok"] is True
+    assert "--disable-interactivity" in calls[0]
+
+    with mock.patch.object(health.shutil, "which", return_value=None):
+        r3 = health.install_node_winget()
+    assert r3["ok"] is False and "winget" in r3["message"]
+    print("✓ 一键安装 Node（winget）：命令新/旧版本分支与缺 winget 分支 通过")
+
+
+def test_classify_winget_error() -> None:
+    """F-012：winget 失败分类（旧版/网络/权限/未知）。"""
+    cases = [
+        ({"output": "无法识别参数名称:1--disable"}, "winget 版本过旧"),
+        ({"output": "连接失败"}, "网络/源不可用"),
+        ({"output": "拒绝访问"}, "权限不足"),
+        ({"output": "0x8A150002 安装器内部错误"}, "安装失败"),
+    ]
+    for res, expect in cases:
+        msg = health._classify_winget_error(res)
+        assert expect in msg, (res, msg)
+    print("✓ winget 失败分类：旧版/网络/权限/未知 通过")
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_websearch_captcha_page_not_ok()
@@ -173,6 +204,7 @@ def main() -> None:
     test_backward_compat_tuple()
     test_opencli_installer()
     test_install_node_winget()
+    test_classify_winget_error()
     print("渠道诊断测试全部通过 ✅")
 
 

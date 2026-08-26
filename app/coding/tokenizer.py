@@ -143,3 +143,206 @@ def build_cooccurrence(
         nodes = {n for e in edges for n in (e["source"], e["target"])}
         return edges, {n: word_counter[n] for n in nodes}
     return edges
+# ---------------------------------------------------------------------------
+# F-009（2026-08-26）：短语级统计（bigram/trigram + PMI + 情感权重）
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_SENT_SPLIT = _re.compile(r"[。！？!?；;\n]+")
+_ASCII_TOKEN = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .\-]*$")
+
+
+def _clean_match(text: str) -> str:
+    """复用 cleaner 的归一化判定（F-009 吸收审计修正 M1）。"""
+    from app.coding.cleaner import _compact_for_match
+    return _compact_for_match(text)
+
+
+# F-009：短语抽取专用虚词集（比 segment 的 STOPWORDS 小得多，保留单字与"比"等语义词）
+_PHRASE_STOP = set("的了啊吗呢吧哦嗯哈呀啦呗罢了么是这那在就有和与及或而之其".split())
+
+
+def _phrase_words(sent: str) -> list[str]:
+    """短语抽取用分词：保留单字（仅滤极小虚词集与纯数字）。"""
+    words = []
+    for w in jieba.lcut(sent):
+        w = w.strip()
+        if not w or w in _PHRASE_STOP:
+            continue
+        if not _re.search(r"[\u4e00-\u9fffA-Za-z0-9]", w):
+            continue  # 滤标点（保留数字 token，英文产品名如 iPhone 15 需要）
+        words.append(w)
+    return words
+
+
+def _phrase_candidates(words: list[str]) -> list[tuple[str, str, str]]:
+    """句子内连续窗口短语候选，返回 (短语, 首词, 尾词)。
+
+    中文无空格拼接、英文按空格 join；英文允许 4-token 窗口（如 iPhone 15 Pro Max）。
+    """
+    out: list[tuple[str, str, str]] = []
+    for n in (2, 3, 4, 5):
+        for i in range(len(words) - n + 1):
+            window = words[i:i + n]
+            if all(_ASCII_TOKEN.match(w) for w in window):
+                phrase = " ".join(window)
+                if len(phrase) <= 40:
+                    out.append((phrase, window[0], window[-1]))
+            else:
+                phrase = "".join(window)
+                if len(phrase) <= 40:
+                    out.append((phrase, window[0], window[-1]))
+    return out
+
+
+def extract_phrases(
+    texts: list[str],
+    sentiments: list[str] | None = None,
+    brand: str = "",
+    keywords: list[str] | None = None,
+    min_count: int = 2,
+    pmi_min: float = 1.5,  # P0 判例校准（2026-08-26）：2.0 会误杀真实短语（如“比想象中好”PMI≈1.6）
+    max_len: int = 8,
+    sample_cap: int = 2000,
+    top_n: int = 50,
+) -> list[dict]:
+    """短语级统计（F-009）：bigram~5gram + PMI + 情感权重。
+
+    返回 [{phrase, count, pmi, sentiment_weights, sample_text_ids}]。
+    - 品牌/关键词模式：优先保留含品牌或关键词的短语（强信号）；
+    - 手动关键词模式（无品牌/关键词）：频次 + PMI + 虚词过滤；
+    - 中文短语限长 max_len 字；英文按空白窗口词串；
+    - 性能：texts 超过 sample_cap 时均匀抽样。
+    """
+    if not texts:
+        return []
+    if len(texts) > sample_cap:
+        step = max(1, len(texts) // sample_cap)
+        texts = texts[::step]
+        if sentiments:
+            sentiments = sentiments[::step]
+    signals = [s for s in ([brand] + list(keywords or [])) if s and s.strip()]
+    signals_c = [_clean_match(s) for s in signals]
+
+    phrase_docs: dict[str, set[int]] = {}
+    phrase_first: dict[str, str] = {}
+    phrase_last: dict[str, str] = {}
+    word_doc: Counter[str] = Counter()
+    total_docs = 0
+
+    for idx, text in enumerate(texts):
+        text_c = _clean_match(text)
+        if not text_c:
+            continue
+        total_docs += 1
+        for sent in _SENT_SPLIT.split(text):
+            words = _phrase_words(sent)
+            if not words:
+                continue
+            for w in set(words):
+                word_doc[w] += 1
+            seen: set[str] = set()
+            for ph, first, last in _phrase_candidates(words):
+                if len(ph) > max_len and not _ASCII_TOKEN.match(ph):
+                    continue
+                if ph in seen:
+                    continue
+                seen.add(ph)
+                if idx not in phrase_docs.setdefault(ph, set()):
+                    phrase_docs[ph].add(idx)
+                    phrase_first[ph] = first
+                    phrase_last[ph] = last
+
+    if not phrase_docs:
+        return []
+    n = max(total_docs, 1)
+    results: list[dict] = []
+    for ph, docs in phrase_docs.items():
+        c = len(docs)
+        if c < min_count:
+            continue
+        first = phrase_first.get(ph, "")
+        last = phrase_last.get(ph, "")
+        c1 = word_doc.get(first, 0)
+        c2 = word_doc.get(last, 0)
+        # 原始 PMI：log(c*N/(c1*c2))；min_count 已防低频高估，add-1 平滑会误压真实短语
+        pmi = math.log((c * n) / (c1 * c2)) if c1 > 0 and c2 > 0 else 0.0
+        if pmi < pmi_min:
+            continue
+        strong = any(sig and sig in _clean_match(ph) for sig in signals_c)
+        if signals_c and not strong and pmi < pmi_min:
+            continue
+        weights: dict[str, float] = {}
+        if sentiments:
+            buckets = Counter(sentiments[i] for i in docs if i < len(sentiments))
+            total = sum(buckets.values()) or 1
+            weights = {k: round(v / total, 3) for k, v in buckets.items()}
+        results.append({
+            "phrase": ph,
+            "count": c,
+            "pmi": round(pmi, 3),
+            "sentiment_weights": weights,
+            "sample_text_ids": sorted(docs)[:3],
+        })
+    # 子串碎片剔除：短短语若被更长入选短语覆盖则丢弃
+    keep: list[dict] = []
+    for r in sorted(results, key=lambda x: -len(x["phrase"])):
+        rc = _clean_match(r["phrase"])
+        if any(rc and rc in _clean_match(o["phrase"]) and o["phrase"] != r["phrase"] for o in keep):
+            continue
+        keep.append(r)
+    keep.sort(key=lambda r: (-r["count"] * (1 + r["pmi"]), -r["count"]))
+    return keep[:top_n]
+
+
+
+def build_phrase_cooccurrence(
+    texts: list[str],
+    phrases: list[dict],
+    top_n: int = 30,
+    min_count: int = 1,
+) -> tuple[list[dict], dict[str, int]]:
+    """F-009：以短语为节点的句内共现（供共现网络/话题簇使用）。
+
+    返回 (edges, node_count)；短语不足时调用方回退单词级 build_cooccurrence。
+    """
+    phrase_list = [p["phrase"] for p in phrases]
+    phrase_c = [_clean_match(p) for p in phrase_list]
+    pair_counter: Counter[tuple[str, str]] = Counter()
+    node_count: Counter[str] = Counter()
+    total = 0
+    for text in texts:
+        text_c = _clean_match(text)
+        if not text_c:
+            continue
+        total += 1
+        for sent in _SENT_SPLIT.split(text):
+            sent_c = _clean_match(sent)
+            present: list[str] = []
+            for ph, pc in zip(phrase_list, phrase_c):
+                if pc and pc in sent_c:
+                    present.append(ph)
+            for ph in set(present):
+                node_count[ph] += 1
+            seen: set[tuple[str, str]] = set()
+            for i in range(len(present)):
+                for j in range(i + 1, len(present)):
+                    a, b = sorted((present[i], present[j]))
+                    seen.add((a, b))
+            for key in seen:
+                pair_counter[key] += 1
+    if not pair_counter:
+        return [], {}
+    edges = []
+    for (a, b), c in pair_counter.items():
+        if c < min_count:
+            continue
+        pa = node_count[a] / max(total, 1)
+        pb = node_count[b] / max(total, 1)
+        pab = c / max(total, 1)
+        weight = math.log(pab / (pa * pb)) if pa > 0 and pb > 0 else 0.0
+        edges.append({"source": a, "target": b, "count": c, "weight": round(weight, 3)})
+    edges.sort(key=lambda e: -e["weight"])
+    nodes = {n for e in edges for n in (e["source"], e["target"])}
+    return edges[:top_n], {n: node_count[n] for n in nodes}

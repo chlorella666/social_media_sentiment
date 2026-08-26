@@ -808,6 +808,73 @@ def test_ad_wizard_smoke() -> None:
     print("✓ 广告/官方内容向导开关 + 确认页摘要 冒烟 通过")
 
 
+def test_config_status_center() -> None:
+    """F-011：配置中心状态判定（未配置/已配置脱敏/env 命中/微博/Node）。"""
+    import app.core.config_status as cs
+    from app.core import secrets as _sec
+
+    # 未配置
+    st1 = cs.llm_status()
+    assert st1["has_key"] is False and "未配置" in st1["text"], st1
+    # 已配置 → 尾号脱敏（不显示明文）
+    _sec.save_api_key("sk-test1234")
+    try:
+        st2 = cs.llm_status()
+        assert st2["has_key"] is True and "尾号 ****1234" in st2["text"], st2
+        assert "sk-test1234" not in st2["text"], "泄露明文 Key"
+    finally:
+        _sec.clear_api_key()
+    # env 命中不误报未配置
+    os.environ["OPENAI_API_KEY"] = "sk-env-xyz"
+    try:
+        st3 = cs.llm_status()
+        assert st3["has_key"] is True and "环境变量" in st3["text"], st3
+    finally:
+        os.environ.pop("OPENAI_API_KEY", None)
+    # 微博
+    w1 = cs.weibo_status()
+    assert w1["has_key"] is False, w1
+    _sec.save_cookie("weibo", "SUB=abc")
+    try:
+        w2 = cs.weibo_status()
+        assert w2["has_key"] is True, w2
+    finally:
+        _sec.clear_cookie("weibo")
+    # Node/opencli 形状（不依赖真实安装）
+    n1 = cs.node_status()
+    assert "has_key" in n1 and "text" in n1
+    o1 = cs.opencli_status()
+    assert "has_key" in o1 and "text" in o1
+    print("✓ 配置中心状态判定（未配置/脱敏/env/微博/Node）通过")
+
+
+def test_weibo_cookie_block_ui() -> None:
+    """F-011：确认页微博无 Cookie 阻断 + 逃生口勾选放行。"""
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+    at.radio[0].set_value("手动关键词（不分类）").run()
+    click_button(at, "下一步 →")
+    at.text_area[0].set_value("测试 评价").run()
+    restore_stale_widget_states(at)
+    click_button(at, "下一步 →")
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["weibo"]).run()
+    click_button(at, "下一步 →")
+    assert at.session_state["stage"] == 3
+    errs = [e.value for e in at.error]
+    assert any("微博" in e and "Cookie" in e for e in errs), f"缺少微博阻断 error: {errs}"
+    cb = [c for c in at.checkbox if "我了解该渠道会失败" in c.label]
+    assert cb, "缺少微博逃生口勾选"
+    # 不勾选时点启动 → 仍被拦截（stage 保持 3）
+    start = [b for b in at.button if b.label == "🚀 启动分析"]
+    assert start, "缺少启动按钮"
+    start[0].click().run()
+    assert at.session_state["stage"] == 3, "未勾选逃生口不应放行"
+    print("✓ 确认页微博无 Cookie 阻断 + 逃生口 通过")
+
+
 if __name__ == "__main__":
     _WORKER.start()
     try:
@@ -823,6 +890,8 @@ if __name__ == "__main__":
         test_review_ui_flow()
         test_channel_diag_panel()
         test_ad_wizard_smoke()
+        test_config_status_center()
+        test_weibo_cookie_block_ui()
     finally:
         _STOP.set()
         _WORKER.join(timeout=5)

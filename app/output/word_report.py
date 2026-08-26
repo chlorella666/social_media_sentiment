@@ -54,7 +54,7 @@ CHART_BUILDERS = [
     ("radar", "各维度负面率/平均分雷达图", radar_fig),
     ("platform_dim", "平台 × 维度负面率", platform_dim_fig),
     ("date_dim", "日期 × 维度负面率热力图", date_dim_heatmap_fig),
-    ("words", "高频情感词 Top20", words_fig),
+    ("words", "代表观点（短语）Top20", words_fig),
     ("sources", "负面情绪来源话题榜", sentiment_sources_fig),
     ("cooccurrence", "关键词共现网络图", cooccurrence_fig),
     ("narrative_actor", "归因主体分布（用户主要把问题归给谁）", narrative_actor_fig),
@@ -98,7 +98,7 @@ def _add_chart_image(doc: Document, fig, title: str) -> None:
 def _append_keyword_appendix(doc: Document, bundle: ReportBundle) -> None:
     """附录：关键词效果与采集明细（2026-08-19：从正文前段移入文末，
     与 HTML「方法与数据说明 → 附录」结构对齐）。"""
-    doc.add_heading("九、附录：关键词效果与采集明细", level=1)
+    doc.add_heading("十、附录：关键词效果与采集明细", level=1)
     doc.add_paragraph(
         "以下为方法与数据说明：记录系统实际搜了什么、每个词/查询串采了多少、"
         "留了多少、丢了多少。"
@@ -291,7 +291,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         ctable = doc.add_table(rows=1, cols=4)
         ctable.style = "Table Grid"
         hdr = ctable.rows[0].cells
-        for i, name in enumerate(["簇名", "代表词", "涉及文本数", "负面率"]):
+        for i, name in enumerate(["簇名", "代表短语", "涉及文本数", "负面率"]):
             hdr[i].text = name
         for r in cluster_rows:
             cells = ctable.add_row().cells
@@ -331,7 +331,53 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         p = doc.add_paragraph(wc_insight)
         p.paragraph_format.first_line_indent = Pt(24)
 
-    doc.add_heading(f"六、{findings_section_title(bundle.insight_mode)}", level=1)
+    # F-010（2026-08-26）：解读与建议段（与 HTML/Excel 同源：structured_summary）
+    if bundle.structured_summary:
+        _ss = bundle.structured_summary
+        doc.add_heading("六、解读与建议", level=1)
+        doc.add_paragraph(f"一句话结论：{_ss.get('overall', '')}")
+        _pos = _ss.get("positive") or {}
+        _neg = _ss.get("negative") or {}
+        if _pos:
+            p = doc.add_paragraph()
+            run = p.add_run(f"正面反馈：占比 {_pos.get('ratio', 0) * 100:.1f}%")
+            run.bold = True
+            for _ph in _pos.get("phrases") or []:
+                doc.add_paragraph(
+                    f"  - {_ph.get('phrase', '')}"
+                    f"（{_ph.get('count', 0)} 条/{_ph.get('ratio', 0) * 100:.0f}%）"
+                )
+        if _neg:
+            p = doc.add_paragraph()
+            run = p.add_run(f"负面反馈：占比 {_neg.get('ratio', 0) * 100:.1f}%")
+            run.bold = True
+            for _ph in _neg.get("phrases") or []:
+                doc.add_paragraph(
+                    f"  - {_ph.get('phrase', '')}"
+                    f"（{_ph.get('count', 0)} 条/{_ph.get('ratio', 0) * 100:.0f}%）"
+                )
+        for _issue in _ss.get("top_issues") or []:
+            p = doc.add_paragraph()
+            run = p.add_run(
+                f"重点问题：{_issue.get('name', '')}"
+                f"（负面率 {_issue.get('rate', 0) * 100:.0f}%，n={_issue.get('count', 0)}）"
+            )
+            run.bold = True
+            if _issue.get("cause"):
+                doc.add_paragraph(f"可能原因（规则推测）：{_issue['cause']}")
+            if _issue.get("direction"):
+                doc.add_paragraph(f"建议：{_issue['direction']}")
+        if _ss.get("improvements"):
+            p = doc.add_paragraph()
+            run = p.add_run("改进建议")
+            run.bold = True
+            for _im in _ss["improvements"]:
+                doc.add_paragraph(f"- {_im}")
+        doc.add_paragraph(
+            "注：原因基于统计特征的规则推测，非 AI 归因，请结合报告原文验证。"
+        )
+
+    doc.add_heading(f"七、{findings_section_title(bundle.insight_mode)}", level=1)
     if bundle.findings:
         for f in bundle.findings:
             p = doc.add_paragraph()
@@ -367,13 +413,13 @@ def build_word(bundle: ReportBundle) -> BytesIO:
             p = doc.add_paragraph(line)
             p.paragraph_format.first_line_indent = Pt(24)
 
-    doc.add_heading("七、概览", level=1)
+    doc.add_heading("八、概览", level=1)
     for line in bundle.report_text.split("\n"):
         p = doc.add_paragraph(line)
         p.paragraph_format.first_line_indent = Pt(24)
 
     if bundle.warnings:
-        doc.add_heading("八、注意事项", level=1)
+        doc.add_heading("九、注意事项", level=1)
         for w in bundle.warnings:
             doc.add_paragraph(f"- {w}")
 

@@ -258,3 +258,12 @@ button[data-testid^="stBaseButton"], [data-testid="stExpander"], [data-testid="s
 .stPlotlyChart {
   min-height: 420px;
 }
+
+/* F-011（2026-08-26）：凭据输入框高亮（兜底；依赖 Streamlit DOM aria-label；
+   :has() 在旧 Edge 不支持时静默降级为「无高亮但不坏功能」） */
+div[data-testid="stTextInput"]:has(input[aria-label*="API Key"]) input,
+div[data-testid="stTextInput"]:has(input[aria-label*="微博 Cookie"]) input {
+  border: 2px solid #D9A400;
+  background: #FFFDF5;
+  font-weight: 600;
+}
