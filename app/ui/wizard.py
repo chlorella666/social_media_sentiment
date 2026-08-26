@@ -539,7 +539,8 @@ def render_stage2():
             )
             info_texts.append(
                 "小红书前置条件：Chrome 已登录 xiaohongshu.com + opencli 已安装"
-                "（可点下方「一键安装」，无需手动命令）；采集较慢，每个关键词约 1~2 分钟。"
+                "（未就绪可在左侧 ⚙️ 配置中心一键安装，无需手动命令）；"
+                "采集较慢，每个关键词约 1~2 分钟。"
             )
         if risk_texts:
             st.warning("⚠️ 渠道风控提示\n" + "\n".join(f"- {t}" for t in risk_texts))
@@ -549,37 +550,20 @@ def render_stage2():
         if "xiaohongshu" in selected:
             _node_st = node_status()
             _ocl_st = opencli_status()
-            st.markdown(f"**Node.js：**{_node_st['text']}")
-            st.markdown(f"**opencli：**{_ocl_st['text']}")
-            if not _ocl_st["has_key"]:
-                with st.expander("🔧 opencli 未就绪：一键安装（小白友好）", expanded=False):
-                    st.caption("小红书采集依赖 opencli 命令行工具。点击按钮自动安装，全程无需手动敲命令。")
-                    st.caption("⚠️ 将安装系统级软件（Node.js 走 winget / opencli 走 npm），请确认本机允许。")
-                    if not _node_st["has_key"]:
-                        st.caption("Windows 10/11 内置一键安装；更老的 Windows（7/8）请到 nodejs.org 手动安装（勾选 Add to PATH）。")
-                        if st.button("安装 Node.js（约 1~2 分钟）", key="install_node_btn", width="stretch"):
-                            with st.spinner("正在安装 Node.js…"):
-                                _res = health.install_node()
-                            if _res["ok"]:
-                                st.success(_res["message"])
-                                st.rerun()
-                            else:
-                                st.error(_res["message"])
-                                if _res["output"]:
-                                    st.code(_res["output"], language="text")
-                    else:
-                        if st.button("一键安装 opencli（约 1 分钟）", key="install_opencli_btn", width="stretch"):
-                            with st.spinner("正在安装 opencli…"):
-                                _res = health.install_opencli(
-                                    use_mirror=bool(st.session_state.get("opencli_mirror", True)),
-                                )
-                            if _res["ok"]:
-                                st.success(_res["message"])
-                                st.rerun()
-                            else:
-                                st.error(_res["message"])
-                                if _res["output"]:
-                                    st.code(_res["output"], language="text")
+            if not (_node_st["has_key"] and _ocl_st["has_key"]):
+                # F-014（2026-08-26）：安装入口迁移到侧边栏配置中心，③页只留引导
+                st.warning(
+                    "小红书需要 Node.js 与 opencli，当前未就绪。"
+                    "请到左侧 **⚙️ 配置中心** 一键安装（无需手动命令）。"
+                )
+                if st.button(
+                    "去左侧 ⚙️ 配置中心安装", key="stage2_go_cfg_center", width="stretch"
+                ):
+                    st.session_state["cfg_center_expander"] = True
+                    st.rerun()
+            else:
+                st.markdown(f"**Node.js：**{_node_st['text']}")
+                st.markdown(f"**opencli：**{_ocl_st['text']}")
 
         col1, col2 = st.columns(2)
         with col1:

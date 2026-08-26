@@ -875,6 +875,49 @@ def test_weibo_cookie_block_ui() -> None:
     print("✓ 确认页微博无 Cookie 阻断 + 逃生口 通过")
 
 
+def test_node_opencli_install_migration() -> None:
+    """F-014：安装入口迁移到侧边栏配置中心；③页只留引导按钮。"""
+    from app.core.config_status import node_status, opencli_status
+
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+    at.radio[0].set_value("手动关键词（不分类）").run()
+    click_button(at, "下一步 →")
+    at.text_area[0].set_value("测试 评价").run()
+    restore_stale_widget_states(at)
+    click_button(at, "下一步 →")
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["xiaohongshu"]).run()
+    # ③页：不再渲染旧安装按钮（install_node_btn / install_opencli_btn 已迁移）
+    assert not any(
+        b.key in ("install_node_btn", "install_opencli_btn") for b in at.button
+    ), "③页不应保留安装按钮"
+    _n = node_status()
+    _o = opencli_status()
+    guide = [b for b in at.button if "去左侧" in b.label and "配置中心" in b.label]
+    if not (_n["has_key"] and _o["has_key"]):
+        assert guide, "opencli 未就绪时应有引导按钮"
+        guide[0].click().run()
+        assert at.session_state.get("cfg_center_expander") is True, "引导按钮应展开配置中心"
+        # 配置中心安装面板：按状态分层给出对应按钮
+        if not _n["has_key"]:
+            assert any(
+                b.key == "cfg_install_node_btn" for b in at.button
+            ), "Node 未装应显示「安装 Node.js」按钮"
+        else:
+            assert any(
+                b.key == "cfg_install_opencli_btn" for b in at.button
+            ), "Node 已装 opencli 未装应显示「一键安装 opencli」按钮"
+    else:
+        assert not guide, "已就绪时不应显示引导按钮"
+        assert not any(
+            b.key in ("cfg_install_node_btn", "cfg_install_opencli_btn") for b in at.button
+        ), "Node/opencli 都就绪时不应显示安装按钮"
+    print("✓ F-014 安装入口迁移：③页无安装按钮 + 引导/配置中心面板分层 通过")
+
+
 if __name__ == "__main__":
     _WORKER.start()
     try:
@@ -892,6 +935,7 @@ if __name__ == "__main__":
         test_ad_wizard_smoke()
         test_config_status_center()
         test_weibo_cookie_block_ui()
+        test_node_opencli_install_migration()
     finally:
         _STOP.set()
         _WORKER.join(timeout=5)

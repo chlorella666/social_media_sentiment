@@ -176,13 +176,21 @@ def _npm_cmd() -> str | None:
     return None
 
 
-def _run_streaming(cmd: list[str], timeout_s: int = 600, on_output=None) -> dict:
-    """子进程执行并流式收集输出；返回 {ok, message, output}。"""
+def _run_streaming(
+    cmd: list[str], timeout_s: int = 600, on_output=None, env: dict | None = None
+) -> dict:
+    """子进程执行并流式收集输出；返回 {ok, message, output}。
+
+    F-013（2026-08-26）：env 非空时作为子进程环境注入（opencli postinstall
+    子进程需要 Node 目录在 PATH，覆盖 winget 装完 PATH 未刷新场景）。
+    """
     out_lines: list[str] = []
     try:
         kwargs: dict = {}
         if os.name == "nt":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        if env is not None:
+            kwargs["env"] = env
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", **kwargs,
@@ -203,8 +211,112 @@ def _run_streaming(cmd: list[str], timeout_s: int = 600, on_output=None) -> dict
     return {"ok": False, "message": f"执行失败（退出码 {proc.returncode}）", "output": tail}
 
 
+def _node_paths_from_registry() -> list[str]:
+    """读取注册表 HKCU/HKLM Path，返回含 node 的目录（按注册表顺序去重）。
+
+    覆盖「winget 刚装完 Node.js、当前进程 PATH 未刷新」场景：新 PATH 只写入了
+    注册表，应用子进程看不到；安装 opencli 时把注册表里的 Node 目录合并进 PATH。
+    """
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except Exception:
+        return []
+    out: list[str] = []
+    roots = [
+        (winreg.HKEY_CURRENT_USER, r"Environment"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    ]
+    for hkey, sub in roots:
+        try:
+            with winreg.OpenKey(hkey, sub) as k:
+                val, _ = winreg.QueryValueEx(k, "Path")
+        except OSError:
+            continue
+        for part in str(val).split(";"):
+            p = part.strip().strip('"')
+            if not p:
+                continue
+            low = p.lower()
+            if "nodejs" in low or ".nodejs" in low:
+                out.append(p)
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for p in out:
+        kp = p.lower().rstrip("\\")
+        if kp not in seen:
+            seen.add(kp)
+            uniq.append(p)
+    return uniq
+
+
+def _node_dirs_for_path() -> list[str]:
+    """收集应注入 PATH 的 Node 目录（npm 所在目录优先 + 常见候选 + 注册表）。"""
+    dirs: list[str] = []
+    npm = _npm_cmd()
+    if npm:
+        dirs.append(str(Path(npm).parent))
+    for cand in _NODE_CANDIDATES:
+        dirs.append(str(cand.parent))
+    dirs.extend(_node_paths_from_registry())
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for d in dirs:
+        kd = d.lower().rstrip("\\")
+        if kd not in seen:
+            seen.add(kd)
+            uniq.append(d)
+    return uniq
+
+
+def _opencli_residue_path() -> Path:
+    """npm 全局 opencli 残留目录（EPERM 回滚失败时提示清理）。"""
+    return (
+        Path.home()
+        / "AppData"
+        / "Roaming"
+        / "npm"
+        / "node_modules"
+        / "@jackwener"
+        / "opencli"
+    )
+
+
+def _classify_opencli_error(res: dict) -> str:
+    """F-013：opencli 安装失败分类（PATH 未刷新 / EPERM 残留 / 其他）。"""
+    out = str(res.get("output") or "") + " " + str(res.get("message") or "")
+    low = out.lower()
+    if (
+        "'node' 不是内部或外部命令" in out
+        or '"node" 不是内部或外部命令' in out
+        or "'node' is not recognized" in low
+        or "node 不是内部或外部命令" in out
+    ):
+        return (
+            "Node.js 已安装但 PATH 未刷新：本次已自动注入 Node 目录到安装子进程 "
+            "PATH，仍失败说明环境异常。请完全退出并重启应用"
+            "（关闭后重新 run.bat / 启动应用.bat）后再点「安装 opencli」。"
+        )
+    if "eperm" in low or "operation not permitted" in low or "rmdir" in low:
+        return (
+            "清理残留目录失败（EPERM）：请删除 "
+            r"%AppData%\npm\node_modules\@jackwener\opencli 残留目录后重试；"
+            "若仍失败请临时关闭杀软实时防护或稍后重试。"
+        )
+    return res.get("message") or "安装失败（未知原因）：请复制下方错误信息反馈。"
+
+
 def install_opencli(use_mirror: bool = True, on_output=None) -> dict:
-    """npm 全局安装 opencli（约 1 分钟）。"""
+    """npm 全局安装 opencli（约 1 分钟）。
+
+    F-013（2026-08-26）：启动 npm 子进程时显式注入 Node 目录到 PATH
+    （npm 所在目录 + 常见候选 + 注册表 HKCU/HKLM 最新 Path），覆盖
+    「winget 刚装完 Node、当前进程 PATH 未刷新」场景；失败按原因分类。
+    """
     npm = _npm_cmd()
     if not npm:
         return {
@@ -213,12 +325,23 @@ def install_opencli(use_mirror: bool = True, on_output=None) -> dict:
                        "安装完成后重启应用再试。",
             "output": "",
         }
+    env = os.environ.copy()
+    node_dirs = _node_dirs_for_path()
+    if node_dirs:
+        old_path = env.get("Path") or env.get("PATH") or ""
+        env["Path"] = ";".join(node_dirs + [old_path]) if old_path else ";".join(node_dirs)
     cmd = [npm, "install", "-g", "@jackwener/opencli"]
     if use_mirror:
         cmd += ["--registry", NPM_MIRROR_REGISTRY]
-    res = _run_streaming(cmd, on_output=on_output)
+    res = _run_streaming(cmd, on_output=on_output, env=env)
     if res["ok"]:
         res["message"] = "opencli 安装完成 ✅（请确认 Chrome 已登录 xiaohongshu.com）"
+        return res
+    res["message"] = _classify_opencli_error(res)
+    if _opencli_residue_path().exists():
+        res["message"] += (
+            " 检测到残留目录 " + str(_opencli_residue_path()) + "，建议删除后重试。"
+        )
     return res
 
 

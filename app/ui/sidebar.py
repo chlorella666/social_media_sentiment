@@ -9,6 +9,7 @@ from app.channels.registry import list_channel_infos
 from app.coding.llm_analyzer import create_analyzer
 from app.core import (jobs, lifecycle, usage_boundary)
 from app.core.config_status import llm_status, node_status, opencli_status, weibo_status
+from app.ui.install_panel import render_node_opencli_install
 from app.core.secrets import (clear_api_key, load_api_key, save_api_key)
 import streamlit as st
 import webbrowser
@@ -138,9 +139,11 @@ def render_sidebar():
             base_url = presets["DeepSeek"][0]
             model_name = presets["DeepSeek"][1]
         st.divider()
-        # F-011（2026-08-26）：配置中心状态区（LLM/微博/Node/opencli；只读复用判定函数）
-        with st.expander("⚙️ 配置中心", expanded=True):
-            st.caption("凭据与运行环境状态（只读展示；凭据仅本机加密保存）")
+        # F-011/F-014（2026-08-26）：配置中心 = 状态区 + Node/opencli 安装面板闭环
+        # （③页引导按钮通过 cfg_center_expander 让本区展开）
+        st.session_state.setdefault("cfg_center_expander", True)
+        with st.expander("⚙️ 配置中心", key="cfg_center_expander"):
+            st.caption("凭据与运行环境状态（凭据仅本机加密保存）")
             _cfg_rows = [
                 llm_status(),
                 weibo_status(),
@@ -149,12 +152,9 @@ def render_sidebar():
             ]
             for _st in _cfg_rows:
                 st.markdown(_st["text"])
-            if not (_cfg_rows[2]["has_key"] and _cfg_rows[3]["has_key"]):
-                if st.button(
-                    "前往 ③ 渠道页安装/配置", key="cfg_center_install_go", width="stretch"
-                ):
-                    st.session_state.stage = 2
-                    st.rerun()
+            st.divider()
+            st.markdown("**Node.js / opencli 一键安装**")
+            render_node_opencli_install()
         st.divider()
         # 4（2026-08-19）：渠道风控安全从③渠道页移入"高级选项"；叙事/归因同组
         with st.expander("高级选项（渠道风控安全/叙事归因，默认收起）", expanded=False):

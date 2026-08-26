@@ -113,6 +113,7 @@ def test_opencli_installer() -> None:
         assert health._npm_cmd() == "C:/tools/npm.exe"
 
     calls: list[list[str]] = []
+    envs: list[dict | None] = []
 
     class FakeProc:
         returncode = 0
@@ -123,20 +124,54 @@ def test_opencli_installer() -> None:
 
     def fake_popen(cmd, **kwargs):
         calls.append(cmd)
+        envs.append(kwargs.get("env"))
         return FakeProc()
 
-    with mock.patch.object(health.subprocess, "Popen", side_effect=fake_popen):
+    # F-013：显式注入 Node 目录到子进程 PATH（mock 掉注册表探测保证确定性）
+    with mock.patch.object(health.subprocess, "Popen", side_effect=fake_popen), \
+         mock.patch.object(health, "_node_dirs_for_path", return_value=["C:/Program Files/nodejs"]):
         r = health.install_opencli(use_mirror=True)
         assert r["ok"] is True and "安装完成" in r["message"]
         assert calls[-1][-2:] == ["--registry", health.NPM_MIRROR_REGISTRY]
+        assert envs[-1] is not None and str(envs[-1].get("Path", "")).startswith(
+            "C:/Program Files/nodejs"
+        ), "PATH 注入缺失"
         r2 = health.install_opencli(use_mirror=False)
         assert r2["ok"] is True
         assert calls[-1][-1] == "@jackwener/opencli"
+        assert envs[-1] is not None and "C:/Program Files/nodejs" in str(envs[-1].get("Path", ""))
 
     with mock.patch.object(health, "_npm_cmd", return_value=None):
         r3 = health.install_opencli()
         assert r3["ok"] is False and "npm" in r3["message"]
-    print("✓ opencli 一键安装：命令组装/镜像/缺 npm 分支 通过")
+    print("✓ opencli 一键安装：命令组装/镜像/PATH 注入/缺 npm 分支 通过")
+
+
+def test_opencli_error_classify() -> None:
+    """F-013：opencli 失败分类（PATH 未刷新 / EPERM 残留 / 其他）。"""
+    from app.channels.health import _classify_opencli_error
+
+    c1 = _classify_opencli_error(
+        {
+            "output": "'node' 不是内部或外部命令，也不是可运行的程序或批处理文件。",
+            "message": "执行失败（退出码 1）",
+        }
+    )
+    assert "PATH 未刷新" in c1, c1
+    c2 = _classify_opencli_error(
+        {
+            "output": (
+                "npm warn cleanup [Error: EPERM: operation not permitted, "
+                "rmdir 'C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\"
+                "@jackwener\\opencli\\node_modules\\@mixmark-io\\domino\\test']"
+            ),
+            "message": "执行失败（退出码 1）",
+        }
+    )
+    assert "EPERM" in c2 or "残留" in c2 or "杀软" in c2, c2
+    c3 = _classify_opencli_error({"output": "something else", "message": "执行失败（退出码 7）"})
+    assert "执行失败" in c3, c3
+    print("✓ opencli 失败分类：PATH 未刷新 / EPERM 残留 / 其他 通过")
 
 
 def test_install_node_winget() -> None:
@@ -203,6 +238,7 @@ def main() -> None:
     test_weibo_cookie_warn_and_ok()
     test_backward_compat_tuple()
     test_opencli_installer()
+    test_opencli_error_classify()
     test_install_node_winget()
     test_classify_winget_error()
     print("渠道诊断测试全部通过 ✅")
