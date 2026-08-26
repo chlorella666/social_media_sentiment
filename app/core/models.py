@@ -216,8 +216,10 @@ class ReportBundle(BaseModel):
     # 证据卡数据源（规则抽取）：[{id, text, platform, date, keyword, dimension,
     #   dimension_name, topic?, sentiment, judge, need_review, n, score, intensity, text_id}]
     insight_mode: str = ""  # llm | lexicon | template_fallback | review_refresh | no_data
-    # F-010（2026-08-26）：词典/规则模式的结构化总结（整体/正面/负面/重点问题/建议）
+    # F-010（2026-08-26）：结构化总结（整体/正面/负面/重点问题/建议）
     structured_summary: dict[str, Any] = Field(default_factory=dict)
+    # F-010/F-015（2026-08-26）：结构化总结来源 llm/rule（旧 result.json 缺失按 rule 兜底）
+    structured_summary_source: str = "rule"
     llm_usage: dict = Field(default_factory=dict)  # {"prompt_tokens","completion_tokens","estimated_cost"}
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)

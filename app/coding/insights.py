@@ -76,8 +76,27 @@ def build_descriptors(summary: dict) -> dict:
         "date_dim": _date_dim_descriptor(dd_data),
         "wordcloud": _wordcloud_descriptor(summary),
         "cooccurrence": _cooccurrence_descriptor(cooccurrence, summary),
+        "topics": _topics_descriptor(summary),
     }
     return descriptors
+
+
+def _topics_descriptor(summary: dict) -> str:
+    """F-015 P2：主题洞察统计描述（主题名/提及量/正负占比/代表短语），供 LLM 解读。"""
+    topics = summary.get("topics") or []
+    if not topics:
+        return "未形成主题洞察（短语未命中维度关键词或样本不足）"
+    parts = []
+    for t in topics[:8]:
+        _pol_cn = {"positive": "正面", "negative": "负面", "neutral": "中性"}.get(
+            t.get("polarity", ""), "中性"
+        )
+        phrases = "、".join(t.get("phrases") or [])
+        parts.append(
+            f"「{t.get('name', '')}」（{dimension_cn(t.get('dimension', ''))}）："
+            f"{t.get('count', 0)} 条，{_pol_cn}主导，代表短语：{phrases[:60]}"
+        )
+    return "主题洞察：" + "；".join(parts)
 
 
 def _words_descriptor(summary: dict) -> str:
@@ -339,11 +358,19 @@ def build_report_content(
                 conclusion = findings_to_conclusion(findings)
             else:
                 conclusion = out.get("conclusion") or findings_to_conclusion(findings)
+        # F-010/F-015（2026-08-26）：混合架构——LLM 写文案、系统填数字；
+        # LLM 缺失/校验失败回退规则，source 按真实来源标注
+        from app.coding.structured_contract import merge_structured_summary
+        _ss, _ss_source = merge_structured_summary(
+            out.get("structured_summary_text"), summary, evidence
+        )
         return {
             "chart_insights": chart_insights,
             "conclusion": conclusion,
             "findings": findings,
             "insight_mode": mode,
+            "structured_summary": _ss,
+            "structured_summary_source": _ss_source,
         }
     # 词典模式（MockAnalyzer / 无 Key）：规则 findings，零新增 LLM
     ci = template_chart_insights(descriptors)

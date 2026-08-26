@@ -318,6 +318,19 @@
       <h2>代表观点（短语）Top {{ top_words|length }}</h2>
       <div class="chart">{{ chart_words }}</div>
       <p class="insight">{{ chart_insights.get('words', '') }}</p>
+      {% if topic_cards %}
+      <h3>主题洞察（短语归并）</h3>
+      <p style="color:var(--color-text-muted);font-size:12px">
+        主题 = 维度关键词保守归并（同一主题下短语情感极性一致才归并）；
+        提及量按去重文本计，占比分母为所属情感子集。
+      </p>
+      {% for t in topic_cards %}
+      <div style="border:1px solid var(--c-border);border-left:4px solid var(--c-brand);border-radius:10px;padding:10px 14px;margin:8px 0;">
+        <b>{{ t.name }}</b>（{{ t.dimension }}）· {{ t.count }} 条 · {{ t.polarity }}主导
+        <p style="font-size:13px;color:var(--color-text-muted);margin:4px 0 0;">{{ t.phrases | join('；') }}</p>
+      </div>
+      {% endfor %}
+      {% endif %}
       {% if chart_wordcloud_pos or chart_wordcloud_neg %}
       <h3>情感词云（按情感拆分，权重 = 词频 × 情感强度）</h3>
       {% if chart_wordcloud_pos %}
@@ -393,6 +406,9 @@
     {% if structured_summary %}
     <div class="section">
       <h2>📊 解读与建议</h2>
+      <p style="color:var(--color-text-muted);font-size:12px">
+        来源：{{ 'AI 归因（LLM 解读）' if structured_summary_source == 'llm' else '规则推测（非 AI 归因）' }}
+      </p>
       <p><b>一句话结论：</b>{{ structured_summary.overall }}</p>
       <p><b>正面反馈</b>：占比 {{ "%.1f"|format(structured_summary.positive.ratio * 100) }}%；
         {% for ph in structured_summary.positive.phrases %}{{ ph.phrase }}（{{ ph.count }} 条/{{ "%.0f"|format(ph.ratio * 100) }}%）；{% endfor %}</p>

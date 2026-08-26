@@ -335,6 +335,11 @@ def build_word(bundle: ReportBundle) -> BytesIO:
     if bundle.structured_summary:
         _ss = bundle.structured_summary
         doc.add_heading("六、解读与建议", level=1)
+        _ss_src = getattr(bundle, "structured_summary_source", "rule")
+        doc.add_paragraph(
+            "来源：AI 归因（LLM 解读）" if _ss_src == "llm"
+            else "来源：规则推测（非 AI 归因）"
+        )
         doc.add_paragraph(f"一句话结论：{_ss.get('overall', '')}")
         _pos = _ss.get("positive") or {}
         _neg = _ss.get("negative") or {}
@@ -376,6 +381,28 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         doc.add_paragraph(
             "注：原因基于统计特征的规则推测，非 AI 归因，请结合报告原文验证。"
         )
+
+    # F-015 P2（2026-08-26）：主题洞察段（短语归并卡）
+    _topics = (bundle.summary or {}).get("topics") or []
+    if _topics:
+        p = doc.add_paragraph()
+        run = p.add_run("主题洞察（短语归并）")
+        run.bold = True
+        doc.add_paragraph(
+            "主题 = 维度关键词保守归并：同一主题下短语情感极性一致才归并；"
+            "提及量按去重文本计。"
+        )
+        for _t in _topics[:8]:
+            _tpol = {"positive": "正面", "negative": "负面", "neutral": "中性"}.get(
+                _t.get("polarity", ""), "中性"
+            )
+            p = doc.add_paragraph()
+            run = p.add_run(
+                f"  {_t.get('name', '')}（{dimension_cn(_t.get('dimension', ''))}）"
+                f"· {_t.get('count', 0)} 条 · {_tpol}主导"
+            )
+            run.bold = True
+            doc.add_paragraph(f"    代表短语：{'、'.join(_t.get('phrases') or [])}")
 
     doc.add_heading(f"七、{findings_section_title(bundle.insight_mode)}", level=1)
     if bundle.findings:

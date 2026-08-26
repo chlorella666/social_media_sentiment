@@ -64,19 +64,21 @@ def build_structured_summary(
     )
     degrade = total < 10 or (pos_n + neg_n) == 0
 
-    def _phrase_block(key: str, label: str) -> list[dict]:
+    def _phrase_block(key: str, label: str, subset_n: int) -> list[dict]:
+        # P1（2026-08-26）：占比分母=所属情感子集（如"占负面讨论 17%"），
+        # 而非全部文本（否则热门短语仅 1~3% 造成感知差）；count 为主、% 为辅。
         items = (top_phrases.get(key) or [])[:3]
         return [
             {
                 "phrase": p.get("phrase", ""),
                 "count": p.get("count", 0),
-                "ratio": round(p.get("count", 0) / total, 4) if total else 0.0,
+                "ratio": round(p.get("count", 0) / subset_n, 4) if subset_n else 0.0,
             }
             for p in items
         ]
 
-    positive = {"ratio": _ratio(pos_n), "phrases": _phrase_block("positive", "正面")}
-    negative = {"ratio": _ratio(neg_n), "phrases": _phrase_block("negative", "负面")}
+    positive = {"ratio": _ratio(pos_n), "phrases": _phrase_block("positive", "正面", pos_n)}
+    negative = {"ratio": _ratio(neg_n), "phrases": _phrase_block("negative", "负面", neg_n)}
 
     top_issues: list[dict] = []
     if not degrade:

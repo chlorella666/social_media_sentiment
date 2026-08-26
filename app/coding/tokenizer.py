@@ -162,6 +162,43 @@ def _clean_match(text: str) -> str:
 # F-009：短语抽取专用虚词集（比 segment 的 STOPWORDS 小得多，保留单字与"比"等语义词）
 _PHRASE_STOP = set("的了啊吗呢吧哦嗯哈呀啦呗罢了么是这那在就有和与及或而之其".split())
 
+# F-015 P0（2026-08-26）：短语级泛词——短语完全由这些词组成时无信息量，直接过滤
+# （不加入 _PHRASE_STOP，避免拆散真实短语；在短语整体层面检查）
+_PHRASE_GENERIC = set(
+    """情况 知道 评价 评论 意见 观点 想法 事情 东西 地方 时候 时间 方面 方式 方法
+    真的 觉得 感觉 认为 表示 希望 期待 准备 开始 最后 之后 之前 其中 同时
+    比较 非常 特别 有点 还是 就是 没有 不是 可以 可能 应该 需要 已经 一直
+    看到 了解 大约 大概 几乎 完全 根本 实在 其实 毕竟 终于 看看 说说 再说
+    确实 越来越 每个 有些 某些 各种 每次 每天 虽然 尽管 即使 假如 否则
+    何况 甚至 无论 不管 凡是 所有 全部 整个 其他 别的 看来 看起来 差不多
+    基本 主要 重要 关键 进行 起来 出来 下来 正在 刚才 突然 反正 到底 究竟
+    简直 居然 竟然 接着 另外 还有 比如 例如 包括 等等 一样 同样 一起 一切
+    左右 上下 前后 一天 一次 一个 一些 一下 一点 这次 下次 每次""".split()
+)
+
+# F-015 P0（2026-08-26）：短语结构校验——中文短语须含至少一个语义信号词
+# （评价谓词 / 高频维度内容词），否则视为"误组合"碎片（如"情况下/不知道"）。
+# 英文/数字产品名（iPhone 15 Pro Max）走 _ASCII_TOKEN 豁免，不强制。
+_PHRASE_SIGNAL_WORDS = set(
+    """好 差 快 慢 贵 便宜 卡 掉 碎 坏 行 不错 喜欢 推荐 后悔 吐槽 失望 满意
+    好用 难用 流畅 清晰 模糊 稳定 不稳 断 闪 烫 热 冷 响 轻 重 大 小 值得 不值
+    靠谱 一般 堪忧 辣鸡 烂 拉胯 翻车 坑 掉电 耗电 续航 拍照 屏幕 电池 音质 画质
+    手感 颜值 质量 价格 服务 物流 售后 发货 包装 快递 味道 口感 颜色 尺寸 系统
+    信号 网络 蓝牙 充电 待机 发热 降频 死机 重启 闪退 黑屏 花屏 漏液 碎屏 进水
+    变形 异味 生锈 掉漆 划痕 缝隙 松动 异响 卡顿 延迟 掉帧 断流 断连 闪断 优化
+    修复 改进 升级 更新 优惠 降价 涨价 补贴 划算 实惠 溢价 虚标 缩水 阉割 减配
+    加价 缺货 预售 假货 正品 性价比 质感 重量 厚度 大小 长度 亮度 色彩 饱和
+    变焦 广角 长焦 防抖 夜景 人像 游戏 帧率 散热 噪音 震动 手感 顺滑 跟手
+    推送 通知 权限 广告 弹窗 卡死 无响应 闪屏 烧屏 指纹 面部 解锁 支付 掉价
+    保值 耐用 坚固 轻薄 便携 顶配 低配 中配 国行 水货 保修 换新 维修""".split()
+)
+
+# F-015 P0（2026-08-26）：时间/数字实体 junk——短语命中即过滤（如"2026年/小时后/5分钟"）
+_ENTITY_JUNK = _re.compile(
+    r"(20\d{2}\s*年|\d{1,2}\s*月|\d{1,2}\s*日|小时|分钟|天后|天前|凌晨|上午|下午|"
+    r"晚上|昨天|今天|明天|时候|期间|左右|上下|^\d+$|[\u4e00-\u9fff]\d{2,})"
+)
+
 
 def _phrase_words(sent: str) -> list[str]:
     """短语抽取用分词：保留单字（仅滤极小虚词集与纯数字）。"""
@@ -249,6 +286,20 @@ def extract_phrases(
                 if ph in seen:
                     continue
                 seen.add(ph)
+                # F-015 P0：时间/数字实体 junk 过滤
+                if _ENTITY_JUNK.search(ph):
+                    continue
+                ph_words = _phrase_words(ph)
+                # 全泛词短语（无内容词）过滤
+                if ph_words and all(w in _PHRASE_GENERIC for w in ph_words):
+                    continue
+                # 结构校验：中文短语须含信号词（谓词/维度内容词）或品牌/关键词信号
+                # （按子串匹配：jieba 会切出"中好"等组合词，词级匹配会误杀"比想象中好"）
+                if any("\u4e00" <= c <= "\u9fff" for c in ph):
+                    if not any(sig and sig in ph for sig in _PHRASE_SIGNAL_WORDS) and not any(
+                        sig and sig in _clean_match(ph) for sig in signals_c
+                    ):
+                        continue
                 if idx not in phrase_docs.setdefault(ph, set()):
                     phrase_docs[ph].add(idx)
                     phrase_first[ph] = first
@@ -346,3 +397,85 @@ def build_phrase_cooccurrence(
     edges.sort(key=lambda e: -e["weight"])
     nodes = {n for e in edges for n in (e["source"], e["target"])}
     return edges[:top_n], {n: node_count[n] for n in nodes}
+
+
+# ---------------------------------------------------------------------------
+# F-015 P2（2026-08-26）：短语编码归并 → 主题层（保守，不自动聚类）
+# ---------------------------------------------------------------------------
+
+def encode_phrases(
+    phrases: list[dict],
+    dimension_keywords: dict[str, list[str]] | None = None,
+    aliases: dict[str, str] | None = None,
+    min_count: int = 2,
+) -> list[dict]:
+    """短语→编码标签→主题（保守归并，取消自动聚类）。
+
+    - 编码 = 命中的维度关键词（用户语言，如「续航」「屏幕」）+ 品牌别名归一；
+    - 情感一致性：同一编码下短语主极性不一致则拆成独立主题（转折/反讽/黑话
+      不自动归并，保留原短语与原文证据）；
+    - 主题名 = 编码词（不生成新词），挂靠维度 id（呈现时映射维度中文名）；
+    - 返回按提及量降序的 [{dimension, name, encode, polarity, phrases, count,
+      sentiment_weights, sample_text_ids}]；无维度信号短语不进主题层
+      （保留在短语证据层 top_phrases）。
+    """
+    from collections import Counter
+
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for p in phrases:
+        pc = _clean_match(p.get("phrase", ""))
+        if not pc:
+            continue
+        hit: tuple[str, str] | None = None
+        for dim_id, kws in (dimension_keywords or {}).items():
+            for kw in kws:
+                kc = _clean_match(kw)
+                if kc and kc in pc:
+                    hit = (dim_id, kw)
+                    break
+            if hit:
+                break
+        if hit is None:
+            continue
+        norm = (aliases or {}).get(pc) or (aliases or {}).get(hit[1]) or hit[1]
+        groups.setdefault((hit[0], norm), []).append(p)
+
+    def _main_polarity(p: dict) -> str:
+        w = p.get("sentiment_weights") or {}
+        if w.get("positive", 0) >= 0.5:
+            return "positive"
+        if w.get("negative", 0) >= 0.5:
+            return "negative"
+        return "neutral"
+
+    topics: list[dict] = []
+    for (dim_id, norm), items in groups.items():
+        by_pol: dict[str, list[dict]] = {"positive": [], "negative": [], "neutral": []}
+        for p in items:
+            by_pol[_main_polarity(p)].append(p)
+        for pol_key, subset in by_pol.items():
+            if not subset:
+                continue
+            docs: set[int] = set()
+            for p in subset:
+                docs.update(p.get("sample_text_ids") or [])
+            if len(docs) < min_count:
+                continue
+            buckets: Counter[str] = Counter()
+            for p in subset:
+                for k, v in (p.get("sentiment_weights") or {}).items():
+                    buckets[k] += v
+            tot = sum(buckets.values()) or 1
+            weights = {k: round(v / tot, 3) for k, v in buckets.items()}
+            topics.append({
+                "dimension": dim_id,
+                "name": norm,
+                "encode": norm,
+                "polarity": pol_key,
+                "phrases": sorted({p["phrase"] for p in subset}),
+                "count": len(docs),
+                "sentiment_weights": weights,
+                "sample_text_ids": sorted(docs)[:3],
+            })
+    topics.sort(key=lambda t: (-t["count"], t["name"]))
+    return topics

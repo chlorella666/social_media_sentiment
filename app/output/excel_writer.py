@@ -477,8 +477,13 @@ def build_excel(bundle: ReportBundle) -> BytesIO:
         # F-010（2026-08-26）：解读与建议 sheet（与 HTML/Word 同源：structured_summary）
         if bundle.structured_summary:
             _ss = bundle.structured_summary
+            _ss_source = getattr(bundle, "structured_summary_source", "rule")
             _ss_rows: list[dict[str, str]] = [
-                {"项目": "一句话结论", "内容": _ss.get("overall", "")}
+                {
+                    "项目": "来源",
+                    "内容": "AI 归因（LLM 解读）" if _ss_source == "llm" else "规则推测（非 AI 归因）",
+                },
+                {"项目": "一句话结论", "内容": _ss.get("overall", "")},
             ]
             _pos = _ss.get("positive") or {}
             _neg = _ss.get("negative") or {}
@@ -528,6 +533,25 @@ def build_excel(bundle: ReportBundle) -> BytesIO:
                 _ss_rows.append({"项目": "改进建议", "内容": _im})
             pd.DataFrame(_ss_rows).to_excel(
                 writer, sheet_name="解读与建议", index=False
+            )
+
+        # F-015 P2（2026-08-26）：主题洞察 sheet（短语归并卡）
+        _topics = (bundle.summary or {}).get("topics") or []
+        if _topics:
+            _topic_rows: list[dict[str, str]] = []
+            for _t in _topics[:8]:
+                _tpol = {"positive": "正面", "negative": "负面", "neutral": "中性"}.get(
+                    _t.get("polarity", ""), "中性"
+                )
+                _topic_rows.append({
+                    "主题": _t.get("name", ""),
+                    "维度": dimension_cn(_t.get("dimension", "")),
+                    "提及量": str(_t.get("count", 0)),
+                    "主导情感": _tpol,
+                    "代表短语": "、".join(_t.get("phrases") or []),
+                })
+            pd.DataFrame(_topic_rows).to_excel(
+                writer, sheet_name="主题洞察", index=False
             )
     out.seek(0)
     return out

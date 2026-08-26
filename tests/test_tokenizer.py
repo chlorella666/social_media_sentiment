@@ -59,10 +59,34 @@ def test_extract_phrases_fixture() -> None:
     assert all("sentiment_weights" in p for p in ph), "缺少情感权重"
 
 
+def test_extract_phrases_p0_filters() -> None:
+    """F-015 P0：碎片/泛词/实体 junk 不入选，真实短语保留。"""
+    from app.coding.tokenizer import extract_phrases
+    texts = [
+        "在这种情况下不知道怎么办", "在这种情况下不知道怎么办",
+        "2026年发布的新机", "2026年发布的新机",
+        "评价总时长大约5分钟", "评价总时长大约5分钟",
+        "屏幕易碎很麻烦", "屏幕易碎很麻烦",
+        "电池掉电快一天两充", "电池掉电快一天两充",
+    ]
+    sents = ["neutral", "neutral", "neutral", "neutral",
+             "negative", "negative", "negative", "negative",
+             "negative", "negative"]
+    ph = extract_phrases(texts, sentiments=sents, brand="测试机", keywords=["测试机"])
+    phrases = [p["phrase"] for p in ph]
+    for bad in ("情况下", "不知道", "2026年", "小时后", "评价总时长"):
+        assert bad not in phrases, f"碎片未过滤: {bad}"
+    # 完整短语优先（子串剔除）："屏幕易碎很麻烦" 入选即代表观点可读
+    assert any("屏幕易碎" in p for p in phrases), "真实短语被误杀"
+    assert any("电池掉电快" in p for p in phrases), "真实短语被误杀"
+    print("✓ F-015 P0 短语质量：碎片/泛词/实体过滤 通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_segment_filters_stopwords()
     test_word_freq()
     test_cooccurrence()
     test_extract_phrases_fixture()
+    test_extract_phrases_p0_filters()
     print("jieba 分词器测试全部通过 ✅")

@@ -38,11 +38,40 @@ class TestDemoReport(unittest.TestCase):
             "演示报告应全部为 LLM 精分析编码（展示 LLM 模式成品效果）",
         )
         self.assertEqual(b.warnings, [], "演示报告不应出现质量警示")
+        self.assertTrue(b.structured_summary, "LLM 模式演示报告应含 structured_summary")
+        self.assertEqual(b.structured_summary_source, "llm")
+        self.assertTrue(b.structured_summary.get("overall"))
         self.assertGreaterEqual(
             s.get("narrative_stats", {}).get("total", 0), 10,
             "叙事/归因样本应足以展示聚合图",
         )
         self.assertGreaterEqual(len(s.get("dimensions") or {}), 4)
+
+    def test_structured_summary_four_end(self):
+        """F-010/F-015：LLM 模式演示报告四端解读区渲染且来源标注 AI 归因。"""
+        import io as _io
+
+        from app.output.excel_writer import build_excel
+        from app.output.html_report import build_html
+        from app.output.word_report import build_word
+
+        b = demo_report.build_demo_bundle()
+        html = build_html(b)
+        self.assertIn("解读与建议", html)
+        self.assertIn("AI 归因（LLM 解读）", html)
+        wb_bytes = build_excel(b).getvalue()
+        import openpyxl
+        wb = openpyxl.load_workbook(_io.BytesIO(wb_bytes))
+        self.assertIn("解读与建议", wb.sheetnames)
+        ws = wb["解读与建议"]
+        col_a = [c.value for c in ws["A"]]
+        self.assertIn("来源", col_a)
+        doc_bytes = build_word(b).getvalue()
+        from docx import Document
+        doc = Document(_io.BytesIO(doc_bytes))
+        text = "\n".join(p.text for p in doc.paragraphs)
+        self.assertIn("六、解读与建议", text)
+        self.assertIn("AI 归因（LLM 解读）", text)
 
     def test_evidence_refs_all_resolve(self):
         b = demo_report.build_demo_bundle()

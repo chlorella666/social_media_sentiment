@@ -27,6 +27,7 @@ from app.coding.tokenizer import (
     build_cooccurrence,
     build_phrase_cooccurrence,
     build_word_freq,
+    encode_phrases,
     extract_phrases,
     segment,
 )
@@ -418,6 +419,26 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         "negative": _neg_phrases[:8],
     }
 
+    # F-015 P2（2026-08-26）：主题层——短语编码归并（维度关键词 + 品牌别名，保守）
+    topics: list[dict] = []
+    try:
+        _schema = task_schema(plan)
+        _dim_kw: dict[str, list[str]] = {}
+        if _schema is not None:
+            for _d in _schema.dimensions:
+                _kw = list(getattr(_d, "keywords", []) or [])
+                if _kw:
+                    _dim_kw[_d.id] = _kw
+        from app.coding.cleaner import BRAND_ALIASES
+        _aliases: dict[str, str] = {}
+        for _std, _alist in BRAND_ALIASES.items():
+            for _a in _alist:
+                _aliases[_a] = _std
+            _aliases[_std] = _std
+        topics = encode_phrases(phrase_data, _dim_kw, _aliases)
+    except Exception:
+        topics = []
+
     # 主题/泛词过滤（词云与共现网络共用）
     extra_stop = _subject_stopwords(plan)
 
@@ -671,6 +692,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         "sentiment_sources": sentiment_sources,
         "node_negative_rate": node_negative_rate,
         "top_phrases": top_phrases,
+        "topics": topics,
         "positive_words": (
             [(p["phrase"], p["count"]) for p in _pos_phrases[:10]]
             if _pos_phrases else pos_w.most_common(10)
@@ -777,7 +799,7 @@ def generate_report_text(
     tp_neg = tp.get("negative") or []
     if tp_pos or tp_neg:
         top = "、".join(
-            p["phrase"] for p in (tp_pos + tp_neg)[:5]
+            f"{p['phrase']}（{p['count']} 条）" for p in (tp_pos + tp_neg)[:5]
         )
         lines.append(f"代表观点（短语）：{top}。")
     elif summary["top_words"]:
@@ -1313,6 +1335,7 @@ class TaskRunner:
             evidence=evidence,
             insight_mode=report_content["insight_mode"],
             structured_summary=report_content.get("structured_summary") or {},
+            structured_summary_source=report_content.get("structured_summary_source", "rule"),
             llm_usage=llm_usage,
             warnings=warnings,
         )

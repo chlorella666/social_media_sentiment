@@ -216,6 +216,7 @@ def rebuild_report_after_review(
         "findings": report_content["findings"],
         "insight_mode": report_content["insight_mode"],
         "structured_summary": report_content.get("structured_summary") or {},
+        "structured_summary_source": report_content.get("structured_summary_source", "rule"),
         "report_text": generate_report_text(
             bundle.plan, new_summary, report_content["findings"]),
     })
@@ -827,10 +828,17 @@ def render_results():
                 if f.get("action"):
                     st.markdown(f"**建议：**{display_action(f.get('action'))}")
 
-    # F-010（2026-08-26）：词典模式解读与建议（与 HTML/Excel/Word 同源：structured_summary）
+    # F-010/F-015（2026-08-26）：解读与建议（与 HTML/Excel/Word 同源：structured_summary；
+    # LLM 模式为 AI 归因，词典/回退为规则推测）
+    if bundle.insight_mode == "llm" and not bundle.structured_summary:
+        st.caption("旧版数据：该报告生成时无结构化总结，未渲染解读区。")
     if bundle.structured_summary:
         _ss = bundle.structured_summary
-        with st.expander("📊 解读与建议（规则推测，非 AI 归因）", expanded=True):
+        _ss_src = bundle.structured_summary_source or "rule"
+        _ss_label = (
+            "AI 归因（LLM 解读）" if _ss_src == "llm" else "规则推测（非 AI 归因）"
+        )
+        with st.expander(f"📊 解读与建议（{_ss_label}）", expanded=True):
             st.markdown(f"**一句话结论：**{_ss.get('overall', '')}")
             _pos = _ss.get("positive") or {}
             _neg = _ss.get("negative") or {}
@@ -906,6 +914,23 @@ def render_results():
     with st.expander("🔤 代表观点（短语）Top20", expanded=show_all):
         st.plotly_chart(words_fig(s), width="stretch")
         st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
+    # F-015 P2：主题洞察（短语归并卡）
+    _topics = s.get("topics") or []
+    if _topics:
+        with st.expander("🧩 主题洞察（短语归并）", expanded=show_all):
+            st.caption(
+                "主题 = 维度关键词保守归并：同一主题下短语情感极性一致才归并；"
+                "提及量按去重文本计，占比分母为所属情感子集。"
+            )
+            for _t in _topics[:8]:
+                _tpol = {"positive": "正面", "negative": "负面", "neutral": "中性"}.get(
+                    _t.get("polarity", ""), "中性"
+                )
+                st.markdown(
+                    f"**{_t.get('name', '')}**（{dimension_cn(_t.get('dimension', ''))}）· "
+                    f"{_t.get('count', 0)} 条 · {_tpol}主导"
+                )
+                st.caption("、".join(_t.get("phrases") or []))
     with st.expander("☁️ 情感词云", expanded=False):
         if not st.session_state.get(f"wc_gen_{task_id}"):
             st.caption("词云图片生成较慢（3 张约 2~5 秒），点击后生成。")

@@ -1041,7 +1041,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
 
         try:
             system = (
-                "你是资深的社交媒体舆情分析师。基于给定的统计描述与证据清单，完成两件事：\n"
+                "你是资深的社交媒体舆情分析师。基于给定的统计描述与证据清单，完成三件事：\n"
                 "1) 为每个图表写一段 80~150 字的中文解析，解读数字含义、趋势变化和潜在风险；\n"
                 "2) 写「核心发现」，最多 5 条。每条包含：\n"
                 "   - claim：一句话结论（必须来自统计描述或证据清单，不得虚构原文/数字）；\n"
@@ -1061,18 +1061,29 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "也不要引用不相关或仅沾边的原文。\n"
                 "   - narrative_label（可选）：归因视角标签，如 attribution: enterprise / "
                 "conflict / human_interest / economic / morality。\n"
+                "3) 写「结构化总结文案」（置顶执行摘要，供速览，不与核心发现重复）：\n"
+                "   - overall：一句话总结整体倾向（正面/中性/负面占比方向与主要结论），80 字内；\n"
+                "   - top_issues：按统计描述中的维度负面率/主题洞察，给出最多 3 个重点问题的"
+                "cause（可能原因推测，用「可能/或与…相关」）与 direction（可执行建议，"
+                "含渠道/对象）；\n"
+                "   - improvements：2~4 条改进建议。\n"
+                "   ⚠️ 只写解读文案：不要写任何数字（占比/条数/短语/n=），"
+                "系统会从统计自动填充并校验覆盖。\n"
                 '输出 JSON：{"chart_insights":{"overall":"...","platform":"...","trend":"...",'
                 '"dimensions":"...","heatmap":"...","words":"...","intensity":"...",'
                 '"radar":"...","platform_dim":"...","date_dim":"...","wordcloud":"...",'
                 '"cooccurrence":"..."},"findings":[{"id":"F1","claim":"...","evidence_refs":'
-                '["E1"],"action":"...","narrative_label":"..."}]}。'
+                '["E1"],"action":"...","narrative_label":"..."}],'
+                '"structured_summary":{"overall":"...","top_issues":[{"cause":"...",'
+                '"direction":"..."}],"improvements":["..."]}}。'
                 "只输出 JSON，不要其他文字。"
             )
             user = json.dumps(
                 {"统计描述": descriptors, "证据清单": evidence_block},
                 ensure_ascii=False,
             )
-            content = self._chat(system, user, max_tokens=4000, timeout=120)
+            # F-010/F-015（2026-08-26）：max_tokens 4000→4800（新增结构化总结文案 400~600 token）
+            content = self._chat(system, user, max_tokens=4800, timeout=120)
             data = json.loads(content)
             chart_insights = data.get("chart_insights", {})
             findings = data.get("findings", [])
@@ -1081,10 +1092,18 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
             if not isinstance(findings, list):
                 findings = []
             conclusion = findings_to_conclusion(findings) if findings else ""
+            from app.coding.structured_contract import (
+                parse_llm_structured_summary,
+                validate_llm_structured_summary,
+            )
+            ss_text = validate_llm_structured_summary(
+                parse_llm_structured_summary(content)
+            ) if isinstance(content, str) else None
             return {
                 "chart_insights": chart_insights,
                 "conclusion": conclusion,
                 "findings": findings,
+                "structured_summary_text": ss_text,
             }
         except Exception as exc:
             self._errors.append(

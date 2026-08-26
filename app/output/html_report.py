@@ -304,26 +304,39 @@ def heatmap_fig(s: dict) -> go.Figure | None:
 
 @_styled
 def words_fig(s: dict) -> go.Figure:
-    """代表观点（短语）：正/负 Top 展示（F-009 短语口径 + 提及占比）。"""
+    """代表观点（短语）：正/负 Top 展示（F-009 短语口径 + F-015 P1 口径）。
+
+    P1（2026-08-26）：count 为主、% 为辅；占比分母=所属情感子集（正面短语÷
+    正面文本数、负面短语÷负面文本数），图注显式标注分母。
+    """
     from plotly.subplots import make_subplots
 
     tp = s.get("top_phrases") or {}
+    dist = s.get("sentiment_distribution") or {}
+    pos_total = max(int(dist.get("positive", {}).get("count") or 0), 1)
+    neg_total = max(int(dist.get("negative", {}).get("count") or 0), 1)
     total = max(int(s.get("total_items") or 0), 1)
-    pos = [(p["phrase"], p["count"], p["count"] / total) for p in (tp.get("positive") or [])[:10]]
-    neg = [(p["phrase"], p["count"], p["count"] / total) for p in (tp.get("negative") or [])[:10]]
+    pos = [
+        (p["phrase"], p["count"], p["count"] / pos_total)
+        for p in (tp.get("positive") or [])[:10]
+    ]
+    neg = [
+        (p["phrase"], p["count"], p["count"] / neg_total)
+        for p in (tp.get("negative") or [])[:10]
+    ]
     if not pos:
-        pos = [(w, c, c / total) for w, c in (s.get("positive_words") or [])[:10]]
+        pos = [(w, c, c / pos_total) for w, c in (s.get("positive_words") or [])[:10]]
     if not neg:
-        neg = [(w, c, c / total) for w, c in (s.get("negative_words") or [])[:10]]
+        neg = [(w, c, c / neg_total) for w, c in (s.get("negative_words") or [])[:10]]
     if not pos and not neg:
         return go.Figure().update_layout(title="暂无代表观点")
     fig = make_subplots(
         rows=2,
         subplot_titles=(
-            f"正面代表观点（短语） {SENTIMENT_SYMBOL['positive']} Top",
-            f"负面代表观点（短语） {SENTIMENT_SYMBOL['negative']} Top",
+            f"正面代表观点（短语） {SENTIMENT_SYMBOL['positive']} Top（占正面讨论，n={pos_total}）",
+            f"负面代表观点（短语） {SENTIMENT_SYMBOL['negative']} Top（占负面讨论，n={neg_total}）",
         ),
-        vertical_spacing=0.22,
+        vertical_spacing=0.24,
     )
     if pos:
         fig.add_trace(
@@ -331,7 +344,7 @@ def words_fig(s: dict) -> go.Figure:
                 x=[c for _, c, _ in reversed(pos)],
                 y=[w for w, _, _ in reversed(pos)],
                 orientation="h",
-                text=[f"{r:.0%}" for _, _, r in reversed(pos)],
+                text=[f"{c} 条 · {r:.0%}" for _, c, r in reversed(pos)],
                 textposition="outside",
                 marker_color=SENTIMENT_COLORS["positive"],
                 name="正面",
@@ -345,7 +358,7 @@ def words_fig(s: dict) -> go.Figure:
                 x=[c for _, c, _ in reversed(neg)],
                 y=[w for w, _, _ in reversed(neg)],
                 orientation="h",
-                text=[f"{r:.0%}" for _, _, r in reversed(neg)],
+                text=[f"{c} 条 · {r:.0%}" for _, c, r in reversed(neg)],
                 textposition="outside",
                 marker_color=SENTIMENT_COLORS["negative"],
                 name="负面",
@@ -1349,6 +1362,19 @@ def build_html(bundle: ReportBundle) -> str:
         else ("neg" if s["overall_sentiment"] == "负面" else "neu")
     )
     # P2：报告编号 + 封面摘要（呈现层派生）
+    # F-015 P2：主题洞察卡（呈现层预处理：维度中文名 + 极性中文）
+    _topics_raw = s.get("topics") or []
+    topic_cards = []
+    for _t in _topics_raw[:8]:
+        topic_cards.append({
+            "name": _t.get("name", ""),
+            "dimension": dimension_cn(_t.get("dimension", "")),
+            "count": _t.get("count", 0),
+            "polarity": {"positive": "正面", "negative": "负面", "neutral": "中性"}.get(
+                _t.get("polarity", ""), "中性"
+            ),
+            "phrases": _t.get("phrases") or [],
+        })
     report_no = f"RPT-{bundle.created_at:%Y%m%d-%H%M}"
     subject_desc = (
         f"覆盖 {len(bundle.channel_results)} 渠道{trust['date_range']}公开讨论，"
@@ -1357,6 +1383,7 @@ def build_html(bundle: ReportBundle) -> str:
     )
     return template.render(
           structured_summary=bundle.structured_summary,
+          structured_summary_source=bundle.structured_summary_source,
           subject=bundle.plan.subject,
           created_at=bundle.created_at.strftime("%Y-%m-%d %H:%M"),
           report_no=report_no,
@@ -1398,6 +1425,7 @@ def build_html(bundle: ReportBundle) -> str:
         chart_sources=_chart_sources(s),
         chart_date_dim=_chart_date_dim(s),
         top_words=s["top_words"],
+        topic_cards=topic_cards,
         report_text=bundle.report_text,
         chart_insights=bundle.chart_insights,
         conclusion=bundle.conclusion,

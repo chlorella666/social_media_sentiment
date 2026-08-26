@@ -582,6 +582,49 @@ def test_structured_summary_lexicon_discipline() -> None:
     print("✓ F-010 规则解读：措辞纪律 / 小样本 / 确定性 通过")
 
 
+def test_structured_contract_four_states() -> None:
+    """F-010/F-015：LLM 结构化总结契约四态（解析成功/失败/字段缺失/数字越界）+ 混合架构。"""
+    from app.coding.structured_contract import (
+        merge_structured_summary,
+        parse_llm_structured_summary,
+        validate_llm_structured_summary,
+    )
+
+    # 态 1：解析成功 + 数字越界字段被丢弃（只留文案）
+    ok_json = '{"chart_insights":{},"structured_summary":{"overall":"整体以正面为主","ratio":999,"count":999,"top_issues":[{"name":"乱填","count":99,"rate":9.9,"cause":"可能因 X 相关","direction":"建议关注 Y"}],"improvements":["改进 A","改进 B"]}}'
+    raw = parse_llm_structured_summary(ok_json)
+    assert raw is not None and raw.get("overall") == "整体以正面为主"
+    clean = validate_llm_structured_summary(raw)
+    assert clean is not None and clean["overall"] == "整体以正面为主"
+    assert "ratio" not in clean and "count" not in clean, "数字字段应被丢弃"
+    assert clean["top_issues"][0]["cause"] and clean["top_issues"][0]["direction"]
+    # 态 2：解析失败（非法 JSON / 缺 structured_summary 键）
+    assert parse_llm_structured_summary("not json") is None
+    assert parse_llm_structured_summary('{"chart_insights":{}}') is None
+    assert parse_llm_structured_summary("") is None
+    # 态 3：字段缺失（overall 为空 / top_issues 非列表）→ 校验失败
+    assert validate_llm_structured_summary({"overall": ""}) is None
+    assert validate_llm_structured_summary({"overall": "x", "top_issues": "bad"}) is None
+    # 态 4：数字越界由系统覆盖——merge 后 ratio/count/rate 来自 summary 而非 LLM
+    summary = {
+        "total_items": 30,
+        "sentiment_distribution": {
+            "positive": {"count": 20}, "neutral": {"count": 5}, "negative": {"count": 5},
+        },
+        "dimensions": {"quality": {"count": 12, "negative_rate": 0.6}},
+        "top_phrases": {},
+    }
+    ss, source = merge_structured_summary(clean, summary)
+    assert source == "llm"
+    assert abs(ss["positive"]["ratio"] - round(20 / 30, 4)) < 1e-9, "正面占比应由系统计算"
+    assert ss["top_issues"] and abs(ss["top_issues"][0]["rate"] - 0.6) < 1e-9
+    assert ss["top_issues"][0]["count"] == 12
+    # 回退：LLM 缺失 → rule
+    ss2, source2 = merge_structured_summary(None, summary)
+    assert source2 == "rule" and ss2["overall"]
+    print("✓ LLM 结构化总结契约：四态 + 混合架构（数字系统覆盖）通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_report_contains_chart_insights_and_conclusion()
@@ -598,4 +641,5 @@ if __name__ == "__main__":
     test_template_dimension_ids_have_cn_names()
     test_trend_weekly_aggregation()
     test_structured_summary_lexicon_discipline()
+    test_structured_contract_four_states()
     print("报告洞察测试通过 ✅")
