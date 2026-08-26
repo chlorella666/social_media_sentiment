@@ -1452,6 +1452,7 @@ def build_html(bundle: ReportBundle) -> str:
         top_words=s["top_words"],
         topic_cards=topic_cards,
         report_text=bundle.report_text,
+        conclusion_text=bundle.conclusion_text,
         chart_insights=bundle.chart_insights,
         conclusion=bundle.conclusion,
         insight_mode=bundle.insight_mode,

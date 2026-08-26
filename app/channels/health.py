@@ -117,19 +117,40 @@ def check_weibo_rich(cookie: str = "") -> dict:
 
 
 def _opencli_ready() -> tuple[bool, str]:
-    main_js = (
-        Path.home()
-        / ".nodejs"
-        / "node_modules"
-        / "@jackwener"
-        / "opencli"
-        / "dist"
-        / "src"
-        / "main.js"
-    )
-    node = shutil.which("node") or str(Path.home() / ".nodejs" / "node.exe")
-    if main_js.exists() and Path(node).exists():
+    """opencli 就绪检测（F-028：兼容标准 Node 安装）。
+
+    原实现只查 ~/.nodejs/node_modules（应用自带 Node 场景），标准安装
+    （C:/Program Files/nodejs）下 npm 全局包装在标准全局 node_modules，
+    导致成功安装被误报未安装。现改为：
+    1) 优先 `shutil.which("opencli")`——命令可执行即就绪，最稳；
+    2) 回退 `npm root -g` 动态获取全局根；
+    3) 再回退三个候选：标准全局 / ~/.nodejs / 用户级 npm。
+    """
+    if shutil.which("opencli"):
         return True, "opencli 就绪（需 Chrome 已登录小红书；体检不主动探测会话，避免触发验证码）"
+    candidates: list[Path] = []
+    try:
+        npm = _npm_cmd()
+        if npm:
+            r = subprocess.run(
+                [npm, "root", "-g"], capture_output=True, text=True, timeout=15
+            )
+            root = (r.stdout or "").strip()
+            if root:
+                candidates.append(Path(root))
+    except Exception:
+        pass
+    candidates += [
+        Path("C:/Program Files/nodejs/node_modules"),
+        Path.home() / ".nodejs" / "node_modules",
+        Path.home() / "AppData" / "Roaming" / "npm" / "node_modules",
+    ]
+    for base in candidates:
+        main_js = (
+            base / "@jackwener" / "opencli" / "dist" / "src" / "main.js"
+        )
+        if main_js.exists():
+            return True, "opencli 就绪（需 Chrome 已登录小红书；体检不主动探测会话，避免触发验证码）"
     return False, "未安装 opencli/Node（npm install -g @jackwener/opencli）"
 
 
@@ -274,7 +295,18 @@ def _node_dirs_for_path() -> list[str]:
 
 
 def _opencli_residue_path() -> Path:
-    """npm 全局 opencli 残留目录（EPERM 回滚失败时提示清理）。"""
+    """npm 全局 opencli 残留目录（F-028：优先 npm root -g 动态定位）。"""
+    try:
+        npm = _npm_cmd()
+        if npm:
+            r = subprocess.run(
+                [npm, "root", "-g"], capture_output=True, text=True, timeout=15
+            )
+            root = (r.stdout or "").strip()
+            if root:
+                return Path(root) / "@jackwener" / "opencli"
+    except Exception:
+        pass
     return (
         Path.home()
         / "AppData"
@@ -335,7 +367,15 @@ def install_opencli(use_mirror: bool = True, on_output=None) -> dict:
         cmd += ["--registry", NPM_MIRROR_REGISTRY]
     res = _run_streaming(cmd, on_output=on_output, env=env)
     if res["ok"]:
-        res["message"] = "opencli 安装完成 ✅（请确认 Chrome 已登录 xiaohongshu.com）"
+        # F-028：安装成功后立即自检真实路径（避免标准 Node 安装下误报未安装）
+        _ok, _msg = _opencli_ready()
+        if _ok:
+            res["message"] = "opencli 安装完成 ✅（请确认 Chrome 已登录 xiaohongshu.com）"
+        else:
+            res["message"] = (
+                "opencli 安装命令执行完成，但未检测到可执行文件："
+                "请检查 npm 全局目录后重启应用再试。"
+            )
         return res
     res["message"] = _classify_opencli_error(res)
     if _opencli_residue_path().exists():

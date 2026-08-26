@@ -1393,6 +1393,7 @@ class TaskRunner:
             insight_mode=report_content["insight_mode"],
             structured_summary=report_content.get("structured_summary") or {},
             structured_summary_source=report_content.get("structured_summary_source", "rule"),
+            conclusion_text=report_content.get("conclusion_text", ""),
             llm_usage=llm_usage,
             warnings=warnings,
         )

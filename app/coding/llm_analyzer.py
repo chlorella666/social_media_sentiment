@@ -1041,16 +1041,23 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
 
         try:
             system = (
-                "你是资深的社交媒体舆情分析师。基于给定的统计描述与证据清单，完成两件事：\n"
+                "你是资深的社交媒体舆情分析师。基于给定的统计描述与证据清单，完成三件事：\n"
                 "1) 为每个图表写一段 80~150 字的中文解析，解读数字含义、趋势变化和潜在风险；\n"
                 "2) 写「核心发现」，最多 5 条。每条包含：\n"
-                "   - claim：一句话结论（必须来自统计描述或证据清单，不得虚构原文/数字）；\n"
-                "   - evidence_refs：引用证据清单中存在的编号（如 E1）；无合适证据则留空数组；\n"
+                "   - claim：一句话结论（≤30 字、可读、不堆数字，必须是情感/洞察而非采集流水）；\n"
+                "   - scope：结论范围，只能是 整体/维度/趋势/主题/平台 之一；\n"
+                "   - detail：结构化展开（数据支撑 → 可能原因），引用「统计描述」中的真实数字"
+                "（如『正面 18.2%、负面 31.0%』『「运营与客服」负面率 90.3%（n=72）』），"
+                "原因用「可能/或与…相关」，禁止强动作词（必须/立即/停止/务必/一定）；\n"
                 "   - action：一条可执行建议，必须包含动作 + 对象 + 具体渠道（如微博/B站/"
                 "知乎/小红书/京东等，至少一个），建议末尾注明对应发现编号（如『（对应F1）』）；"
                 "禁止空泛公关话术（如『发布官方声明』『加强品牌建设』而无渠道、无对象）。\n"
-                "     正例：『由客服部联合法务部在微博、京东等渠道发布售后政策改进公告，"
-                "明确投诉处理流程，并设置专人跟进（对应F2）。』\n"
+                "   - 一条 finding 只讲一个主题/维度，展开内不堆叠多个不相关点；\n"
+                "   - evidence_refs：引用证据清单中存在的编号（如 E1）；无合适证据则留空数组；\n"
+                "   - narrative_label（可选）：归因视角标签，如 attribution: enterprise / "
+                "conflict / human_interest / economic / morality。\n"
+                "3) 写 conclusion_text：一句话凝练总结（≤200 字），说明谁、什么情绪、"
+                "集中在哪、风险在哪——必须是情感概括而非采集条数流水；数字引用统计描述真实值。\n"
                 "证据引用规则（重要）：\n"
                 "   - 证据分两类：原文卡（kind=text，含原文引用）与统计卡（kind=stat，"
                 "如『维度「品牌形象」：讨论 28 条，负面 22 条，负面率 79%』『情感走势整体下降…』）；\n"
@@ -1059,13 +1066,12 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "   - 具体文本现象类结论可引用原文卡；\n"
                 "   - 引用的证据必须直接支持结论；宁可留空 evidence_refs，"
                 "也不要引用不相关或仅沾边的原文。\n"
-                "   - narrative_label（可选）：归因视角标签，如 attribution: enterprise / "
-                "conflict / human_interest / economic / morality。\n"
-                '输出 JSON：{"chart_insights":{"overall":"...","platform":"...","trend":"...",'
-                '"dimensions":"...","heatmap":"...","words":"...","intensity":"...",'
-                '"radar":"...","platform_dim":"...","date_dim":"...","wordcloud":"...",'
-                '"cooccurrence":"..."},"findings":[{"id":"F1","claim":"...","evidence_refs":'
-                '["E1"],"action":"...","narrative_label":"..."}]}。'
+                '输出 JSON：{"conclusion_text":"...","chart_insights":{"overall":"...",'
+                '"platform":"...","trend":"...","dimensions":"...","heatmap":"...",'
+                '"words":"...","intensity":"...","radar":"...","platform_dim":"...",'
+                '"date_dim":"...","wordcloud":"...","cooccurrence":"..."},'
+                '"findings":[{"id":"F1","claim":"...","scope":"整体","detail":"...",'
+                '"evidence_refs":["E1"],"action":"...","narrative_label":"..."}]}。'
                 "只输出 JSON，不要其他文字。"
             )
             user = json.dumps(
@@ -1086,6 +1092,7 @@ class OpenAICompatibleAnalyzer(BaseAnalyzer):
                 "chart_insights": chart_insights,
                 "conclusion": conclusion,
                 "findings": findings,
+                "conclusion_text": data.get("conclusion_text", ""),
             }
         except Exception as exc:
             self._errors.append(

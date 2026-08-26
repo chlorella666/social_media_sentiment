@@ -408,10 +408,16 @@ def build_word(bundle: ReportBundle) -> BytesIO:
     if bundle.findings:
         for f in bundle.findings:
             p = doc.add_paragraph()
+            scope = f.get("scope") or ""
             run = p.add_run(
-                f"{display_finding_id(f.get('id', ''))} {f.get('claim', '')}"
+                f"{display_finding_id(f.get('id', ''))}"
+                + (f" [{scope}] " if scope else " ")
+                + f"{f.get('claim', '')}"
             )
             run.bold = True
+            detail = f.get("detail") or f.get("cause") or ""
+            if detail:
+                doc.add_paragraph(detail)
             for rid in (f.get("evidence_refs") or []):
                 c = next((e for e in bundle.evidence if e.get("id") == rid), None)
                 if not c:
@@ -441,6 +447,9 @@ def build_word(bundle: ReportBundle) -> BytesIO:
             p.paragraph_format.first_line_indent = Pt(24)
 
     doc.add_heading("八、概览", level=1)
+    if bundle.conclusion_text:
+        p = doc.add_paragraph(f"一句话总结：{bundle.conclusion_text}")
+        p.paragraph_format.first_line_indent = Pt(24)
     for line in bundle.report_text.split("\n"):
         p = doc.add_paragraph(line)
         p.paragraph_format.first_line_indent = Pt(24)

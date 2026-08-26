@@ -219,6 +219,7 @@ def rebuild_report_after_review(
         "insight_mode": report_content["insight_mode"],
         "structured_summary": report_content.get("structured_summary") or {},
         "structured_summary_source": report_content.get("structured_summary_source", "rule"),
+        "conclusion_text": report_content.get("conclusion_text", ""),
         "report_text": generate_report_text(
             bundle.plan, new_summary, report_content["findings"]),
     })
@@ -503,10 +504,14 @@ def render_results():
                 else:
                     st.error("请先粘贴新的 Cookie")
 
-    # —— ① 一句话结论胶囊（含可信度胶囊：数据量 + 时间窗 + 待复核） ——
+    # —— ① 分析结论卡（F-027：一句话总结 → 概览全文 → 核心发现与行动建议） ——
     cv = s.get("consumer_voice") or {}
-    _lead = (bundle.report_text or "").strip()
-    _lead = _lead.splitlines()[0] if _lead else (bundle.conclusion or "")
+    _lead = (
+        (bundle.conclusion_text or "").strip()
+        or ((bundle.structured_summary or {}).get("overall") or "").strip()
+    )
+    if not _lead:
+        _lead = (bundle.report_text or "").strip().splitlines()[0] if (bundle.report_text or "").strip() else (bundle.conclusion or "")
     _dr = (
         f"{bundle.plan.date_start} ~ {bundle.plan.date_end}"
         if bundle.plan.date_start or bundle.plan.date_end
@@ -524,11 +529,19 @@ def render_results():
         else "中等（样本较少）" if _ti >= 30
         else "较低（小样本）"
     )
+    _overview_html = "<br>".join(
+        html.escape(line) for line in (bundle.report_text or "").splitlines() if line.strip()
+    )
     st.markdown(
         f"""
 <div class="conclusion-card">
   <div class="kicker">分析结论</div>
-  <h2>{html.escape(_lead or "暂无结论")}</h2>
+  <p style="font-size:15px;line-height:1.8;font-weight:600;color:var(--g-900);margin:4px 0 10px;">
+    {html.escape(_lead or "暂无结论")}
+  </p>
+  <div style="font-size:13px;line-height:1.75;color:var(--g-700);margin:6px 0 10px;">
+    <b>概览：</b>{_overview_html or "（无概览文本）"}
+  </div>
   <div class="trust">
     <span class="t-item">{len(bundle.channel_results)} 渠道 · {_dr}</span>
     <span class="t-item">帖子 {s['total_posts']} · 编码文本 {s['total_items']} 条</span>
@@ -743,10 +756,17 @@ def render_results():
     if bundle.findings:
         st.subheader(findings_section_title(bundle.insight_mode))
         for f in bundle.findings:
-            with st.expander(
-                f"{display_finding_id(f.get('id', ''))} {f.get('claim', '')}",
-                expanded=False,
-            ):
+            # F-027（2026-08-27）：折叠标题 = claim（一句话）+ scope 徽标；
+            # 展开 = detail（数据支撑+可能原因）+ 证据 + 建议
+            _scope = f.get("scope") or "其他"
+            _head = (
+                f"{display_finding_id(f.get('id', ''))} [{_scope}] "
+                f"{f.get('claim', '')}"
+            )
+            with st.expander(_head, expanded=False):
+                _detail = f.get("detail") or f.get("cause") or ""
+                if _detail:
+                    st.markdown(_detail)
                 for rid in (f.get("evidence_refs") or []):
                     c = next((e for e in bundle.evidence if e.get("id") == rid), None)
                     if not c:
@@ -1063,12 +1083,10 @@ def render_results():
         with st.expander("🧩 叙事框架与归因（LLM 高级分析）", expanded=False):
             st.caption(f"叙事/归因样本仅 {narr_total} 条，样本不足，未生成聚合图。")
 
-    # 4.4 降噪：概览与（无 findings 时的）深度结论合并为"结论"一个区
-    st.subheader("结论")
-    st.markdown(bundle.report_text)
-    if not bundle.findings and bundle.conclusion:
-        st.divider()
-        st.markdown(bundle.conclusion)
+    # F-027（2026-08-27）：尾部独立「结论」区移除——report_text 已并入头部分析结论卡
+    # （F-018 单区口径；旧 result.json 无新字段时头部卡回退首行+概览，不重复展示）
+    if "核心发现" in (bundle.report_text or "") and not bundle.findings:
+        st.caption("旧版数据：该报告概览仍引用旧「核心发现」指引，新报告已合并入头部。")
 
     st.subheader("下载报告")
     st.caption("⚠️ 导出物包含用户原文等个人信息，仅限内部使用，禁止二次传播（P1-6）。")

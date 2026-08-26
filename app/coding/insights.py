@@ -347,7 +347,18 @@ def build_report_content(
             except TypeError:
                 out = analyzer.generate_insights(descriptors)
         chart_insights = out.get("chart_insights") or {}
-        findings, dropped = filter_llm_findings(out.get("findings") or [], evidence)
+        # F-027（2026-08-27）：核心发现结构化契约（claim/scope/detail/action）+ conclusion_text
+        from app.coding.findings_contract import (
+            build_lead,
+            validate_conclusion_text,
+            validate_findings,
+        )
+        _raw_findings = out.get("findings") or []
+        _validated = validate_findings(_raw_findings)
+        if not _validated:
+            # 旧契约（无 scope/detail）或 LLM 失败：兼容旧字段回退
+            _validated = _raw_findings
+        findings, dropped = filter_llm_findings(_validated, evidence)
         if not findings:
             findings = build_findings(evidence, summary, mode="fallback")
             mode = "template_fallback"
@@ -358,6 +369,9 @@ def build_report_content(
                 conclusion = findings_to_conclusion(findings)
             else:
                 conclusion = out.get("conclusion") or findings_to_conclusion(findings)
+        _conclusion_text = validate_conclusion_text(out.get("conclusion_text"))
+        if not _conclusion_text:
+            _conclusion_text = descriptors.get("overall", "")  # 保底非空（统计描述）
         # F-018（2026-08-26，修订版回退）：LLM 模式不再产出 structured_summary——
         # 保留 findings（深度发现+行动）+ conclusion；structured_summary 为词典
         # 模式补偿物，LLM 模式渲染它会造成三区重复（修订版裁决）。
@@ -368,6 +382,7 @@ def build_report_content(
             "insight_mode": mode,
             "structured_summary": {},
             "structured_summary_source": "rule",
+            "conclusion_text": build_lead(_conclusion_text, None),
         }
     # 词典模式（MockAnalyzer / 无 Key）：
     # F-018（2026-08-26，修订版）：词典模式合并为单一「解读与建议」区——

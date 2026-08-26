@@ -219,8 +219,13 @@
       <h2>{{ conclusion_title }}</h2>
       {% for f in findings %}
       <details>
-        <summary><b>{{ display_finding_id(f.id) }} {{ f.claim }}</b></summary>
+        <summary>
+          <b>{{ display_finding_id(f.id) }}</b>
+          {% if f.scope %}<span style="display:inline-block;background:var(--brand-bg);color:var(--c-brand-hover);border-radius:999px;padding:0 8px;font-size:12px;margin:0 6px;">{{ f.scope }}</span>{% endif %}
+          {{ f.claim }}
+        </summary>
         <div style="margin:8px 0 4px;">
+          {% if f.detail %}<p style="margin:4px 0 8px;">{{ f.detail }}</p>{% endif %}
           {% for rid in (f.evidence_refs or []) %}
           {% set c = evidence_by_id.get(rid) %}
           {% if c %}
@@ -402,7 +407,9 @@
     {% endif %}
 
     <div class="section">
-      <h2>概览</h2>
+      <h2>分析结论</h2>
+      {% if conclusion_text %}<p style="font-size:15px;line-height:1.8;font-weight:600;color:var(--g-900);margin:4px 0 10px;">{{ conclusion_text }}</p>{% endif %}
+      <p style="color:var(--color-text-muted);font-size:12px;">概览：</p>
       <div class="conclusion">{{ report_text }}</div>
     </div>
 

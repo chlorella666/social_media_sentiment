@@ -216,6 +216,8 @@ class ReportBundle(BaseModel):
     # 证据卡数据源（规则抽取）：[{id, text, platform, date, keyword, dimension,
     #   dimension_name, topic?, sentiment, judge, need_review, n, score, intensity, text_id}]
     insight_mode: str = ""  # llm | lexicon | template_fallback | review_refresh | no_data
+    # F-027（2026-08-27）：LLM 一句话凝练总结（情感概括）；词典模式为空（用 structured_summary.overall）
+    conclusion_text: str = ""
     # F-010（2026-08-26）：结构化总结（整体/正面/负面/重点问题/建议）
     structured_summary: dict[str, Any] = Field(default_factory=dict)
     # F-010/F-015（2026-08-26）：结构化总结来源 llm/rule（旧 result.json 缺失按 rule 兜底）

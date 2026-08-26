@@ -706,7 +706,37 @@ def test_coding_workflow_contract() -> None:
     assert topics and topics[0]["count"] == 2, "text_ids 去重 + 过滤不存在 id"
     assert topics[0]["polarity"] == "negative"
     assert abs(topics[0]["sentiment_weights"]["negative"] - 1.0) < 1e-9
-    print("✓ F-021 LLM 编码工作流契约四态（解析/校验/系统反算）通过")
+def test_findings_structured_contract() -> None:
+    """F-027：核心发现结构化契约四态（claim/scope/detail/action + conclusion_text）。"""
+    from app.coding.findings_contract import (
+        build_lead,
+        parse_insights_output,
+        validate_conclusion_text,
+        validate_findings,
+    )
+
+    ok = ('{"conclusion_text":"整体情绪中性偏负，负面集中在运营与付费","chart_insights":{},'
+          '"findings":[{"id":"F1","claim":"运营负面集中","scope":"维度","detail":"负面率 90.3%（n=72），可能与非及时响应相关","evidence_refs":["S1"],"action":"客服部在微博公开流程"}]}')
+    data = parse_insights_output(ok)
+    assert data and data.get("conclusion_text")
+    assert parse_insights_output("not json") is None
+    assert parse_insights_output("") is None
+    assert validate_conclusion_text(" 总结 ") == "总结"
+    assert validate_conclusion_text("") == ""
+    assert validate_conclusion_text(None) == ""
+    assert validate_conclusion_text(123) == ""
+    findings = validate_findings([
+        {"id": "F1", "claim": "A", "scope": "维度", "detail": "d1", "action": "a1"},
+        {"id": "F2", "claim": "", "scope": "整体"},
+        {"id": "F3", "claim": "B", "scope": "乱填", "evidence_refs": ["S1"]},
+    ])
+    assert len(findings) == 2, findings
+    assert findings[0]["scope"] == "维度" and findings[0]["detail"] == "d1"
+    assert findings[1]["scope"] == "其他" and "detail" not in findings[1]
+    assert build_lead("LLM 总结", {"overall": "规则总结"}) == "LLM 总结"
+    assert build_lead("", {"overall": "规则总结"}) == "规则总结"
+    assert build_lead("", None) == ""
+    print("✓ F-027 核心发现结构化契约四态（claim/scope/detail/action + conclusion_text）通过")
 
 
 if __name__ == "__main__":
@@ -728,4 +758,5 @@ if __name__ == "__main__":
     test_structured_contract_four_states()
     test_lexicon_single_zone_merge()
     test_coding_workflow_contract()
+    test_findings_structured_contract()
     print("报告洞察测试通过 ✅")

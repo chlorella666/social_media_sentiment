@@ -31,8 +31,9 @@ def render_node_opencli_install() -> None:
             with st.spinner("正在安装 Node.js…"):
                 _res = health.install_node()
             if _res["ok"]:
-                st.success(_res["message"])
-                st.rerun()
+                # F-028（2026-08-27）：成功提示停留，避免「像无事发生」；
+                # 状态由下方「刷新状态」按钮手动刷新
+                st.success(_res["message"] + "（可点下方「刷新状态」确认已安装）")
             else:
                 st.error(_res["message"])
                 if _res["output"]:
@@ -49,8 +50,10 @@ def render_node_opencli_install() -> None:
                 use_mirror=bool(st.session_state.get("opencli_mirror", True)),
             )
         if _res["ok"]:
-            st.success(_res["message"])
-            st.rerun()
+            # F-028（2026-08-27）：成功提示停留 + 自检结果明示，避免按钮消失像无事发生
+            _ok2, _msg2 = health.opencli_status()
+            _st_msg = "opencli 已安装 ✅" if _ok2 else "安装命令执行完成，但未检测到可执行文件（见下方状态）"
+            st.success(_res["message"] + " " + _st_msg + "（可点「刷新状态」确认）")
         else:
             st.error(_res["message"])
             if _res["output"]:
