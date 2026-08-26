@@ -663,6 +663,52 @@ def test_lexicon_single_zone_merge() -> None:
     print("✓ F-018 词典单区合并：findings 置空 + structured_summary 唯一承担 通过")
 
 
+def test_coding_workflow_contract() -> None:
+    """F-021：LLM 编码工作流契约四态（解析/校验/系统反算）。"""
+    from app.coding.coding_workflow import (
+        merge_topics,
+        parse_coding_output,
+        validate_coding_output,
+    )
+
+    # 解析成功
+    ok = '{"topics":[{"name":"续航","type":"pain","attribution":"产品","text_ids":["T1","T2"],"insight":"续航焦虑"}]}'
+    raw = parse_coding_output(ok)
+    assert raw and raw[0]["name"] == "续航", raw
+    # 解析失败
+    assert parse_coding_output("not json") is None
+    assert parse_coding_output('{"x":1}') is None
+    assert parse_coding_output("") is None
+    # 校验：非法 type 归一、数字字段丢弃、空 name 剔除
+    clean = validate_coding_output([
+        {"name": "续航", "type": "bad", "text_ids": ["T1"], "count": 99, "rate": 9.9},
+        {"name": "", "text_ids": ["T2"]},
+        {"name": "屏幕", "text_ids": []},
+    ])
+    assert clean and clean[0]["type"] == "neutral", clean
+    assert "count" not in clean[0] and "rate" not in clean[0], "数字字段应丢弃"
+    assert len(clean) == 1, "空 name/空 text_ids 应剔除"
+    # 系统反算：count 去重 + 过滤不存在 id + 情感/极性由系统计算
+    class _S:
+        def __init__(self, v): self.value = v
+    class _It:
+        def __init__(self, tid, text, sent):
+            self.text_id = tid; self.text = text; self.sentiment = _S(sent)
+    items_by_id = {
+        "T1": _It("T1", "电池掉电快", "negative"),
+        "T2": _It("T2", "续航不行", "negative"),
+        "T3": _It("T3", "屏幕易碎", "negative"),
+    }
+    topics = merge_topics(
+        [{"name": "续航", "type": "pain", "text_ids": ["T1", "T2", "T9", "T1"]}],
+        items_by_id,
+    )
+    assert topics and topics[0]["count"] == 2, "text_ids 去重 + 过滤不存在 id"
+    assert topics[0]["polarity"] == "negative"
+    assert abs(topics[0]["sentiment_weights"]["negative"] - 1.0) < 1e-9
+    print("✓ F-021 LLM 编码工作流契约四态（解析/校验/系统反算）通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_report_contains_chart_insights_and_conclusion()
@@ -681,4 +727,5 @@ if __name__ == "__main__":
     test_structured_summary_lexicon_discipline()
     test_structured_contract_four_states()
     test_lexicon_single_zone_merge()
+    test_coding_workflow_contract()
     print("报告洞察测试通过 ✅")

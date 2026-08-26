@@ -69,6 +69,26 @@ class TestDemoReport(unittest.TestCase):
         text = "\n".join(p.text for p in doc.paragraphs)
         self.assertNotIn("六、解读与建议", text, "LLM 模式 Word 不应有解读段")
 
+    def test_builtin_demo_source(self):
+        """F-020：内置 app/demo_source.json 优先加载（恋与深空脱敏样本 + LLM topics）。"""
+        import json as _json
+
+        builtin = Path(__file__).resolve().parent.parent / "app" / "demo_source.json"
+        self.assertTrue(builtin.exists(), "缺少 app/demo_source.json")
+        self._orig_source = demo_report._DEMO_SOURCE
+        demo_report._DEMO_SOURCE = None
+        try:
+            b = demo_report.build_demo_bundle()
+            s = b.summary
+            self.assertGreaterEqual(s["total_items"], 200, "演示数据应足量（恋与深空 304 条）")
+            self.assertEqual(b.insight_mode, "llm")
+            self.assertGreaterEqual(len(s.get("topics") or []), 5, "LLM 编码工作流 topics 应固化")
+            self.assertFalse(b.structured_summary, "LLM 模式无 structured_summary")
+            raw = _json.loads(builtin.read_text(encoding="utf-8"))
+            self.assertEqual(raw["_demo_meta"]["source"], "恋与深空玩家讨论（脱敏样本）")
+        finally:
+            demo_report._DEMO_SOURCE = self._orig_source
+
     def test_evidence_refs_all_resolve(self):
         b = demo_report.build_demo_bundle()
         ids = {e["id"] for e in b.evidence}

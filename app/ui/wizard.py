@@ -533,14 +533,10 @@ def render_stage2():
                 "默认上限 10，请避免短时间重复运行。"
             )
         if "xiaohongshu" in selected:
+            # F-025（2026-08-26）：风控提示新口径
             risk_texts.append(
                 "小红书：风控严格，高频采集会触发验证码，严重时影响登录态；"
-                "默认上限 10，建议每关键词 ≤20 且两次分析之间留出间隔。"
-            )
-            info_texts.append(
-                "小红书前置条件：Chrome 已登录 xiaohongshu.com + opencli 已安装"
-                "（未就绪可在左侧 ⚙️ 配置中心一键安装，无需手动命令）；"
-                "采集较慢，每个关键词约 1~2 分钟。"
+                "默认上限 10，采集较慢，每个关键词约 1~2 分钟。"
             )
         if risk_texts:
             st.warning("⚠️ 渠道风控提示\n" + "\n".join(f"- {t}" for t in risk_texts))
@@ -548,10 +544,15 @@ def render_stage2():
             st.info(t)
 
         if "xiaohongshu" in selected:
+            # F-023/F-024（2026-08-26）：③页不再展示 Node/opencli 重复状态行
+            # （侧边栏配置中心已承担）；前置条件仅在任一未就绪时按需呈现
             _node_st = node_status()
             _ocl_st = opencli_status()
             if not (_node_st["has_key"] and _ocl_st["has_key"]):
-                # F-014（2026-08-26）：安装入口迁移到侧边栏配置中心，③页只留引导
+                st.info(
+                    "小红书前置条件：1、Chrome 已登录 xiaohongshu.com；"
+                    "2、opencli 已安装（在左侧 ⚙️ 配置中心一键安装，无需手动命令）。"
+                )
                 st.warning(
                     "小红书需要 Node.js 与 opencli，当前未就绪。"
                     "请到左侧 **⚙️ 配置中心** 一键安装（无需手动命令）。"
@@ -561,9 +562,6 @@ def render_stage2():
                 ):
                     st.session_state["cfg_center_expander"] = True
                     st.rerun()
-            else:
-                st.markdown(f"**Node.js：**{_node_st['text']}")
-                st.markdown(f"**opencli：**{_ocl_st['text']}")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -704,7 +702,7 @@ def render_stage2():
                 )
             with c2:
                 comments_per_post = st.slider(
-                    "每帖评论上限", 0, 10, 10, key="comments_per_post",
+                    "每帖评论上限", 0, 10, 3, key="comments_per_post",
                     help=(
                         "每条帖子最多抓取多少条评论（评论越多采集越慢）。"
                         "评论抓取范围：每个关键词最多收录 10 帖，"
@@ -945,7 +943,7 @@ def render_stage3():
     st.markdown("### 计划摘要")
     est_items, est_comments, est_min = estimate_collection(
         keywords, channel_ids, st.session_state.get("channel_limits", {}),
-        st.session_state.get("comments_per_post_opt", 10),
+        st.session_state.get("comments_per_post_opt", 3),
         st.session_state.get("comments_enabled_opt", True),
         channel_queries=channel_queries,
     )
@@ -1055,7 +1053,7 @@ def render_stage3():
         date_start=date_range[0] if isinstance(date_range, tuple) else None,
         date_end=date_range[1] if isinstance(date_range, tuple) else None,
         comments_enabled=st.session_state.get("comments_enabled_opt", True),
-        comments_per_post=st.session_state.get("comments_per_post_opt", 10),
+        comments_per_post=st.session_state.get("comments_per_post_opt", 3),
         exclude_words=st.session_state.get("exclude_words_opt", []),
         llm_enabled=llm_enabled,
         llm_base_url=base_url,

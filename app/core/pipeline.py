@@ -396,17 +396,21 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
             elif pol < 0:
                 neg_w[kw] += w
 
-    # F-009（2026-08-26）：短语级统计（bigram~5gram + PMI + 情感权重）
+    # F-009/F-021（2026-08-26）：短语级统计（bigram~5gram + PMI + 情感权重）
+    # F-021：词典模式撤销主题层——回退 jieba 单词词频（v0.1.8 口径），
+    # 短语/主题仅在 LLM 模式生成（LLM 编码工作流在此基础上归类）
     phrase_data: list[dict] = []
-    try:
-        phrase_data = extract_phrases(
-            [it.text for it in stat_items],
-            sentiments=[it.sentiment.value for it in stat_items],
-            brand=plan.subject,
-            keywords=plan.keywords,
-        )
-    except Exception:
-        phrase_data = []
+    topics: list[dict] = []
+    if plan.llm_enabled:
+        try:
+            phrase_data = extract_phrases(
+                [it.text for it in stat_items],
+                sentiments=[it.sentiment.value for it in stat_items],
+                brand=plan.subject,
+                keywords=plan.keywords,
+            )
+        except Exception:
+            phrase_data = []
     _pos_phrases = [
         p for p in phrase_data
         if (p.get("sentiment_weights") or {}).get("positive", 0) >= 0.5
@@ -420,25 +424,26 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
         "negative": _neg_phrases[:8],
     }
 
-    # F-015 P2（2026-08-26）：主题层——短语编码归并（维度关键词 + 品牌别名，保守）
-    topics: list[dict] = []
-    try:
-        _schema = task_schema(plan)
-        _dim_kw: dict[str, list[str]] = {}
-        if _schema is not None:
-            for _d in _schema.dimensions:
-                _kw = list(getattr(_d, "keywords", []) or [])
-                if _kw:
-                    _dim_kw[_d.id] = _kw
-        from app.coding.cleaner import BRAND_ALIASES
-        _aliases: dict[str, str] = {}
-        for _std, _alist in BRAND_ALIASES.items():
-            for _a in _alist:
-                _aliases[_a] = _std
-            _aliases[_std] = _std
-        topics = encode_phrases(phrase_data, _dim_kw, _aliases, SYNONYM_GROUPS)
-    except Exception:
-        topics = []
+    # F-015 P2 / F-021（2026-08-26）：主题层——短语编码归并（维度关键词 + 品牌别名，
+    # 保守）；仅 LLM 模式生成（词典模式回退单词，见上）
+    if plan.llm_enabled:
+        try:
+            _schema = task_schema(plan)
+            _dim_kw: dict[str, list[str]] = {}
+            if _schema is not None:
+                for _d in _schema.dimensions:
+                    _kw = list(getattr(_d, "keywords", []) or [])
+                    if _kw:
+                        _dim_kw[_d.id] = _kw
+            from app.coding.cleaner import BRAND_ALIASES
+            _aliases: dict[str, str] = {}
+            for _std, _alist in BRAND_ALIASES.items():
+                for _a in _alist:
+                    _aliases[_a] = _std
+                _aliases[_std] = _std
+            topics = encode_phrases(phrase_data, _dim_kw, _aliases, SYNONYM_GROUPS)
+        except Exception:
+            topics = []
 
     # 主题/泛词过滤（词云与共现网络共用）
     extra_stop = _subject_stopwords(plan)
@@ -1340,6 +1345,35 @@ class TaskRunner:
                 items, summary, exclude_ad=bool(plan.exclude_ad_enabled)
             )
             report_content = build_report_content(analyzer, plan, summary, evidence)
+            # F-021（2026-08-26）：LLM 编码分析工作流——LLM 归类 + 系统反算数字；
+            # 成功后替换 summary.topics 并重算词云（主视觉/主题洞察四端一致）
+            if (
+                report_content.get("insight_mode") == "llm"
+                and isinstance(analyzer, OpenAICompatibleAnalyzer)
+                and items
+            ):
+                try:
+                    from app.coding.coding_workflow import run_coding_workflow
+                    _llm_topics = run_coding_workflow(analyzer, items, plan)
+                    if _llm_topics:
+                        summary["topics"] = _llm_topics
+                        _pos_t = [
+                            t for t in _llm_topics if t.get("polarity") == "positive"
+                        ][:40]
+                        _neg_t = [
+                            t for t in _llm_topics if t.get("polarity") == "negative"
+                        ][:40]
+                        summary["positive_wordcloud"] = [
+                            (t["name"].replace(" ", "\u3000"), t["count"])
+                            for t in _pos_t
+                        ]
+                        summary["negative_wordcloud"] = [
+                            (t["name"].replace(" ", "\u3000"), t["count"])
+                            for t in _neg_t
+                        ]
+                        summary["worst_dim_wordcloud"] = summary["negative_wordcloud"]
+                except Exception:
+                    pass  # 工作流失败保持规则主题兜底
             report_text = generate_report_text(
                 plan, summary, report_content["findings"]
             )

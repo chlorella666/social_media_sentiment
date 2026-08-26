@@ -77,7 +77,7 @@ def render_sidebar():
                 st.markdown(API_KEY_GUIDE)
             saved_key = load_api_key(allow_env=False)
             api_key = st.text_input(
-                "API Key（可选）", type="password", key="api_key_input",
+                "API Key", type="password", key="api_key_input",
                 value=saved_key,
                 help="不填则使用词典预筛模式，离线可跑；本机已保存的 Key 会自动回填",
             )

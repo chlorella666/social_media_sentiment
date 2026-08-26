@@ -453,9 +453,16 @@ def render_results():
     _is_demo = bool(st.session_state.get("demo_report"))
     if _is_demo:
         _demo_subject = bundle.plan.subject or "示例"
+        # F-020（2026-08-26）：演示数据为恋与深空玩家讨论（脱敏样本）——
+        # 内置 demo_source.json 随源码打包；无内置源时回退虚构数据并标注
+        _demo_src_note = (
+            "演示数据为恋与深空玩家讨论（脱敏样本）"
+            if "恋与深空" in _demo_subject
+            else "内置虚构演示数据"
+        )
         st.info(
             f"📋 这是**演示报告**：示例为「{html.escape(_demo_subject)}」"
-            "（LLM 精分析模式效果），用于展示报告形态。"
+            f"（{_demo_src_note}；LLM 精分析模式效果），用于展示报告形态。"
             "真实分析请在向导中提交任务。"
         )
         if st.button("← 返回向导", key="demo_back"):
@@ -874,12 +881,13 @@ def render_results():
         "观点按主题（同义归并）聚合展示；悬停查看代表短语，"
         "下方「主题洞察」可展开代表短语与原文，占比分母为所属情感子集。"
     )
-    # F-015 P2：主题洞察（短语归并卡）
+    # F-021（2026-08-26）：主题洞察仅 LLM 模式显示（折叠保持收起，效果走主视觉）；
+    # 词典模式回退单词词频，显示引导
     _topics = s.get("topics") or []
     if _topics:
-        with st.expander("🧩 主题洞察（短语归并）", expanded=True):
+        with st.expander("🧩 主题洞察", expanded=False):
             st.caption(
-                "主题 = 维度关键词保守归并：同一主题下短语情感极性一致才归并；"
+                "主题由编码分析生成（LLM 归类 + 系统计数）；"
                 "提及量按去重文本计，占比分母为所属情感子集。"
             )
             for _t in _topics[:8]:
@@ -891,6 +899,11 @@ def render_results():
                     f"{_t.get('count', 0)} 条 · {_tpol}主导"
                 )
                 st.caption("、".join(_t.get("phrases") or []))
+    elif bundle.insight_mode == "lexicon":
+        st.caption(
+            "💡 开启 LLM 精分析可获得主题洞察"
+            "（词典模式为单词级统计，主题归并需 LLM 编码分析）。"
+        )
 
     # F-018（2026-08-26，修订版）：词典/规则模式合并为单一「解读与建议」区——
     # structured_summary 为主干（一句话结论 → 正负反馈 → 重点问题归因 → 改进建议）；

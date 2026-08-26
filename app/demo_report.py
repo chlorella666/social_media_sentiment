@@ -53,11 +53,15 @@ _DEMO_SOURCE: Path | None = None  # 本地演示源覆盖（测试用）；None 
 
 
 def _demo_source_path() -> Path | None:
-    """真实演示报告源（本地、gitignored、不入库）：
-    data/state/demo_report/demo_source.json 存在则优先加载；
-    缺失/损坏时回退到内置虚构「云朵咖啡」。"""
-    p = _DEMO_SOURCE if _DEMO_SOURCE is not None else DEMO_DIR / "demo_source.json"
-    return p if p and p.exists() else None
+    """演示报告源（F-020：优先内置脱敏资源 app/demo_source.json，随源码打包；
+    本地 data/state 版本作为开发覆盖；测试用 _DEMO_SOURCE 覆盖优先）。"""
+    if _DEMO_SOURCE is not None:
+        return _DEMO_SOURCE if _DEMO_SOURCE.exists() else None
+    builtin = ROOT / "app" / "demo_source.json"
+    if builtin.exists():
+        return builtin
+    local = DEMO_DIR / "demo_source.json"
+    return local if local.exists() else None
 
 # 准确率对照（产品明示用；数值来自内置评测集，口径：整条情感准确率）
 ACCURACY_COMPARE = [

@@ -119,7 +119,7 @@ def restore_stale_widget_states(at: AppTest) -> None:
         )
     for key, default in (
         ("comments_enabled", True),
-        ("comments_per_post", 10),
+        ("comments_per_post", 3),  # F-026：每帖评论上限默认 3
         ("exclude_words", ""),
         ("ad_review_mode", "自动（广告/官方计入统计）"),
         ("websearch_eval_suffix", True),
@@ -918,6 +918,44 @@ def test_node_opencli_install_migration() -> None:
     print("✓ F-014 安装入口迁移：③页无安装按钮 + 引导/配置中心面板分层 通过")
 
 
+def test_v013_ui_layout() -> None:
+    """F-022~F-026：③渠道页布局（API Key 无可选/无重复状态行/前置条件按需/风控文案/评论默认 3）。"""
+    at = AppTest.from_file(str(ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    confirm_usage_boundary(at)
+    # F-022：开启 LLM 后 API Key label 无「（可选）」（输入框仅 LLM 开启时渲染）
+    llm_toggle = next(t for t in at.toggle if t.label == "启用 LLM 精分析")
+    llm_toggle.set_value(True).run()
+    key_inputs = [x for x in at.text_input if "API Key" in x.label]
+    assert key_inputs and all("（可选）" not in x.label for x in key_inputs), "API Key label 不应含（可选）"
+    at.radio[0].set_value("手动关键词（不分类）").run()
+    click_button(at, "下一步 →")
+    at.text_area[0].set_value("测试 评价").run()
+    restore_stale_widget_states(at)
+    click_button(at, "下一步 →")
+    ms = next(m for m in at.multiselect if m.label.startswith("采集渠道"))
+    ms.set_value(["xiaohongshu"]).run()
+    # F-023：③页无 Node/opencli 状态行与安装按钮
+    assert not any(b.key in ("install_node_btn", "install_opencli_btn") for b in at.button), "③页不应有安装按钮"
+    # 限定主体区（③渠道页），排除侧边栏配置中心的 Node 状态行
+    marks = " ".join(str(m.value) for m in at.main.markdown)
+    assert "Node.js：" not in marks, "③页不应再展示 Node/opencli 状态行"
+    # F-024：前置条件按需呈现（未就绪时含新文案）
+    from app.core.config_status import node_status, opencli_status
+    _n = node_status(); _o = opencli_status()
+    infos = " ".join(str(i.value) for i in at.main.info)
+    if not (_n["has_key"] and _o["has_key"]):
+        assert "小红书前置条件" in infos and "1、Chrome 已登录" in infos, infos
+    # F-025：风控文案新口径
+    warnings = " ".join(str(w.value) for w in at.main.warning)
+    assert "采集较慢，每个关键词约 1~2 分钟" in warnings, warnings
+    # F-026：每帖评论上限默认 3
+    sliders = [x for x in at.main.slider if x.label == "每帖评论上限"]
+    assert sliders and sliders[0].value == 3, f"评论上限默认应 3，实际 {sliders[0].value if sliders else None}"
+    print("✓ v0.1.13 布局批（F-022~F-026）通过")
+
+
 if __name__ == "__main__":
     _WORKER.start()
     try:
@@ -936,6 +974,7 @@ if __name__ == "__main__":
         test_config_status_center()
         test_weibo_cookie_block_ui()
         test_node_opencli_install_migration()
+        test_v013_ui_layout()
     finally:
         _STOP.set()
         _WORKER.join(timeout=5)
