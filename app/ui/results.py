@@ -195,20 +195,32 @@ def rebuild_report_after_review(
         # 规则路径：证据/图表解析/发现全部按复核结果重建（确定性、零费用）
         if bundle.insight_mode in ("llm", "template_fallback"):
             rule_mode, new_mode = "review", "review_refresh"
+            # F-038（2026-08-27）：LLM 任务复核重建只清 need_review——保留原
+            # LLM 主题/结论层（topics/词云/conclusion_text/结构化 findings）；
+            # 复核只改情感统计，主题归属与 LLM 解读可复用后校验（不清空产出）
+            _llm_findings = list(bundle.findings or [])
+            _llm_conclusion_text = bundle.conclusion_text
+            for _k in ("topics", "positive_wordcloud", "negative_wordcloud", "worst_dim_wordcloud"):
+                if _k in bundle.summary:
+                    new_summary[_k] = bundle.summary[_k]
         else:
             rule_mode, new_mode = "lexicon", "lexicon"
-        # F-018（2026-08-26，修订版）：规则路径单区合并——findings 不再产出
-        # 统计总结型 claim（structured_summary 唯一承担统计结论），置空由解读区承载
+            _llm_findings = []
+            _llm_conclusion_text = ""
+        # F-018（2026-08-26，修订版）：词典规则路径单区合并——findings 不再产出
+        # 统计总结型 claim（structured_summary 唯一承担统计结论），置空由解读区承载；
+        # LLM 路径保留原结构化 findings（F-038）
         from app.coding.rule_insights import build_structured_summary
         report_content = {
             "chart_insights": template_chart_insights(build_descriptors(new_summary)),
-            "findings": [],
-            "conclusion": "",
+            "findings": _llm_findings,
+            "conclusion": findings_to_conclusion(_llm_findings) if _llm_findings else "",
             "insight_mode": new_mode,
             "structured_summary": build_structured_summary(
                 new_summary, evidence, new_summary.get("top_phrases")
             ),
             "structured_summary_source": "rule",
+            "conclusion_text": _llm_conclusion_text,
         }
     new_bundle = bundle.model_copy(update={
         "summary": new_summary,
@@ -892,15 +904,14 @@ def render_results():
         with st.expander("📊 平台 × 维度负面率", expanded=show_all):
             st.plotly_chart(pd_fig, width="stretch")
             st.markdown(f"**解析：**{bundle.chart_insights.get('platform_dim', '')}")
-    # F-019（2026-08-26）：主题上主视觉——代表观点区默认可见（主题观点卡），
-    # 原始短语降级为证据层（hover 代表短语 + 主题洞察可展开）
-    st.markdown("### 🧩 主题观点（代表观点）")
-    st.plotly_chart(words_fig(s), width="stretch")
-    st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
-    st.caption(
-        "观点按主题（同义归并）聚合展示；悬停查看代表短语，"
-        "下方「主题洞察」可展开代表短语与原文，占比分母为所属情感子集。"
-    )
+    # F-019/F-036（2026-08-27）：主题观点折叠展示（代表观点区收起，避免占版面）
+    with st.expander("🧩 主题观点（代表观点）", expanded=False):
+        st.plotly_chart(words_fig(s), width="stretch")
+        st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
+        st.caption(
+            "观点按主题（同义归并）聚合展示；悬停查看代表短语，"
+            "下方「主题洞察」可展开代表短语与原文，占比分母为所属情感子集。"
+        )
     # F-021（2026-08-26）：主题洞察仅 LLM 模式显示（折叠保持收起，效果走主视觉）；
     # 词典模式回退单词词频，显示引导
     _topics = s.get("topics") or []

@@ -67,6 +67,37 @@ def _run_to_reviewing(tid: str) -> dict:
     return t
 
 
+def test_llm_rebuild_keeps_llm_outputs() -> None:
+    """F-038：LLM 任务复核重建保留 topics/findings/conclusion_text（不清空 LLM 产出）。"""
+    from unittest import mock
+
+    import streamlit as st
+
+    from app import demo_report
+    from app.ui.results import rebuild_report_after_review
+
+    bundle = demo_report.build_demo_bundle()  # LLM 模式：有 topics/conclusion_text/findings
+    assert bundle.insight_mode == "llm"
+    assert bundle.summary.get("topics"), "fixture 应有 LLM topics"
+    assert bundle.conclusion_text and bundle.findings, "fixture 应有结论层"
+    out = Path(tempfile.mkdtemp(prefix="sms_rebuild_llm_"))
+    fake_task = {"output_dir": str(out), "id": "fake"}
+    with mock.patch.object(jobs, "get_task", return_value=fake_task), \
+         mock.patch.object(
+             st,
+             "session_state",
+             {"_sidebar_api_key": "", "_sidebar_base_url": "", "_sidebar_model_name": ""},
+         ):
+        res = rebuild_report_after_review("fake", bundle)
+    assert res, "复核重建应成功"
+    nb, _ = res
+    assert nb.insight_mode == "review_refresh", nb.insight_mode
+    assert nb.summary.get("topics"), "复核重建后 LLM topics 应保留"
+    assert nb.findings, "复核重建后结构化 findings 应保留"
+    assert nb.conclusion_text, "复核重建后 conclusion_text 应保留"
+    print("✓ F-038 LLM 复核重建保留主题/结论层 通过")
+
+
 def test_pipeline_split_equivalence() -> None:
     fresh_db()
     plan = _plan(review=False)
@@ -193,6 +224,7 @@ def test_worker_ad_flags_roundtrip() -> None:
 
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    test_llm_rebuild_keeps_llm_outputs()
     test_pipeline_split_equivalence()
     test_worker_review_pause_and_resume()
     test_review_cascade()

@@ -106,6 +106,9 @@ class TestDemoReport(unittest.TestCase):
         # 情感矩阵树（F-035 treemap）
         self.assertIn("情感矩阵树", html)
         self.assertIn("h3", html)
+        # F-037：主题观点折叠（details）+ 四处折叠齐全
+        self.assertIn("🧩 主题观点（代表观点）", html)
+        self.assertGreaterEqual(html.count("<details"), 3, "主题观点/方法说明/查询串应折叠")
         # 方法与数据说明折叠表格
         self.assertIn("数据计算方法（点击展开）", html)
         self.assertIn("<details>", html)
