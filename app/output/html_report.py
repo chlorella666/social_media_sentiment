@@ -568,6 +568,49 @@ def _wordcloud_data_uri(s: dict, which: str = "positive") -> str:
     return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
+@_styled
+def wordcloud_treemap_fig(s: dict, which: str = "positive") -> go.Figure | None:
+    """词云矩阵树图（2026-08-27 用户反馈：词云图偏空，改 treemap 更饱满）。
+
+    which: positive / negative / worst_dim；数据源与 PNG 词云一致（主题/词 + 频次）。
+    """
+    key = {
+        "positive": "positive_wordcloud",
+        "negative": "negative_wordcloud",
+        "worst_dim": "worst_dim_wordcloud",
+    }.get(which, "positive_wordcloud")
+    items = (s.get(key) or [])[:40]
+    if not items:
+        return None
+    names = [str(w).replace("\u3000", " ") for w, _ in items]
+    vals = [int(c) for _, c in items]
+    color = SENTIMENT_COLORS["positive"] if which == "positive" else SENTIMENT_COLORS["negative"]
+    fig = go.Figure(
+        go.Treemap(
+            labels=names,
+            parents=[""] * len(names),
+            values=vals,
+            marker_colors=[color] * len(names),
+            textinfo="label+value+percent root",
+            hovertemplate="%{label}<br>提及 %{value} 条 · 占本图 %{percentRoot:.1%}<extra></extra>",
+        )
+    )
+    title = "情感矩阵树"
+    _sub = {
+        "positive": "（正面讨论）",
+        "negative": "（负面讨论）",
+        "worst_dim": f"（{dimension_cn(s.get('worst_dim_id', ''))}维度负面）",
+    }.get(which, "")
+    if _sub:
+        title = f"情感矩阵树{_sub}"
+    fig.update_layout(
+        title=title,
+        height=420,
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
+    return fig
+
+
 COOCCUR_MIN_TOTAL = 20
 COOCCUR_MIN_EDGES = 12
 COOCCUR_MIN_NODES = 15
@@ -1172,12 +1215,13 @@ def _plot_html(fig, include_plotlyjs: bool) -> str:
     避免正则误伤 plotly.js 内部源码。"""
     html = to_html(fig, full_html=False, include_plotlyjs=include_plotlyjs)
     if not include_plotlyjs:
-        # plotly 6.x 输出：`Plotly.newPlot(..., config)\n }`（无分号、外层 if 包裹）。
-        # 只把调用本身包进队列函数，保留外层 if 结构，替换结果合法。
+        # F-035（2026-08-27）：不能按 newPlot 调用替换——JSON 内 rgba(...) 的
+        # 右括号会截断非贪婪匹配（Chrome 多图渲染空白根因）；改为把整个
+        # <script> 块包进 __plotlyQueue（不触碰内部内容，闭包内 var 局部化无碍）
         html = re.sub(
-            r"Plotly\.newPlot\((.*?)\)",
-            lambda m: "window.__plotlyQueue.push(function(){ Plotly.newPlot("
-            + m.group(1) + ") });",
+            r"<script[^>]*>(.*?)</script>",
+            lambda m: "<script>window.__plotlyQueue.push(function(){"
+            + m.group(1) + "});</script>",
             html,
             flags=re.S,
         )
@@ -1438,9 +1482,12 @@ def build_html(bundle: ReportBundle) -> str:
         chart_intensity=_chart_intensity(s),
         chart_radar=_chart_radar(s),
         chart_platform_dim=_chart_platform_dim(s),
-        chart_wordcloud_pos=_wordcloud_data_uri(s, "positive"),
-        chart_wordcloud_neg=_wordcloud_data_uri(s, "negative"),
-        chart_wordcloud_worst=_wordcloud_data_uri(s, "worst_dim"),
+        chart_wordcloud_pos=_plot_html(wordcloud_treemap_fig(s, "positive"), False)
+        if wordcloud_treemap_fig(s, "positive") else "",
+        chart_wordcloud_neg=_plot_html(wordcloud_treemap_fig(s, "negative"), False)
+        if wordcloud_treemap_fig(s, "negative") else "",
+        chart_wordcloud_worst=_plot_html(wordcloud_treemap_fig(s, "worst_dim"), False)
+        if wordcloud_treemap_fig(s, "worst_dim") else "",
         worst_dim_name=dimension_cn(s.get("worst_dim_id", "")),
         chart_cooccurrence=_chart_cooccurrence(s),
         cooccurrence_kind=co_plan["kind"],

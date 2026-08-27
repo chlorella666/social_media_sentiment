@@ -43,6 +43,16 @@
 > ⚠️ **系统要求：仅支持 Windows 10/11。** 应用内「一键安装 Node.js / opencli」依赖
 > 系统内置的 winget（Windows 10/11 自带）；Windows 7/8 无法一键安装，
 > 需手动安装 Python / Node.js，并手动执行 `npm install -g @jackwener/opencli`。
+>
+> 🌐 **浏览器要求（F-029）**：应用主体不挑浏览器——Edge / Firefox / Chrome 均可正常
+> 打开应用、跑向导/分析/报告。**仅小红书渠道必须使用 Chrome（或 Chromium 内核的
+> Edge）并保持登录 xiaohongshu.com**（opencli 的 Browser Bridge 为 Chrome/Chromium
+> 扩展，Firefox 不兼容）；推荐下载 Chrome：https://www.google.cn/chrome/ 。
+>
+> 🌐 **浏览器要求（F-029）**：应用主体不挑浏览器——Edge / Firefox / Chrome 均可正常
+> 打开应用、跑向导/分析/报告。**仅小红书渠道必须使用 Chrome（或 Chromium 内核的
+> Edge）并保持登录 xiaohongshu.com**（opencli 的 Browser Bridge 为 Chrome/Chromium
+> 扩展，Firefox 不兼容）；推荐下载 Chrome：https://www.google.cn/chrome/ 。
 
 1. **安装 Python**：打开 https://www.python.org/downloads/ 下载安装包，
    安装时**务必勾选 "Add Python to PATH"**（否则双击 `run.bat` 会提示找不到 Python）；
@@ -145,8 +155,10 @@ A：确认终端里显示 `Local URL: http://localhost:8501`，手动在浏览�
 若是端口被占用，改端口启动：`python -m streamlit run app/main.py --server.port 8502`。
 
 **Q：选了微博/小红书，但采集到 0 条？**
-A：通常是凭据问题：微博需要有效 Cookie（过期会弹窗提示重粘）；小红书需要 Chrome 登录态
-且最容易被风控。先用「演示数据」或「B站」确认流程正常，再加真实渠道。
+A：通常是凭据问题：微博需要有效 Cookie（过期会弹窗提示重粘）；小红书需要 Chrome（或
+Chromium 内核的 Edge）登录态且最容易被风控——若你没有 Chrome，可到
+https://www.google.cn/chrome/ 下载；应用入口本身不挑浏览器。先用「演示数据」或
+「B站」确认流程正常，再加真实渠道。
 
 **Q：会用掉很多钱吗？**
 A：不开 LLM 完全免费；开 LLM 按调用量计费（DeepSeek 单次分析通常几分钱到几毛钱），
@@ -224,5 +236,28 @@ A：项目采用 AGPL-3.0 许可证：个人学习/研究自由使用；商用/�
 
 ### 项目结构
 
-详见 [docs/项目方案.md](docs/项目方案.md)（技术规格与产品方案）、
-[docs/决策日志.md](docs/决策日志.md)（历史决策）与 [docs/README.md](docs/README.md)（文档索引）。
+分层总览（俯视图；完整逐文件职责见 [docs/项目方案.md](docs/项目方案.md)）：
+
+```text
+social_media_sentence/
+├─ app/                  # 应用源码
+│  ├─ main.py            # Streamlit 入口：路由 + 使用边界门禁
+│  ├─ worker.py          # 常驻后台进程：轮询任务队列并执行
+│  ├─ demo_report.py     # 内置演示报告（成品样例）
+│  ├─ eval_dashboard.py  # 评测仪表盘
+│  ├─ ui/                # 界面层：向导 / 侧边栏 / 任务中心 / 结果页 / 安装面板
+│  ├─ channels/          # 采集渠道：微博 / 小红书 / B站 / 全网搜索 / Demo
+│  ├─ coding/            # 分析层：清洗 / 词典 / 编码 / LLM / 洞察
+│  ├─ core/              # 业务核心：模型 / 任务队列 / 计划 / 凭据 / 证据
+│  ├─ domains/           # 品牌领域体系：模块 / 维度 / 关键词 schema
+│  └─ output/            # 报告导出：HTML / Word / Excel
+├─ tests/                # 38 项回归 + 黄金集 / 边界集评测
+├─ scripts/              # 便携包构建 / 脱敏 / 演示数据再生成
+├─ docs/                 # 方案 / 决策 / 问题清单等文档
+├─ data/                 # 运行产物（不入库，.gitignore）
+└─ run.bat / README.md / requirements.txt / todolist.md
+```
+
+> 结构变更时请同步本图；逐文件职责、历史决策与文档索引分别见
+> [docs/项目方案.md](docs/项目方案.md)（技术规格与产品方案）、
+> [docs/决策日志.md](docs/决策日志.md)（历史决策）与 [docs/README.md](docs/README.md)（文档索引）。

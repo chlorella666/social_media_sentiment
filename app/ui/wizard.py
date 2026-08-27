@@ -550,8 +550,9 @@ def render_stage2():
             _ocl_st = opencli_status()
             if not (_node_st["has_key"] and _ocl_st["has_key"]):
                 st.info(
-                    "小红书前置条件：1、Chrome 已登录 xiaohongshu.com；"
-                    "2、opencli 已安装。"
+                    "小红书前置条件：1、Chrome（或 Chromium 内核的 Edge）已登录 "
+                    "xiaohongshu.com；2、opencli 已安装（没有 Chrome 可到 "
+                    "https://www.google.cn/chrome/ 下载）。"
                 )
                 st.warning(
                     "小红书需要 Node.js 与 opencli，当前未就绪。"

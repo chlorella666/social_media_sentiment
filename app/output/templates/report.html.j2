@@ -214,6 +214,13 @@
       {% if need_review_n > 0 %}<p style="color:var(--color-warning-text);font-size:12px">🔍 需复核：{{ need_review_n }} 条低置信/疑似反讽样本，建议在应用结果页「需复核样本」区人工确认后再下结论。</p>{% endif %}
     </div>
 
+    <div class="section">
+      <h2>分析结论</h2>
+      {% if conclusion_text %}<p style="font-size:15px;line-height:1.8;font-weight:600;color:var(--g-900);margin:4px 0 10px;">{{ conclusion_text }}</p>{% endif %}
+      <p style="color:var(--color-text-muted);font-size:12px;">概览：</p>
+      <div class="conclusion">{{ report_text }}</div>
+    </div>
+
     {% if findings %}
     <div class="section">
       <h2>{{ conclusion_title }}</h2>
@@ -340,18 +347,18 @@
       {% endfor %}
       {% endif %}
       {% if chart_wordcloud_pos or chart_wordcloud_neg %}
-      <h3>情感词云（按情感拆分，权重 = 词频 × 情感强度）</h3>
+      <h3>情感矩阵树</h3>
       {% if chart_wordcloud_pos %}
-      <h4>正面讨论词云</h4>
-      <img src="{{ chart_wordcloud_pos }}" alt="正面词云" style="width:100%; max-width:900px;">
+      <h4>正面讨论矩阵树</h4>
+      <div class="chart">{{ chart_wordcloud_pos }}</div>
       {% endif %}
       {% if chart_wordcloud_neg %}
-      <h4>负面讨论词云</h4>
-      <img src="{{ chart_wordcloud_neg }}" alt="负面词云" style="width:100%; max-width:900px;">
+      <h4>负面讨论矩阵树</h4>
+      <div class="chart">{{ chart_wordcloud_neg }}</div>
       {% endif %}
       {% if chart_wordcloud_worst and worst_dim_name %}
-      <h4>「{{ worst_dim_name }}」维度负面词云（负面率最高维度）</h4>
-      <img src="{{ chart_wordcloud_worst }}" alt="最差维度词云" style="width:100%; max-width:900px;">
+      <h4>「{{ worst_dim_name }}」维度负面矩阵树（负面率最高维度）</h4>
+      <div class="chart">{{ chart_wordcloud_worst }}</div>
       {% endif %}
       <p class="insight">{{ chart_insights.get('wordcloud', '') }}</p>
       {% endif %}
@@ -406,12 +413,6 @@
     </div>
     {% endif %}
 
-    <div class="section">
-      <h2>分析结论</h2>
-      {% if conclusion_text %}<p style="font-size:15px;line-height:1.8;font-weight:600;color:var(--g-900);margin:4px 0 10px;">{{ conclusion_text }}</p>{% endif %}
-      <p style="color:var(--color-text-muted);font-size:12px;">概览：</p>
-      <div class="conclusion">{{ report_text }}</div>
-    </div>
 
     {% if structured_summary %}
     <div class="section">
@@ -461,6 +462,29 @@
       <h2>方法与数据说明</h2>
       <p>情感分析采用「词典预筛 + 大模型精分析」混合策略（本次：词典 {{ method_counts.lexicon }} 条，LLM {{ method_counts.llm }} 条）；综合评分 = 主帖 40% + 评论均值 60%。</p>
       <p>样本量不足时图表与结论仅供参考。原始数据请下载 Excel 查看。</p>
+      <details>
+        <summary style="font-weight:600;cursor:pointer;">📐 数据计算方法（点击展开）</summary>
+        <table>
+          <tr><th>数据</th><th>计算方法</th></tr>
+          <tr><td>整体情感倾向</td><td>按平均情感分判定：均分 &gt; +0.15 → 正面；&lt; −0.15 → 负面；否则中性</td></tr>
+          <tr><td>整体情感占比</td><td>各情感（正/中/负）文本条数 ÷ 统计文本总数</td></tr>
+          <tr><td>平均情感分</td><td>所有统计文本情感分（-1~1）的算术平均</td></tr>
+          <tr><td>LLM 精分析占比</td><td>经 LLM 精分析的文本条数 ÷ 编码文本总数</td></tr>
+          <tr><td>LLM 修正词典判定</td><td>LLM 判定结果与词典初判不一致的条数</td></tr>
+          <tr><td>维度评价量/负面率</td><td>按「维度级情感」逐条计数（一条文本可同时命中多个维度）；负面率 = 该维度负面数 ÷ 该维度总数</td></tr>
+          <tr><td>负面率最高维度</td><td>负面率最高且样本数 ≥3 的维度</td></tr>
+          <tr><td>时间趋势</td><td>按日期聚合内容量/平均分/负面数；日期跨度 &gt;90 天按周聚合；无发布日期的文本不计入时间轴</td></tr>
+          <tr><td>情绪强度</td><td>情感分映射为 1~5 级后的条数分布</td></tr>
+          <tr><td>主题观点/主题洞察</td><td>由 LLM 编码分析工作流生成（LLM 归类 + 系统按代表文本计数）；主题提及量 = 代表文本去重数；占比分母 = 所属情感子集（如「占正面讨论」）</td></tr>
+          <tr><td>情感矩阵树</td><td>每块面积与占比 = 该词/主题提及量 ÷ 本矩阵树展示词提及量总和</td></tr>
+          <tr><td>共现网络/话题词对榜</td><td>对文本 jieba 分词后统计句内共现；PMI = log(共现文档数 × 文档总数 ÷ (词A文档数 × 词B文档数))</td></tr>
+          <tr><td>负面情绪来源话题榜</td><td>统计话题词出现在正面/负面文本的文档数；负面率 = 负面文档数 ÷ (正面+负面文档数)（不含中性）；仅保留出现 ≥5 条的词</td></tr>
+          <tr><td>消费者声音</td><td>E = 保留且非广告/官方的文本数；ratio = E ÷ 采集总数；分档按主导渠道语体比率校准</td></tr>
+          <tr><td>广告/官方内容</td><td>按规则预标的广告/官方文本数及占比；默认计入统计，开启「剔除广告」时仅情感统计剔除（采集漏斗与关键词效果保留）</td></tr>
+          <tr><td>可信度</td><td>按样本量分档：≥100 较高、≥30 中等、&lt;30 较低</td></tr>
+          <tr><td>需复核</td><td>低置信/反讽/黑话/问句/短句等难例标记，需人工确认</td></tr>
+        </table>
+      </details>
     </div>
 
     {% if keyword_rows %}
@@ -492,30 +516,32 @@
       {% endif %}
       <p style="color:var(--color-text-muted);font-size:12px">说明：采集=该关键词采回的帖子数（含清洗丢弃）；有效供给率=保留/采集；样本少的行仅供参考。</p>
       {% if query_rows %}
-      <h3>实际查询串（按渠道）</h3>
-      <p style="color:var(--color-text-muted);font-size:12px">说明：实际查询串是系统实际发给各渠道的查询词（WebSearch 可能在确认关键词基础上追加后缀/子渠道提示/策略词；B站/微博/小红书启用渠道关键词优化时按策略展开）。同一确认关键词可能对应多个实际查询串。本表按渠道×实际查询串统计。</p>
-      <table>
-        <tr>
-          <th>实际查询串</th><th>渠道</th><th>采集</th><th>保留</th><th>丢弃</th>
-          <th>有效供给率</th><th>编码文本</th><th>负面</th><th>负面率</th>
-        </tr>
-        {% for r in query_rows %}
-        <tr>
-          <td>{{ r.query }}</td>
-          <td>{{ r.channel }}</td>
-          <td>{{ r.collected }}</td>
-          <td>{{ r.kept }}</td>
-          <td>{{ r.dropped }}</td>
-          <td>{{ r.effective_rate }}</td>
-          <td>{{ r.coded }}</td>
-          <td>{{ r.negative }}</td>
-          <td>{{ r.negative_rate }}</td>
-        </tr>
-        {% endfor %}
-      </table>
-      {% if unattributed_query_dropped %}
-<p style="color:var(--color-text-muted);font-size:12px">另有 {{ unattributed_query_dropped }} 条 WebSearch 丢弃记录未归属到查询串（旧版数据），不计入上表。</p>
-      {% endif %}
+      <details style="margin-top:10px;border:1px solid var(--c-border);border-radius:8px;padding:8px 12px;">
+        <summary style="font-size:13px;font-weight:600;cursor:pointer;">实际查询串（按渠道）</summary>
+        <p style="color:var(--color-text-muted);font-size:12px;margin:8px 0;">说明：实际查询串是系统实际发给各渠道的查询词（WebSearch 可能在确认关键词基础上追加后缀/子渠道提示/策略词；B站/微博/小红书启用渠道关键词优化时按策略展开）。同一确认关键词可能对应多个实际查询串。本表按渠道×实际查询串统计。</p>
+        <table>
+          <tr>
+            <th>实际查询串</th><th>渠道</th><th>采集</th><th>保留</th><th>丢弃</th>
+            <th>有效供给率</th><th>编码文本</th><th>负面</th><th>负面率</th>
+          </tr>
+          {% for r in query_rows %}
+          <tr>
+            <td>{{ r.query }}</td>
+            <td>{{ r.channel }}</td>
+            <td>{{ r.collected }}</td>
+            <td>{{ r.kept }}</td>
+            <td>{{ r.dropped }}</td>
+            <td>{{ r.effective_rate }}</td>
+            <td>{{ r.coded }}</td>
+            <td>{{ r.negative }}</td>
+            <td>{{ r.negative_rate }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% if unattributed_query_dropped %}
+        <p style="color:var(--color-text-muted);font-size:12px">另有 {{ unattributed_query_dropped }} 条 WebSearch 丢弃记录未归属到查询串（旧版数据），不计入上表。</p>
+        {% endif %}
+      </details>
       {% endif %}
     </div>
     {% else %}

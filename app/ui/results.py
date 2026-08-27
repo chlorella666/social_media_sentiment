@@ -11,7 +11,7 @@ from app.core.models import ReportBundle
 from app.core.names import (dimension_cn, platform_cn, register_custom_dim_names)
 from app.core.pipeline import (bundle_to_json, generate_report_text, recompute_summary)
 from app.output.excel_writer import build_excel
-from app.output.html_report import (_collection_notes, build_html, cooccurrence_fig, cooccurrence_plan, date_dim_heatmap_fig, dimensions_fig, heatmap_fig, intensity_fig, narrative_actor_fig, narrative_frame_actor_heatmap, narrative_insight_text, overall_fig, platform_dim_fig, platform_fig, radar_fig, sentiment_sources_fig, topic_cluster_rows, topic_pairs, trend_fig, wordcloud_png_bytes, words_fig)
+from app.output.html_report import (_collection_notes, build_html, cooccurrence_fig, cooccurrence_plan, date_dim_heatmap_fig, dimensions_fig, heatmap_fig, intensity_fig, narrative_actor_fig, narrative_frame_actor_heatmap, narrative_insight_text, overall_fig, platform_dim_fig, platform_fig, radar_fig, sentiment_sources_fig, topic_cluster_rows, topic_pairs, trend_fig, wordcloud_png_bytes, wordcloud_treemap_fig, words_fig)
 from app.output.word_report import build_word
 from collections import Counter
 from pathlib import Path
@@ -988,28 +988,28 @@ def render_results():
                                 f"来源：{_c.get('platform', '')} · "
                                 f"{_c.get('date') or '日期未知'} · {_j}"
                             )
-    with st.expander("☁️ 情感词云", expanded=False):
+    with st.expander("🧮 情感矩阵树（词云升级版）", expanded=False):
         if not st.session_state.get(f"wc_gen_{task_id}"):
-            st.caption("词云图片生成较慢（3 张约 2~5 秒），点击后生成。")
-            if st.button("生成词云图片", key=f"wc_gen_btn_{task_id}"):
+            st.caption("矩阵树生成较快，点击后渲染。")
+            if st.button("生成矩阵树", key=f"wc_gen_btn_{task_id}"):
                 st.session_state[f"wc_gen_{task_id}"] = True
                 st.rerun()
         else:
-            wc = {
-                w: wordcloud_png_bytes(s, w)
+            _tm = {
+                w: wordcloud_treemap_fig(s, w)
                 for w in ("positive", "negative", "worst_dim")
             }
-            if any(wc.values()):
+            if any(_tm.values()):
                 for which, caption in (
-                    ("positive", "正面讨论词云"),
-                    ("negative", "负面讨论词云"),
-                    ("worst_dim", "负面率最高维度词云"),
+                    ("positive", "正面讨论矩阵树"),
+                    ("negative", "负面讨论矩阵树"),
+                    ("worst_dim", "负面率最高维度矩阵树"),
                 ):
-                    if wc[which]:
-                        st.image(wc[which], caption=caption, width=700)
+                    if _tm[which]:
+                        st.plotly_chart(_tm[which], width="stretch")
                 st.markdown(f"**解析：**{bundle.chart_insights.get('wordcloud', '')}")
             else:
-                st.caption("暂无词云数据（样本过少）。")
+                st.caption("暂无矩阵树数据（样本过少）。")
     co_fig = cooccurrence_fig(s)
     if co_fig:
         with st.expander("🕸 讨论话题共现网络", expanded=show_all):

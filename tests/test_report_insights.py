@@ -421,7 +421,7 @@ def test_report_discussion_structure_branches() -> None:
     }
     s_skip["cooccurrence"] = []
     html_skip = build_html(bundle.model_copy(update={"summary": s_skip}))
-    assert "话题词对榜" not in html_skip
+    assert "话题词对榜（讨论结构样本不足" not in html_skip
     print("✓ HTML 讨论结构三分支渲染 通过")
 
 
@@ -739,6 +739,58 @@ def test_findings_structured_contract() -> None:
     print("✓ F-027 核心发现结构化契约四态（claim/scope/detail/action + conclusion_text）通过")
 
 
+def test_worst_dim_cloud_specific() -> None:
+    """F-034：最差维度词云为维度专属（≠ 负面词云）。"""
+    from app.core.pipeline import _worst_dim_cloud
+
+    class _It:
+        def __init__(self, text, dims):
+            self.text = text
+            self.dimension_sentiments = dims
+
+    items = [
+        _It("打榜流水问题", {"performance": "negative"}),
+        _It("普通负面其他", {}),
+        _It("画质清晰", {"quality": "negative"}),
+    ]
+    worst = _worst_dim_cloud(items, "performance", set())
+    assert worst, "最差维度词云不应为空"
+    worst_words = {w for w, _ in worst}
+    assert "打榜" in worst_words and "流水" in worst_words, f"最差维度专属词应在词云: {worst_words}"
+    assert "其他" not in worst_words, "非该维度负面文本不应进入最差维度词云"
+    print("✓ F-034 最差维度词云专属化（≠ 负面词云）通过")
+
+
+def test_treemap_and_topic_alias() -> None:
+    """F-035：情感矩阵树 + TOPIC_NAME_ALIASES 主题名规范映射。"""
+    from app.coding.coding_workflow import TOPIC_NAME_ALIASES, merge_topics
+    from app.output.html_report import wordcloud_treemap_fig
+
+    assert TOPIC_NAME_ALIASES.get("流水数据") == "打榜流水", TOPIC_NAME_ALIASES
+
+    class _S:
+        def __init__(self, v): self.value = v
+    class _It:
+        def __init__(self, tid, text):
+            self.text_id = tid; self.text = text; self.sentiment = _S("negative")
+    topics = merge_topics(
+        [{"name": "流水数据", "type": "neutral", "text_ids": ["T1"]}],
+        {"T1": _It("T1", "流水数据统计")},
+    )
+    assert topics and topics[0]["name"] == "打榜流水", topics
+
+    fig = wordcloud_treemap_fig(
+        {"positive_wordcloud": [("打榜流水", 5), ("运营", 3)]}, "positive"
+    )
+    assert fig is not None and "情感矩阵树" in str(fig.layout.title.text)
+    fig_neg = wordcloud_treemap_fig(
+        {"negative_wordcloud": [("打榜流水", 5)]}, "negative"
+    )
+    assert fig_neg is not None
+    assert wordcloud_treemap_fig({"negative_wordcloud": []}, "negative") is None
+    print("✓ F-035 情感矩阵树 + 主题名规范映射 通过")
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_report_contains_chart_insights_and_conclusion()
@@ -759,4 +811,6 @@ if __name__ == "__main__":
     test_lexicon_single_zone_merge()
     test_coding_workflow_contract()
     test_findings_structured_contract()
+    test_worst_dim_cloud_specific()
+    test_treemap_and_topic_alias()
     print("报告洞察测试通过 ✅")

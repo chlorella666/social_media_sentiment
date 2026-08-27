@@ -43,7 +43,17 @@ BOILERPLATE_PATTERNS = [
     r"注册问题反馈",
     r"关注发私信",
     r"欢迎, \{\{nick_name\}\}",
+    # 2026-08-27（演示数据壳内容过滤）：游戏页壳话术/攻略/礼包页特征
+    r"投诉举报邮箱",
+    r"攻略大全",
 ]
+
+# F-031（2026-08-27）：礼包码/兑换码为真实玩家高频词，从全局样板规则收窄为
+# 「与壳特征共现才判壳」（避免误伤 B站/微博/小红书评论中的真实讨论）
+SHELL_COMBINED_RE = re.compile(
+    r"(?:礼包码|兑换码).{0,20}(?:攻略|领取|邮箱|大全|兑换中心|礼包领取)",
+    re.IGNORECASE,
+)
 BOILERPLATE_RE = re.compile("|".join(BOILERPLATE_PATTERNS))
 
 # 官网/官方页标题特征：命中则排除（社交媒体情感分析不需要官方公告页）
@@ -201,6 +211,10 @@ def desensitize_text(text: str) -> str:
     if not text:
         return ""
     t = unicodedata.normalize("NFKC", text)
+    # 2026-08-27：客服邮箱话术整段打码（含 kefu .com 空格变体）
+    t = re.sub(r"投诉举报邮箱[:：]?\s*[A-Za-z0-9._%+\-]*\s*\.\s*com", " ", t, flags=re.I)
+    # 邮箱空格变体：kefu @ gmail . com 这类（兼容中间空格）
+    t = re.sub(r"[A-Za-z0-9._%+\-]+\s*@\s*[A-Za-z0-9.\-]+\s*\.\s*[A-Za-z]{2,}", " ", t)
     t = URL_RE.sub(" ", t)
     t = MENTION_RE.sub(" ", t)
     t = EMAIL_RE.sub(" ", t)
@@ -241,7 +255,10 @@ def dedupe_posts(posts: list[Post]) -> list[Post]:
 
 
 def is_boilerplate(text: str) -> bool:
-    return bool(text and BOILERPLATE_RE.search(text))
+    return bool(
+        text
+        and (BOILERPLATE_RE.search(text) or SHELL_COMBINED_RE.search(text))
+    )
 
 
 def is_official_page(title: str) -> bool:

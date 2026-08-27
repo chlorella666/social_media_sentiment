@@ -89,6 +89,34 @@ class TestDemoReport(unittest.TestCase):
         finally:
             demo_report._DEMO_SOURCE = self._orig_source
 
+    def test_v015_layout_assertions(self):
+        """F-036：报告布局（分析结论前置 / 情感矩阵树 / 方法说明折叠 / 查询串折叠 / 无「需复核」）。"""
+        import io as _io
+
+        from app.output.html_report import build_html
+
+        b = demo_report.build_demo_bundle()
+        html = build_html(b)
+        # 分析结论在核心发现之前
+        i_conclusion = html.find("分析结论")
+        i_findings = html.find("核心发现")
+        self.assertGreater(i_conclusion, 0)
+        self.assertGreater(i_findings, 0)
+        self.assertLess(i_conclusion, i_findings, "分析结论应前置")
+        # 情感矩阵树（F-035 treemap）
+        self.assertIn("情感矩阵树", html)
+        self.assertIn("h3", html)
+        # 方法与数据说明折叠表格
+        self.assertIn("数据计算方法（点击展开）", html)
+        self.assertIn("<details>", html)
+        # 实际查询串折叠
+        self.assertIn("实际查询串（按渠道）", html)
+        # 演示报告无「需复核」样本提示（方法说明折叠表格中的口径说明属正常）
+        self.assertNotIn("条样本待人工复核", html)
+        # need_review 字段清零
+        self.assertEqual(sum(1 for it in b.coded_items if it.need_review), 0)
+        print("F-036 report layout assertions passed")
+
     def test_evidence_refs_all_resolve(self):
         b = demo_report.build_demo_bundle()
         ids = {e["id"] for e in b.evidence}

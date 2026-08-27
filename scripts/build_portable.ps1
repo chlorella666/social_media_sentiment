@@ -295,7 +295,8 @@ $notice = @'
   - 所有数据只存在本机，关闭后自动保留在 data/ 文件夹；不开启 LLM 时零数据出境；
   - 开启 LLM 精分析后，低置信度文本会发送给所选服务商（DeepSeek/OpenAI），
     请勿输入含个人敏感信息的内容；
-  - 小红书渠道（进阶）会读取你的 Chrome 登录态；首轮请只用「演示数据」和 B站；
+  - 小红书渠道（进阶）会读取你的 Chrome（或 Chromium 内核的 Edge）登录态，
+    应用入口本身不挑浏览器；没有 Chrome 可到 https://www.google.cn/chrome/ 下载；
   - 不要把本文件夹放进云同步目录（data/ 会被自动上传）；
   - 不要整体压缩转发本文件夹——内含分析数据与加密凭据；分享请用导出的 Excel/HTML 报告；
   - 报告含平台用户原文，仅供自用，勿公开传播；
@@ -308,7 +309,9 @@ $notice = @'
   Q：双击后没反应/白屏？  A：确认 data/ 下有 logs 目录；重试前先双击「退出.bat」。
   Q：端口被占用？        A：先运行「退出.bat」，再重新双击「启动应用.bat」。
   Q：Word 报告生成慢？   A：首次渲染图表图片约 30~60 秒，属正常。
-  Q：想用小红书？        A：见向导③渠道页「一键安装」提示；首轮不建议。
+  Q：想用小红书？        A：需 Chrome（或 Chromium 内核的 Edge）登录 xiaohongshu.com，
+                             并安装 opencli（见向导③渠道页提示 / 左侧配置中心一键安装）；
+                             没有 Chrome 可到 https://www.google.cn/chrome/ 下载。
   Q：微博 Cookie 怎么获取？ A：见向导③「怎么获取微博 Cookie？（小白版）」，
                               Application/Storage 5 步，直接复制 SUB 的 VALUE 即可。
   Q：报告/结果页滚不到底？  A：等图表加载完（约几秒），仍不行刷新一次。

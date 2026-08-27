@@ -150,8 +150,8 @@ def _opencli_ready() -> tuple[bool, str]:
             base / "@jackwener" / "opencli" / "dist" / "src" / "main.js"
         )
         if main_js.exists():
-            return True, "opencli 就绪（需 Chrome 已登录小红书；体检不主动探测会话，避免触发验证码）"
-    return False, "未安装 opencli/Node（npm install -g @jackwener/opencli）"
+            return True, "opencli 就绪（需 Chrome 或 Chromium 内核的 Edge 已登录小红书；体检不主动探测会话，避免触发验证码）"
+    return False, "未安装 opencli/Node（npm install -g @jackwener/opencli；需 Chrome：https://www.google.cn/chrome/）"
 
 
 def check_xiaohongshu_rich() -> dict:

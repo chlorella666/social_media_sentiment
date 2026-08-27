@@ -304,6 +304,12 @@ class Coder:
                 llm_dims = res.get("dimension_sentiments")
                 if isinstance(llm_dims, dict) and llm_dims:
                     items[idx].dimension_sentiments = llm_dims
+                    # F-032（2026-08-27）：维度标注根治——LLM 判出新维度同步回填
+                    # dimensions（llm_analyzer 已 sanitize 仅保留 schema 合法 id，
+                    # 无脏维度风险；词典命中维度与 LLM 维度取并集）
+                    items[idx].dimensions = list(
+                        set(items[idx].dimensions) | set(llm_dims.keys())
+                    )
 
         # 第三遍（可选）：叙事框架与归因
         if plan.narrative_enabled and llm_available:

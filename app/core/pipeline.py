@@ -26,7 +26,6 @@ from app.coding.tokenizer import (
     GENERIC_NOUNS,
     SYNONYM_GROUPS,
     build_cooccurrence,
-    build_phrase_cooccurrence,
     build_word_freq,
     encode_phrases,
     extract_phrases,
@@ -213,6 +212,31 @@ def _reconcile_channel_posts(
                 f"补采一致性清洗：{len(extra)} 条补采帖经最终清洗判定丢弃"
             )
     return kept
+
+
+def _worst_dim_cloud(
+    stat_items: list, worst_dim: str, extra_stop: set[str]
+) -> list[tuple[str, int]]:
+    """最差维度专属词云：该维度被标 negative 的文本的 jieba 高频词（2026-08-27）。
+
+    修复：旧实现直接复用全部负面主题/词云，导致「负面讨论词云」与
+    「最差维度负面词云」一模一样（用户反馈）。
+    """
+    if not worst_dim:
+        return []
+    texts = [
+        it.text
+        for it in stat_items
+        if (it.dimension_sentiments or {}).get(worst_dim) == "negative"
+        and (it.text or "").strip()
+    ]
+    if not texts:
+        return []
+    from app.coding.tokenizer import segment
+    cnt: Counter[str] = Counter()
+    for t in texts:
+        cnt.update(segment(t, extra_stop))
+    return cnt.most_common(30)
 
 
 def _subject_stopwords(plan: AnalysisPlan) -> set[str]:
@@ -549,34 +573,16 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     )
     sentiment_sources = sentiment_sources[:12]
 
-    # 共现网络（F-019：优先主题名节点，与代表观点/词云同一主题口径；
-    # 主题不足回退短语节点 F-009；再回退单词级）
-    phrase_edges: list[dict] = []
-    phrase_node_count: dict[str, int] = {}
-    _co_nodes: list[dict] = []
-    if topics and len(topics) >= 2:
-        _co_nodes = [{"phrase": t["name"]} for t in topics]
-    elif phrase_data and len(phrase_data) >= 2:
-        _co_nodes = phrase_data
-    if _co_nodes:
-        try:
-            phrase_edges, phrase_node_count = build_phrase_cooccurrence(
-                content_texts, _co_nodes, top_n=30, min_count=1,
-            )
-        except Exception:
-            phrase_edges, phrase_node_count = [], {}
-    if phrase_edges:
-        cooccurrence_raw = phrase_edges
-        node_count = phrase_node_count
-    else:
-        cooccurrence_raw, node_count = build_cooccurrence(
-            content_texts,
-            window=3,
-            top_n=30,
-            extra_stopwords=extra_stop,
-            min_count=3,
-            return_counts=True,
-        )
+    # 共现网络（2026-08-27 用户反馈）：主题词高度凝练导致词对重复（如「服务—服务」），
+    # 回退 jieba 单词共现（v0.1.8 口径），话题词对榜语义粒度更合适
+    cooccurrence_raw, node_count = build_cooccurrence(
+        content_texts,
+        window=3,
+        top_n=30,
+        extra_stopwords=extra_stop,
+        min_count=3,
+        return_counts=True,
+    )
     # 方案 Part B（2026-08-19）：节点 top20（按文档频次）+ 固定取 PMI 前 20 条边
     # （不追节点数——门槛判定交给 build_topic_clusters：边≥12 且 节点≥15 才聚类，
     #  否则走词对榜；追节点数会自相矛盾地把小图扩到门槛以上）。
@@ -730,14 +736,7 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
             )
         ),
         "worst_dim_id": worst_dim,
-        "worst_dim_wordcloud": (
-            [(t["name"].replace(" ", "\u3000"), t["count"]) for t in topics
-             if t.get("polarity") == "negative"][:40]
-            if topics else (
-                [(p["phrase"].replace(" ", "\u3000"), p["count"]) for p in _neg_phrases[:40]]
-                if _neg_phrases else worst_cloud.most_common(40)
-            )
-        ),
+        "worst_dim_wordcloud": _worst_dim_cloud(stat_items, worst_dim, extra_stop),
         "word_dims": word_dims,
         "narrative_stats": narr_stats,
         "keyword_stats": {
@@ -1371,7 +1370,7 @@ class TaskRunner:
                             (t["name"].replace(" ", "\u3000"), t["count"])
                             for t in _neg_t
                         ]
-                        summary["worst_dim_wordcloud"] = summary["negative_wordcloud"]
+                        # worst_dim_wordcloud 保留 build_summary 的维度专属词云（不再复制负面词云）
                 except Exception:
                     pass  # 工作流失败保持规则主题兜底
             report_text = generate_report_text(

@@ -429,6 +429,60 @@ def test_build_report_content_mock_mode() -> None:
     print("✓ 词典模式统一入口通过（F-018 单区合并）")
 
 
+def test_coder_dimensions_sync() -> None:
+    """F-032：LLM 判出新维度 → dimensions 同步回填（新任务维度不错位）。"""
+    from unittest import mock
+
+    import app.coding.coder as coder_mod
+    from app.coding.coder import Coder
+    from app.core.models import AnalysisPlan, Post
+    from app.core.planner import build_plan
+
+    class FakeLLM:
+        def analyze_batch(self, texts, on_batch_progress=None, dimension_schema=None, **kw):
+            return [
+                {
+                    "sentiment": "negative",
+                    "score": -0.6,
+                    "confidence": 0.9,
+                    "keywords": ["卡顿"],
+                    "dimension_sentiments": {"performance": "negative"},
+                }
+                for _ in texts
+            ]
+
+        def analyze_narrative(self, texts, **kw):
+            return [{"narrative": None, "attribution": None} for _ in texts]
+
+        @property
+        def errors(self):
+            return []
+
+    plan = build_plan(
+        subject="测试机", domain_id=None, dimension_ids=[],
+        keyword_groups=[], manual_keywords=["测试机"], channel_ids=["bilibili"],
+        date_start=None, date_end=None, comments_enabled=False,
+        comments_per_post=0, llm_enabled=True, narrative_enabled=False,
+    )
+    posts = [
+        Post(
+            id="p1", platform="bilibili", keyword="测试机", author="u",
+            title="t", content="卡顿严重", url="http://x/p1",
+            timestamp="2026-08-27", likes=0, reposts=0, comments_count=0,
+            comments=[], platform_specific={},
+        )
+    ]
+    with mock.patch.object(coder_mod, "OpenAICompatibleAnalyzer", FakeLLM):
+        coder = Coder(FakeLLM(), schema=None)
+        items = coder.code_posts(posts, plan)
+    assert items and items[0].method == "llm"
+    assert items[0].dimension_sentiments.get("performance") == "negative"
+    assert "performance" in items[0].dimensions, (
+        f"LLM 判出新维度应同步回填 dimensions，实际 {items[0].dimensions}"
+    )
+    print("✓ F-032 LLM 维度同步：dimensions 并集回填 通过")
+
+
 def test_display_finding_helpers() -> None:
     """展示层：内部 F1 → "发现 1"；action 里的（对应F1）→（对应发现1），不误伤 E#/S#。"""
     from app.core.evidence import (
@@ -481,6 +535,7 @@ if __name__ == "__main__":
     test_lexicon_findings_guardrails()
     test_validate_llm_findings()
     test_build_report_content_mock_mode()
+    test_coder_dimensions_sync()
     test_display_finding_helpers()
     test_dimension_evidence_label()
     print("证据链测试全部通过 ✅")

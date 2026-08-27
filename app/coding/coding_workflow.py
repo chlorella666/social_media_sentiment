@@ -13,6 +13,11 @@ import json
 BATCH_SIZE = 200
 VALID_TYPES = {"pain", "expectation", "neutral"}
 
+# 2026-08-27（用户反馈）：LLM 自由命名的主题名规范映射——圈内/难懂名换成口语化表达
+TOPIC_NAME_ALIASES = {
+    "流水数据": "打榜流水",
+}
+
 _SYSTEM = (
     "你是资深的用户研究分析师。给定一批社交媒体帖文/评论（已按品牌分析），"
     "执行传统访谈式编码（编码→主题→诉求分类→洞察）：\n"
@@ -91,7 +96,7 @@ def merge_topics(validated: list[dict], items_by_id: dict) -> list[dict]:
     groups: dict[str, list[str]] = {}
     meta: dict[str, dict] = {}
     for t in validated:
-        key = t["name"]
+        key = TOPIC_NAME_ALIASES.get(t["name"], t["name"])
         groups.setdefault(key, []).extend(t["text_ids"])
         meta.setdefault(key, {"type": t.get("type", "neutral"),
                               "attribution": t.get("attribution", ""),
