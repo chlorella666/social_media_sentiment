@@ -328,7 +328,7 @@
 
     <div class="section">
       <details style="margin-bottom:10px;border:1px solid var(--c-border);border-radius:8px;padding:8px 12px;">
-        <summary style="font-size:14px;font-weight:700;cursor:pointer;">🧩 主题观点（代表观点）</summary>
+        <summary style="font-size:14px;font-weight:700;cursor:pointer;">{% if insight_mode == 'llm' %}🧩 主题观点（代表观点）{% else %}🔤 高频词（词典模式）{% endif %}</summary>
         <div class="chart">{{ chart_words }}</div>
         <p class="insight">{{ chart_insights.get('words', '') }}</p>
         <p style="color:var(--color-text-muted);font-size:12px">

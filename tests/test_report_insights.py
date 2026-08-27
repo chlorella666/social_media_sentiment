@@ -791,6 +791,49 @@ def test_treemap_and_topic_alias() -> None:
     print("✓ F-035 情感矩阵树 + 主题名规范映射 通过")
 
 
+def test_lexicon_degrade_no_topics() -> None:
+    """R-002：开 LLM 但实际降级词典（llm_active=False）→ topics 不生成（防假 LLM 主题）。"""
+    plan = AnalysisPlan(subject="测试", keywords=["测试"], llm_enabled=True)
+    items = [
+        CodedItem(text_id="a", text="电池掉电快 续航不行", platform="weibo",
+                  keyword="测试", sentiment=SentimentLabel.negative),
+        CodedItem(text_id="b", text="屏幕发黄 画质很差", platform="weibo",
+                  keyword="测试", sentiment=SentimentLabel.negative),
+    ]
+    s = build_summary(plan, items, [], llm_active=False)
+    assert not s.get("topics"), "降级词典模式不应生成 topics（R-002 防假 LLM 主题）"
+    assert not any(s.get("top_phrases", {}).values()), "降级词典模式不应生成短语层（回退 jieba 单词）"
+    print("✓ R-002 开 LLM 但降级词典 → topics 空 通过")
+
+
+def test_word_treemap_titles() -> None:
+    """R-003：Word 词云段改用 kaleido 渲染矩阵树（闭合 F-019 四端一致）。"""
+    bundle = TaskRunner(_plan()).run()
+    word = build_word(bundle).getvalue()
+    doc = DocxDocument(BytesIO(word))
+    texts = [p.text for p in doc.paragraphs]
+    treemap_titles = [t for t in texts if "情感矩阵树" in t]
+    assert len(treemap_titles) >= 3, treemap_titles
+    assert all("词云" not in t for t in treemap_titles), treemap_titles
+    print("✓ R-003 Word 情感矩阵树（kaleido）通过")
+
+
+def test_lexicon_high_freq_labels() -> None:
+    """R-004：词典模式 HTML/Word 标签统一「高频词（词典模式）」，不再写「主题观点（同义归并）」。"""
+    bundle = TaskRunner(_plan()).run()
+    assert bundle.insight_mode == "lexicon"
+    html = build_html(bundle)
+    assert "高频词（词典模式）" in html, "词典模式 HTML 词云标题应为高频词"
+    word = build_word(bundle).getvalue()
+    doc = DocxDocument(BytesIO(word))
+    texts = [p.text for p in doc.paragraphs]
+    assert any("高频词（词典模式）" in t for t in texts), texts
+    assert not any("主题观点 Top20（同义归并）" in t for t in texts), texts
+    print("✓ R-004 词典模式标签统一（高频词）通过")
+
+
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_report_contains_chart_insights_and_conclusion()
@@ -813,4 +856,7 @@ if __name__ == "__main__":
     test_findings_structured_contract()
     test_worst_dim_cloud_specific()
     test_treemap_and_topic_alias()
+    test_lexicon_degrade_no_topics()
+    test_word_treemap_titles()
+    test_lexicon_high_freq_labels()
     print("报告洞察测试通过 ✅")

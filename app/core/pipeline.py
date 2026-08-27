@@ -131,9 +131,14 @@ def consumer_voice_summary(
 def recompute_summary(
     plan: AnalysisPlan, items: list[CodedItem],
     channel_results: list[ChannelResult], posts: list[Post],
+    llm_active: bool | None = None,
 ) -> dict:
-    """重算 summary（2.11 方案 A 复用）：build_summary + llm_corrected + consumer_voice。"""
-    summary = build_summary(plan, items, posts)
+    """重算 summary（2.11 方案 A 复用）：build_summary + llm_corrected + consumer_voice。
+
+    R-002（2026-08-28）：llm_active 传入「实际 LLM 是否生效」——开 LLM 但降级词典
+    时（无 Key/连接失败）为 False，主题层不生成；None 时回退 plan.llm_enabled。
+    """
+    summary = build_summary(plan, items, posts, llm_active=llm_active)
     summary["llm_corrected"] = sum(
         1
         for it in items
@@ -344,7 +349,10 @@ def _build_narrative_stats(stat_items: list[CodedItem]) -> dict:
     }
 
 
-def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post]) -> dict:
+def build_summary(
+    plan: AnalysisPlan, items: list[CodedItem], posts: list[Post],
+    llm_active: bool | None = None,
+) -> dict:
     """汇总统计：整体分布、平台统计、维度统计、时间趋势、高频词。"""
     total = len(items)
     # 广告/官方内容（2.6）：默认计入；exclude_ad_enabled=True 时仅情感统计剔除，
@@ -423,9 +431,12 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     # F-009/F-021（2026-08-26）：短语级统计（bigram~5gram + PMI + 情感权重）
     # F-021：词典模式撤销主题层——回退 jieba 单词词频（v0.1.8 口径），
     # 短语/主题仅在 LLM 模式生成（LLM 编码工作流在此基础上归类）
+    # R-002（2026-08-28）：条件收紧为「实际 LLM 生效」——开 LLM 但降级词典
+    # （无 Key/连接失败 → llm_active=False）不生成短语/主题，避免假 LLM 主题
+    _llm_on = bool(llm_active) if llm_active is not None else bool(plan.llm_enabled)
     phrase_data: list[dict] = []
     topics: list[dict] = []
-    if plan.llm_enabled:
+    if _llm_on:
         try:
             phrase_data = extract_phrases(
                 [it.text for it in stat_items],
@@ -449,8 +460,8 @@ def build_summary(plan: AnalysisPlan, items: list[CodedItem], posts: list[Post])
     }
 
     # F-015 P2 / F-021（2026-08-26）：主题层——短语编码归并（维度关键词 + 品牌别名，
-    # 保守）；仅 LLM 模式生成（词典模式回退单词，见上）
-    if plan.llm_enabled:
+    # 保守）；仅实际 LLM 生效时生成（词典/降级回退单词，见上）
+    if _llm_on:
         try:
             _schema = task_schema(plan)
             _dim_kw: dict[str, list[str]] = {}
@@ -1313,7 +1324,16 @@ class TaskRunner:
         self.tracker.step("report", state="running", detail="正在生成统计与报告", frac=0.0)
         self._progress(TaskStatus.reporting, "正在生成统计与报告", self._phase_weights["reporting"][0])
         register_custom_dim_names(plan)  # 2.8：任务级自定义维度显示名（图表/洞察共用）
-        summary = recompute_summary(plan, items, channel_results, posts)
+        # R-002（2026-08-28）：主题层按「实际 LLM 生效」生成——开 LLM 但降级词典
+        # （无 Key/连接失败 → analyzer 为 Mock 或 llm step failed）不生成主题
+        _llm_active = bool(
+            plan.llm_enabled
+            and isinstance(analyzer, OpenAICompatibleAnalyzer)
+            and self.tracker.get("llm").state != "failed"
+        )
+        summary = recompute_summary(
+            plan, items, channel_results, posts, llm_active=_llm_active
+        )
         llm_usage: dict = {}
         if hasattr(analyzer, "usage"):
             u = analyzer.usage

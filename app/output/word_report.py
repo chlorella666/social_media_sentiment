@@ -31,7 +31,6 @@ from app.output.html_report import (
     topic_cluster_rows,
     topic_pairs,
     trend_fig,
-    wordcloud_png_bytes,
     words_fig,
 )
 from app.core.names import dimension_cn
@@ -82,6 +81,23 @@ def _add_chart_image(doc: Document, fig, title: str) -> None:
     """用 kaleido 把 plotly 图渲染成 PNG 嵌入 Word。"""
     calc = _get_calc_fig()
     if calc is None:
+        return
+    try:
+        data = calc(
+            fig,
+            opts=dict(format="png", width=850, height=480, scale=1.1),
+        )
+    except Exception:
+        return
+    doc.add_picture(BytesIO(data), width=Inches(6.2))
+    run = doc.add_paragraph().add_run(title)
+    run.bold = True
+
+
+def _add_treemap_image(doc: Document, fig, title: str) -> None:
+    """R-003（2026-08-28）：用 kaleido 渲染矩阵树图 PNG 嵌入 Word（闭合四端一致）。"""
+    calc = _get_calc_fig()
+    if calc is None or fig is None:
         return
     try:
         data = calc(
@@ -271,6 +287,13 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         fig = builder(s)
         if fig is None:
             continue
+        # R-004（2026-08-28）：词典模式 words 图回退 jieba 单词，图题统一「高频词（词典模式）」
+        if cid == "words":
+            title = (
+                "主题观点 Top20（同义归并）"
+                if bundle.insight_mode == "llm"
+                else "高频词（词典模式）Top20"
+            )
         _add_chart_image(doc, fig, title)
         insight = bundle.chart_insights.get(cid, "")
         if insight:
@@ -316,16 +339,16 @@ def build_word(bundle: ReportBundle) -> BytesIO:
                 cells[0].text = f"{r['source']} — {r['target']}"
                 cells[1].text = str(r["count"])
                 cells[2].text = f"{r['pmi']:.2f}"
+    # R-003（2026-08-28）：Word 词云改用 kaleido 渲染情感矩阵树（闭合 F-019 四端一致）
+    from app.output.html_report import wordcloud_treemap_fig
     for which, caption in (
-        ("positive", "正面讨论词云"),
-        ("negative", "负面讨论词云"),
-        ("worst_dim", "负面率最高维度词云"),
+        ("positive", "情感矩阵树（正面讨论）"),
+        ("negative", "情感矩阵树（负面讨论）"),
+        ("worst_dim", "情感矩阵树（负面率最高维度）"),
     ):
-        wc_bytes = wordcloud_png_bytes(s, which)
-        if wc_bytes:
-            doc.add_picture(BytesIO(wc_bytes), width=Inches(6.2))
-            run = doc.add_paragraph().add_run(caption)
-            run.bold = True
+        _tf = wordcloud_treemap_fig(s, which)
+        if _tf is not None:
+            _add_treemap_image(doc, _tf, caption)
     wc_insight = bundle.chart_insights.get("wordcloud", "")
     if wc_insight:
         p = doc.add_paragraph(wc_insight)

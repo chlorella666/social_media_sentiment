@@ -48,12 +48,6 @@
 > 打开应用、跑向导/分析/报告。**仅小红书渠道必须使用 Chrome（或 Chromium 内核的
 > Edge）并保持登录 xiaohongshu.com**（opencli 的 Browser Bridge 为 Chrome/Chromium
 > 扩展，Firefox 不兼容）；推荐下载 Chrome：https://www.google.cn/chrome/ 。
->
-> 🌐 **浏览器要求（F-029）**：应用主体不挑浏览器——Edge / Firefox / Chrome 均可正常
-> 打开应用、跑向导/分析/报告。**仅小红书渠道必须使用 Chrome（或 Chromium 内核的
-> Edge）并保持登录 xiaohongshu.com**（opencli 的 Browser Bridge 为 Chrome/Chromium
-> 扩展，Firefox 不兼容）；推荐下载 Chrome：https://www.google.cn/chrome/ 。
-
 1. **安装 Python**：打开 https://www.python.org/downloads/ 下载安装包，
    安装时**务必勾选 "Add Python to PATH"**（否则双击 `run.bat` 会提示找不到 Python）；
 2. 把本项目文件夹解压/克隆到任意目录；

@@ -211,14 +211,21 @@ def rebuild_report_after_review(
         # 统计总结型 claim（structured_summary 唯一承担统计结论），置空由解读区承载；
         # LLM 路径保留原结构化 findings（F-038）
         from app.coding.rule_insights import build_structured_summary
+        if _llm_findings:
+            # R-001（2026-08-28）：LLM 复核重建不渲染解读区（F-018 对齐）——
+            # structured_summary 置空，仅保留 LLM findings + conclusion_text，
+            # 避免「解读与建议（规则）」与「核心发现（LLM）」重复/两套总结打架
+            _ss = {}
+        else:
+            _ss = build_structured_summary(
+                new_summary, evidence, new_summary.get("top_phrases")
+            )
         report_content = {
             "chart_insights": template_chart_insights(build_descriptors(new_summary)),
             "findings": _llm_findings,
             "conclusion": findings_to_conclusion(_llm_findings) if _llm_findings else "",
             "insight_mode": new_mode,
-            "structured_summary": build_structured_summary(
-                new_summary, evidence, new_summary.get("top_phrases")
-            ),
+            "structured_summary": _ss,
             "structured_summary_source": "rule",
             "conclusion_text": _llm_conclusion_text,
         }
@@ -905,13 +912,23 @@ def render_results():
             st.plotly_chart(pd_fig, width="stretch")
             st.markdown(f"**解析：**{bundle.chart_insights.get('platform_dim', '')}")
     # F-019/F-036（2026-08-27）：主题观点折叠展示（代表观点区收起，避免占版面）
-    with st.expander("🧩 主题观点（代表观点）", expanded=False):
+    # R-004（2026-08-28）：词典模式回退 jieba 单词，标签统一「高频词（词典模式）」
+    _words_title = (
+        "🧩 主题观点（代表观点）" if s.get("topics") else "🔤 高频词（词典模式）"
+    )
+    with st.expander(_words_title, expanded=False):
         st.plotly_chart(words_fig(s), width="stretch")
         st.markdown(f"**解析：**{bundle.chart_insights.get('words', '')}")
-        st.caption(
-            "观点按主题（同义归并）聚合展示；悬停查看代表短语，"
-            "下方「主题洞察」可展开代表短语与原文，占比分母为所属情感子集。"
-        )
+        if s.get("topics"):
+            st.caption(
+                "观点按主题（同义归并）聚合展示；悬停查看代表短语，"
+                "下方「主题洞察」可展开代表短语与原文，占比分母为所属情感子集。"
+            )
+        else:
+            st.caption(
+                "词典模式回退 jieba 单词词频（主题归并需 LLM 编码分析）；"
+                "开启 LLM 精分析可获得主题观点。"
+            )
     # F-021（2026-08-26）：主题洞察仅 LLM 模式显示（折叠保持收起，效果走主视觉）；
     # 词典模式回退单词词频，显示引导
     _topics = s.get("topics") or []

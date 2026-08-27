@@ -95,7 +95,8 @@ def test_llm_rebuild_keeps_llm_outputs() -> None:
     assert nb.summary.get("topics"), "复核重建后 LLM topics 应保留"
     assert nb.findings, "复核重建后结构化 findings 应保留"
     assert nb.conclusion_text, "复核重建后 conclusion_text 应保留"
-    print("✓ F-038 LLM 复核重建保留主题/结论层 通过")
+    assert not nb.structured_summary, "R-001：LLM 复核重建后 structured_summary 应置空（F-018 对齐）"
+    print("✓ R-001/F-038 LLM 复核重建保留主题/结论层且 structured_summary 置空 通过")
 
 
 def test_pipeline_split_equivalence() -> None:

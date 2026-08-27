@@ -351,57 +351,6 @@ def extract_phrases(
 
 
 
-def build_phrase_cooccurrence(
-    texts: list[str],
-    phrases: list[dict],
-    top_n: int = 30,
-    min_count: int = 1,
-) -> tuple[list[dict], dict[str, int]]:
-    """F-009：以短语为节点的句内共现（供共现网络/话题簇使用）。
-
-    返回 (edges, node_count)；短语不足时调用方回退单词级 build_cooccurrence。
-    """
-    phrase_list = [p["phrase"] for p in phrases]
-    phrase_c = [_clean_match(p) for p in phrase_list]
-    pair_counter: Counter[tuple[str, str]] = Counter()
-    node_count: Counter[str] = Counter()
-    total = 0
-    for text in texts:
-        text_c = _clean_match(text)
-        if not text_c:
-            continue
-        total += 1
-        for sent in _SENT_SPLIT.split(text):
-            sent_c = _clean_match(sent)
-            present: list[str] = []
-            for ph, pc in zip(phrase_list, phrase_c):
-                if pc and pc in sent_c:
-                    present.append(ph)
-            for ph in set(present):
-                node_count[ph] += 1
-            seen: set[tuple[str, str]] = set()
-            for i in range(len(present)):
-                for j in range(i + 1, len(present)):
-                    a, b = sorted((present[i], present[j]))
-                    seen.add((a, b))
-            for key in seen:
-                pair_counter[key] += 1
-    if not pair_counter:
-        return [], {}
-    edges = []
-    for (a, b), c in pair_counter.items():
-        if c < min_count:
-            continue
-        pa = node_count[a] / max(total, 1)
-        pb = node_count[b] / max(total, 1)
-        pab = c / max(total, 1)
-        weight = math.log(pab / (pa * pb)) if pa > 0 and pb > 0 else 0.0
-        edges.append({"source": a, "target": b, "count": c, "weight": round(weight, 3)})
-    edges.sort(key=lambda e: -e["weight"])
-    nodes = {n for e in edges for n in (e["source"], e["target"])}
-    return edges[:top_n], {n: node_count[n] for n in nodes}
-
-
 # ---------------------------------------------------------------------------
 # F-019（2026-08-26）：同义词组——把同一语义的不同表达归并到同一编码
 # （"电池掉电快"与"续航不行"统计到同一主题，用户可感知的归并案例）

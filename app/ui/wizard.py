@@ -949,7 +949,8 @@ def render_stage3():
         channel_queries=channel_queries,
     )
     cost_est = estimate_cost(
-        est_items + est_comments, narrative_enabled, relevance_check_enabled
+        est_items + est_comments, narrative_enabled, relevance_check_enabled,
+        llm_enabled=llm_enabled,
     )
     # WebSearch 关键词总量（展开后查询串数 × WebSearch 渠道数）：
     # 必须在 summary_rows 构建前计算，否则确认页引用未定义变量抛 NameError
