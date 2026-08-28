@@ -93,6 +93,7 @@ def build_record() -> dict:
 
 
 def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--compare", action="store_true", help="与已存基线对比")
     args = ap.parse_args()

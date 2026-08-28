@@ -216,6 +216,7 @@ def test_cleaner_baseline_fixture() -> None:
     assert len(posts) == 273
     assert len(kept) == 220
     assert len(dropped) == 53
+    assert len(kept) + len(dropped) == len(posts)  # 阶段5 账目平衡
     by_reason = Counter()
     by_kind = Counter()
     for d in dropped:
@@ -265,6 +266,7 @@ def test_clean_posts_dedupe_keys() -> None:
     ]
     kept, dropped = cleaner.clean_posts(posts, subject="恋与深空")
     assert len(kept) == 4
+    assert len(kept) + len(dropped) == len(posts)  # 阶段5 账目平衡
     reasons = "；".join(d["reason"] for d in dropped)
     assert "重复（相同标题）" in reasons
     assert "重复（相同正文）" in reasons
