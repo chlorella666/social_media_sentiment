@@ -293,6 +293,24 @@ def test_f031_shell_zero_residual() -> None:
     assert len(kept2) == 2, _dropped_reasons(kept2, dropped2)
     print("✓ F-031 壳内容零残留 + 礼包码/兑换码真实讨论不误杀 通过")
 
+def test_light_normalize_boilerplate_variants() -> None:
+    """F-030 阶段2：样板/壳判定前轻归一化——标题全角变体命中，原文不被修改。"""
+    assert cleaner._light_normalize("ＡＢＣ　Ｄ") == "abc d"
+    posts = [
+        _post("weibo", "ＡＰＫ下载", "这是一段超过十个字的真实正文内容"),
+        _post("weibo", "恋与深空 合法兑换码", "兑换码真的换到了好皮肤，太开心了"),
+    ]
+    kept, dropped = cleaner.clean_posts(posts, subject="恋与深空")
+    assert len(dropped) == 1, _dropped_reasons(kept, dropped)
+    assert "样板/页面壳文本" in dropped[0]["reason"], dropped[0]
+    assert len(kept) == 1 and kept[0].title == "恋与深空 合法兑换码"
+    kept2, _ = cleaner.clean_posts(
+        [_post("weibo", "恋与深空 保留空白", "内容 里有  连续空白  的正文内容")],
+        subject="恋与深空",
+    )
+    assert kept2[0].content == "内容 里有  连续空白  的正文内容"
+    print("✓ 轻归一化：标题全角变体命中样板，原文不变 通过")
+
 def test_cleaner_ledger_fields() -> None:
     """F-030 阶段1：丢弃记录含 step/fingerprint，指纹可复现，判定行为不变。"""
     import hashlib
@@ -335,6 +353,7 @@ def main() -> None:
     test_clean_posts_dedupe_keys()
     test_f031_shell_zero_residual()
     test_cleaner_ledger_fields()
+    test_light_normalize_boilerplate_variants()
     print("清洗规则测试全部通过 ✅")
 
 

@@ -55,7 +55,8 @@ SHELL_COMBINED_RE = re.compile(
     r"(?:礼包码|兑换码).{0,20}(?:攻略|领取|邮箱|大全|兑换中心|礼包领取)",
     re.IGNORECASE,
 )
-BOILERPLATE_RE = re.compile("|".join(BOILERPLATE_PATTERNS))
+# F-030 阶段2：样板正则带 IGNORECASE，配合 _light_normalize 大小写折叠命中变体。
+BOILERPLATE_RE = re.compile("|".join(BOILERPLATE_PATTERNS), re.IGNORECASE)
 
 # 官网/官方页标题特征：命中则排除（社交媒体情感分析不需要官方公告页）
 OFFICIAL_PAGE_PATTERNS = [
@@ -279,6 +280,19 @@ def dedupe_posts(posts: list[Post]) -> list[Post]:
     return result
 
 
+def _light_normalize(text: str) -> str:
+    """轻归一化（F-030 阶段2）：仅样板/壳/官方判定前使用。
+
+    大小写折叠 + 全半角折叠（NFKC）+ 连续空白压缩为单空格 + 重复标点压缩。
+    不修改原文与存储内容；_relevance_match 自带归一化，不受影响。
+    """
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKC", text).lower()
+    t = WHITESPACE_RE.sub(" ", t)
+    t = PUNCT_DUP_RE.sub(r"\1", t)
+    return t.strip()
+
 def is_boilerplate(text: str) -> bool:
     return bool(
         text
@@ -323,10 +337,14 @@ def clean_posts(
         is_ws = str(getattr(post, "platform", "") or "").startswith("websearch")
         if not content:
             reasons.append("正文为空")
-        boiler = is_boilerplate(content) or is_boilerplate(title)
-        if boiler and not (is_ws and not is_boilerplate(title) and len(content) >= 10):
+        # F-030 阶段2：样板/壳/官方判定前轻归一化（大小写/全半角/空白压缩），
+        # 不修改原文；_relevance_match 自带归一化，不受影响。
+        norm_title = _light_normalize(title)
+        norm_content = _light_normalize(content)
+        boiler = is_boilerplate(norm_content) or is_boilerplate(norm_title)
+        if boiler and not (is_ws and not is_boilerplate(norm_title) and len(content) >= 10):
             reasons.append("样板/页面壳文本")
-        if is_official_page(title):
+        if is_official_page(norm_title):
             reasons.append("官方页面")
         short_limit = 5 if is_ws else 10
         if len(content) < short_limit and len(title) < short_limit:
