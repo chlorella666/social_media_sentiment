@@ -381,6 +381,12 @@ def clean_posts(
                     ),
                 }
             )
+    # F-030 阶段5（D6）：关账核对——清洗层入参 = 保留 + 清洗丢弃(step 明细) + 去重丢弃。
+    # 不平衡先抛错（账目红线）；采集层跳过由 collection_stats 单独核对。
+    if len(kept) + len(dropped) != len(posts):
+        raise ValueError(
+            f"清洗关账不平衡：入参 {len(posts)} != 保留 {len(kept)} + 丢弃 {len(dropped)}"
+        )
     return kept, dropped
 
 
