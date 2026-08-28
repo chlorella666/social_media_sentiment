@@ -949,7 +949,7 @@ def test_v013_ui_layout() -> None:
     _n = node_status(); _o = opencli_status()
     infos = " ".join(str(i.value) for i in at.main.info)
     if not (_n["has_key"] and _o["has_key"]):
-        assert "小红书前置条件" in infos and "1、Chrome 已登录" in infos, infos
+        assert "小红书前置条件" in infos and "1、Chrome（或 Chromium 内核的 Edge）已登录" in infos, infos  # F-029 口径
     # F-025：风控文案新口径
     warnings = " ".join(str(w.value) for w in at.main.warning)
     assert "采集较慢，每个关键词约 1~2 分钟" in warnings, warnings
