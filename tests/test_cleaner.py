@@ -293,6 +293,41 @@ def test_f031_shell_zero_residual() -> None:
     assert len(kept2) == 2, _dropped_reasons(kept2, dropped2)
     print("✓ F-031 壳内容零残留 + 礼包码/兑换码真实讨论不误杀 通过")
 
+def test_export_text_desensitized() -> None:
+    """F-030 阶段4：Excel/HTML 导出物文本列 PII 打码；报告正文保留原文。"""
+    from app.core.models import AnalysisPlan, ChannelResult, Comment, Post, ReportBundle
+    from app.output import excel_writer
+    from app.output.html_report import _sanitize_evidence_cards
+
+    plan = AnalysisPlan(subject="测试品牌")
+    post = Post(
+        id="p1", platform="weibo", title="联系 13800138000",
+        content="邮箱 a@b.com 或电话 13800138000", url="https://x.example/1",
+        comments=[Comment(id="c1", author="某人", text="身份证 110101199003071234")],
+    )
+    ch = ChannelResult(
+        channel_id="weibo", ok=True, posts=[post],
+        dropped=[{
+            "platform": "weibo", "url": "https://x.example/2",
+            "title": "标题 13800138000", "keyword": "", "query": "",
+            "reason": "样板", "content": "a@b.com", "match": "",
+        }],
+    )
+    bundle = ReportBundle(plan=plan, channel_results=[ch])
+    pr = excel_writer._posts_rows(bundle)[0]
+    assert "13800138000" not in pr["正文"] and "a@b.com" not in pr["正文"]
+    assert "13800138000" not in pr["标题"]
+    assert "a@b.com" not in pr["评论内容"] and "110101199003071234" not in pr["评论内容"]
+    cr = excel_writer._comments_rows(bundle)[0]
+    assert "110101199003071234" not in cr["评论内容"]
+    dr = excel_writer._dropped_rows(bundle)[0]
+    assert "13800138000" not in dr["标题"] and "a@b.com" not in dr["正文摘要"]
+    cards = _sanitize_evidence_cards([
+        {"id": "e1", "text": "原文 13800138000 a@b.com", "platform": "weibo", "kind": "text"},
+    ])
+    assert "13800138000" not in cards[0]["text"] and "a@b.com" not in cards[0]["text"]
+    print("✓ 导出物文本列 PII 打码（Excel/HTML），报告正文保留原文 通过")
+
 def test_light_normalize_boilerplate_variants() -> None:
     """F-030 阶段2：样板/壳判定前轻归一化——标题全角变体命中，原文不被修改。"""
     assert cleaner._light_normalize("ＡＢＣ　Ｄ") == "abc d"
@@ -354,6 +389,7 @@ def main() -> None:
     test_f031_shell_zero_residual()
     test_cleaner_ledger_fields()
     test_light_normalize_boilerplate_variants()
+    test_export_text_desensitized()
     print("清洗规则测试全部通过 ✅")
 
 

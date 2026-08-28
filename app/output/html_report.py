@@ -15,6 +15,7 @@ from jinja2 import Environment, FileSystemLoader
 from plotly.io import to_html
 
 from app.core.models import ReportBundle
+from app.coding.cleaner import desensitize_text
 from app.core.names import (
     ATTRIBUTION_ACTORS,
     ATTRIBUTION_CN,
@@ -1371,6 +1372,18 @@ def query_rows(bundle: ReportBundle) -> tuple[list[dict], int]:
     return display, unattr_ws
 
 
+def _sanitize_evidence_cards(cards: list[dict]) -> list[dict]:
+    """F-030 阶段4（D4）：HTML 导出物证据卡文本列 PII 打码（原文列）。
+
+    报告正文（report_text/conclusion/findings 文案）保留原文，不受影响。
+    """
+    out = []
+    for c in cards:
+        item = dict(c)
+        item["text"] = desensitize_text(c.get("text", ""))
+        out.append(item)
+    return out
+
 def build_html(bundle: ReportBundle) -> str:
     env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=False)
     template = env.get_template("report.html.j2")
@@ -1414,17 +1427,21 @@ def build_html(bundle: ReportBundle) -> str:
     keyword_rows_out, unattributed_dropped = keyword_rows(bundle)
     query_rows_out, unattributed_query_dropped = query_rows(bundle)
     co_plan = cooccurrence_plan(s)
-    cluster_rows = topic_cluster_rows(s)
+    cluster_rows = [{**r, "words": desensitize_text(r["words"])} for r in topic_cluster_rows(s)]
     pairs_rows = topic_pairs(s)
-    evidence_by_id = {c["id"]: c for c in bundle.evidence}
-    evidence_list = [
+    # F-030 阶段4（D4）：HTML 导出物文本列统一 PII 打码（证据原文/代表短语），
+    # 报告正文（report_text/conclusion/findings 文案）保留原文。
+    evidence_by_id = {c["id"]: _sanitize_evidence_cards([c])[0] for c in bundle.evidence}
+    evidence_list = _sanitize_evidence_cards([
         c for c in bundle.evidence
         if c.get("kind") == "stat" or c.get("kind") == "text"
-    ][:40]
+    ][:40])
     dim_evidence: dict[str, list[dict]] = {}
     for c in bundle.evidence:
         if c.get("dimension") and c.get("sentiment") == "negative":
-            dim_evidence.setdefault(c["dimension"], []).append(c)
+            dim_evidence.setdefault(c["dimension"], []).append(
+                _sanitize_evidence_cards([c])[0]
+            )
     # P0-3：整体倾向 key（呈现层派生，供情感标签三件套 ✓/✗/～）
     overall_key = (
         "pos" if s["overall_sentiment"] == "正面"
@@ -1442,7 +1459,7 @@ def build_html(bundle: ReportBundle) -> str:
             "polarity": {"positive": "正面", "negative": "负面", "neutral": "中性"}.get(
                 _t.get("polarity", ""), "中性"
             ),
-            "phrases": _t.get("phrases") or [],
+            "phrases": [desensitize_text(p) for p in (_t.get("phrases") or [])],
         })
     report_no = f"RPT-{bundle.created_at:%Y%m%d-%H%M}"
     subject_desc = (

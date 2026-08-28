@@ -250,36 +250,6 @@ def desensitize_text(text: str) -> str:
     return t.strip()
 
 
-def dedupe_posts(posts: list[Post]) -> list[Post]:
-    """四重去重：ID / URL / 标题前50字 / 内容前50字。
-
-    修复：空标题/空正文不作为去重键（微博无标题，若用空串作键会误删全部无标题帖）。
-    """
-    seen_ids: set[str] = set()
-    seen_urls: set[str] = set()
-    seen_titles: set[str] = set()
-    seen_contents: set[str] = set()
-    result: list[Post] = []
-    for post in posts:
-        title_key = (post.title or "").strip()[:50]
-        content_key = (post.content or "").strip()[:50]
-        if (
-            post.id in seen_ids
-            or post.url in seen_urls
-            or (title_key and title_key in seen_titles)
-            or (content_key and content_key in seen_contents)
-        ):
-            continue
-        seen_ids.add(post.id)
-        seen_urls.add(post.url)
-        if title_key:
-            seen_titles.add(title_key)
-        if content_key:
-            seen_contents.add(content_key)
-        result.append(post)
-    return result
-
-
 def _light_normalize(text: str) -> str:
     """轻归一化（F-030 阶段2）：仅样板/壳/官方判定前使用。
 
@@ -417,7 +387,6 @@ def clean_posts(
 CLEANERS = {
     "clean_text": clean_text,
     "desensitize_text": desensitize_text,
-    "dedupe_posts": dedupe_posts,
     "clean_posts": clean_posts,
     "is_boilerplate": is_boilerplate,
 }

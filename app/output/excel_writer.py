@@ -11,6 +11,7 @@ import pandas as pd
 from app.core.models import ReportBundle
 from app.core.names import ATTRIBUTION_CN, NARRATIVE_CN, dimension_cn
 from app.coding.coder import display_confidence, display_confidence_tier
+from app.coding.cleaner import desensitize_text
 from app.core.names import register_custom_dim_names
 from app.domains.loader import task_schema
 from app.output.html_report import keyword_rows, query_rows
@@ -50,15 +51,15 @@ def _posts_rows(bundle: ReportBundle) -> list[dict]:
                     "平台": post.platform,
                     "关键词": post.keyword,
                     "作者": post.author,
-                    "标题": post.title,
-                    "正文": post.content,
+                    "标题": desensitize_text(post.title),
+                    "正文": desensitize_text(post.content),
                     "链接": post.url,
                     "发布时间": post.timestamp,
                     "点赞数": post.likes,
                     "转发数": post.reposts,
                     "评论数": post.comments_count,
                     "已采集评论数": len(post.comments),
-                    "评论内容": " || ".join(c.text for c in post.comments),
+                    "评论内容": desensitize_text(" || ".join(c.text for c in post.comments)),
                     "平台特有字段": "；".join(f"{k}={v}" for k, v in spec.items()),
                 }
             )
@@ -78,7 +79,7 @@ def _comments_rows(bundle: ReportBundle) -> list[dict]:
                         "关键词": post.keyword,
                         "帖子作者": post.author,
                         "评论作者": comment.author,
-                        "评论内容": comment.text,
+                        "评论内容": desensitize_text(comment.text),
                         "点赞数": comment.likes,
                         "评论时间": comment.time,
                         "是否回复": "是（楼中楼）" if comment.is_reply else "否",
@@ -141,7 +142,7 @@ def _simple_rows(bundle: ReportBundle) -> list[dict]:
                     break
         rows.append(
             {
-                "文本内容": text,
+                "文本内容": desensitize_text(text),
                 "平台": PLATFORM_CN.get(it.platform, it.platform),
                 "日期": it.pub_date,
                 "大家怎么说": sentiment,
@@ -185,7 +186,7 @@ def _coded_rows(bundle: ReportBundle) -> list[dict]:
     return [
         {
             "文本ID": it.text_id,
-            "文本内容": it.text,
+            "文本内容": desensitize_text(it.text),
             "平台": it.platform,
             "关键词": it.keyword,
             "发布日期": it.pub_date,
@@ -219,11 +220,11 @@ def _dropped_rows(bundle: ReportBundle) -> list[dict]:
                 {
                     "平台": d.get("platform", ""),
                     "链接": d.get("url", ""),
-                    "标题": d.get("title", ""),
+                    "标题": desensitize_text(d.get("title", "")),
                     "关键词": d.get("keyword", ""),
                     "查询串": d.get("query", ""),
                     "丢弃原因": d.get("reason", ""),
-                    "正文摘要": d.get("content", ""),
+                    "正文摘要": desensitize_text(d.get("content", "")),
                     "判定依据": d.get("match", ""),
                 }
             )
