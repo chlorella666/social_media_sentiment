@@ -77,15 +77,51 @@ def _get_calc_fig():
     return _calc_fig or None
 
 
+def _estimate_canvas(fig) -> tuple[int, int]:
+    """F-039（2026-08-28）：按图类型估算渲染尺寸，画布不再统一 850×480。
+
+    - 横向条形图：高度按总行数、宽度按最长 y 标签估算，避免长中文标签裁切；
+    - 日期轴：x 轴 tickangle=-30 并加大下边距（提高画布高度），避免日期重叠/截断。
+    """
+    width, height = 850, 480
+    try:
+        hbar_rows = 0
+        max_label_len = 0
+        for t in fig.select_traces():
+            if getattr(t, "orientation", None) == "h":
+                ys = list(getattr(t, "y", None) or [])
+                hbar_rows += len(ys)
+                max_label_len = max(
+                    max_label_len,
+                    max((len(str(y)) for y in ys), default=0),
+                )
+        if hbar_rows:
+            height = max(480, 150 + hbar_rows * 26)
+            width = max(850, 540 + max_label_len * 15)
+        for ax in fig.select_xaxes():
+            ax_type = str(getattr(ax, "type", "") or "")
+            title_obj = getattr(ax, "title", None)
+            ax_title = str(getattr(title_obj, "text", "") or "") if title_obj else ""
+            if ax_type == "date" or "日期" in ax_title or "时间" in ax_title:
+                fig.update_xaxes(tickangle=-30)
+                height = max(height, 520)
+    except Exception:
+        pass
+    return width, height
+
 def _add_chart_image(doc: Document, fig, title: str) -> None:
     """用 kaleido 把 plotly 图渲染成 PNG 嵌入 Word。"""
     calc = _get_calc_fig()
     if calc is None:
         return
     try:
+        # F-039（2026-08-28）：轴自动预留标签空间 + 按图类型动态画布
+        fig.update_xaxes(automargin=True)
+        fig.update_yaxes(automargin=True)
+        width, height = _estimate_canvas(fig)
         data = calc(
             fig,
-            opts=dict(format="png", width=850, height=480, scale=1.1),
+            opts=dict(format="png", width=width, height=height, scale=1.1),
         )
     except Exception:
         return
@@ -100,9 +136,13 @@ def _add_treemap_image(doc: Document, fig, title: str) -> None:
     if calc is None or fig is None:
         return
     try:
+        # F-039（2026-08-28）：轴自动预留标签空间 + 按图类型动态画布
+        fig.update_xaxes(automargin=True)
+        fig.update_yaxes(automargin=True)
+        width, height = _estimate_canvas(fig)
         data = calc(
             fig,
-            opts=dict(format="png", width=850, height=480, scale=1.1),
+            opts=dict(format="png", width=width, height=height, scale=1.1),
         )
     except Exception:
         return

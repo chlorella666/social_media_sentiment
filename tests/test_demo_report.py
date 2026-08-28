@@ -69,6 +69,50 @@ class TestDemoReport(unittest.TestCase):
         text = "\n".join(p.text for p in doc.paragraphs)
         self.assertNotIn("六、解读与建议", text, "LLM 模式 Word 不应有解读段")
 
+    def test_word_chart_canvas_automargin(self):
+        """F-039：Word 图表画布按图类型动态估算 + 轴 automargin，日期轴旋转标签。"""
+        import plotly.graph_objects as go
+
+        from app.output.html_report import words_fig
+        from app.output.word_report import _estimate_canvas
+
+        # 横向条形图：行数多/标签长 → 画布加高加宽（不再统一 850×480）
+        fig = go.Figure(
+            go.Bar(
+                orientation="h",
+                y=[f"标签{i}" for i in range(20)],
+                x=[1] * 20,
+            )
+        )
+        w, h = _estimate_canvas(fig)
+        self.assertGreater(h, 480)
+        fig2 = go.Figure(
+            go.Bar(
+                orientation="h",
+                y=["这是一个非常长的中文标签用于测试宽度估算啊啊啊啊"],
+                x=[1],
+            )
+        )
+        w2, _ = _estimate_canvas(fig2)
+        self.assertGreater(w2, 850)
+        # 日期轴 → 加大下边距并旋转标签
+        tfig = go.Figure(go.Scatter(x=["2026-08-01", "2026-08-02"], y=[1, 2]))
+        tfig.update_xaxes(type="date")
+        _, h3 = _estimate_canvas(tfig)
+        self.assertGreater(h3, 480)
+        self.assertEqual(tfig.layout.xaxis.tickangle, -30)
+        # 主题观点图（横向条形）冒烟：估算不抛错
+        s = {
+            "topics": [
+                {"name": f"主题{idx}", "count": 12, "polarity": "positive", "phrases": []}
+                for idx in range(5)
+            ],
+            "sentiment_distribution": {"positive": {"count": 30}, "negative": {"count": 10}},
+            "top_phrases": {},
+        }
+        words_fig(s)
+        print("Word 图表动态画布 + automargin/日期旋转 通过")
+
     def test_builtin_demo_source(self):
         """F-020：内置 app/demo_source.json 优先加载（恋与深空脱敏样本 + LLM topics）。"""
         import json as _json
