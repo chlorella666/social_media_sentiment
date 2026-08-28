@@ -295,6 +295,46 @@ def test_f031_shell_zero_residual() -> None:
     assert len(kept2) == 2, _dropped_reasons(kept2, dropped2)
     print("✓ F-031 壳内容零残留 + 礼包码/兑换码真实讨论不误杀 通过")
 
+def test_relevance_score_and_low_confidence() -> None:
+    """F-030 阶段3（D2/D1）：连续分数化——整词=1.0/别名=0.9/相似覆盖率/未命中=0.0；
+    0<score<0.6 打低置信标；dropped.match 只存 reason。"""
+    score, reason = cleaner._relevance_match("恋与深空 真棒", "恋与深空", [])
+    assert score == 1.0 and "包含" in reason
+    score2, reason2 = cleaner._relevance_match("叠纸游戏资讯", "恋与深空", [])
+    assert score2 == 0.9 and "别名" in reason2
+    score3, reason3 = cleaner._relevance_match("华润超市 购物体验", "华润万家", [])
+    assert 0 < score3 < 0.6 and "相似匹配" in reason3
+    score4, _ = cleaner._relevance_match("今天天气不错", "恋与深空", [])
+    assert score4 == 0.0
+    kept, dropped = cleaner.clean_posts(
+        [_post("weibo", "华润超市 购物", "华润超市 购物体验 不错", pid="lc1")],
+        subject="华润万家",
+    )
+    assert len(kept) == 1 and not dropped
+    assert kept[0].platform_specific.get("low_confidence") == score3
+    _, dropped2 = cleaner.clean_posts(
+        [_post("weibo", "加载中 华润万家", "加载中")], subject="华润万家"
+    )
+    assert dropped2 and isinstance(dropped2[0]["match"], str)
+    print("✓ 连续分数 + 低置信打标 + dropped.match=reason 通过")
+
+
+def test_low_confidence_cap() -> None:
+    """F-030 阶段3（D1）：低置信桶容量上限——>50 条按分数从低到高保留最低 50 条。"""
+    posts = []
+    for i in range(60):
+        p = _post("weibo", f"恋与深空 标题{i}", "内容内容内容")
+        p.platform_specific["low_confidence"] = 0.1 + i * 0.001
+        posts.append(p)
+    cleaner.cap_low_confidence(posts, cap=50)
+    flagged = [
+        p for p in posts
+        if isinstance(p.platform_specific.get("low_confidence"), (int, float))
+    ]
+    assert len(flagged) == 50
+    assert max(float(p.platform_specific["low_confidence"]) for p in flagged) < 0.1 + 50 * 0.001
+    print("✓ 低置信桶容量上限（保留最低 50 条）通过")
+
 def test_export_text_desensitized() -> None:
     """F-030 阶段4：Excel/HTML 导出物文本列 PII 打码；报告正文保留原文。"""
     from app.core.models import AnalysisPlan, ChannelResult, Comment, Post, ReportBundle
@@ -392,6 +432,8 @@ def main() -> None:
     test_cleaner_ledger_fields()
     test_light_normalize_boilerplate_variants()
     test_export_text_desensitized()
+    test_relevance_score_and_low_confidence()
+    test_low_confidence_cap()
     print("清洗规则测试全部通过 ✅")
 
 

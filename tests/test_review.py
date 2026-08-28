@@ -223,6 +223,22 @@ def test_worker_ad_flags_roundtrip() -> None:
     print("✓ 广告标记人工复核 → CodedItem.ad_flag + summary.ads 通过")
 
 
+def test_snapshot_roundtrip_preserves_low_confidence() -> None:
+    """F-030 阶段3（D1）：采集快照恢复保留 platform_specific.low_confidence。"""
+    snapshot = {
+        "posts": [{
+            "url": "https://x.example/1", "platform": "weibo",
+            "keyword": "恋与深空", "author": "u1", "title": "恋与深空 相似",
+            "content": "华润超市 购物体验", "timestamp": "", "likes": 0,
+            "platform_specific": {"low_confidence": 0.5},
+            "comments": [],
+        }],
+        "drops": [], "collection_stats": {}, "warnings": [],
+    }
+    posts, _chs, _warns = worker._apply_exclusions(snapshot, {})
+    assert posts[0].platform_specific.get("low_confidence") == 0.5
+    print("✓ 快照往返保留低置信标记 通过")
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_llm_rebuild_keeps_llm_outputs()
@@ -231,6 +247,7 @@ def main() -> None:
     test_review_cascade()
     test_review_cancel_and_guard()
     test_worker_ad_flags_roundtrip()
+    test_snapshot_roundtrip_preserves_low_confidence()
     print("人工相关性筛选测试全部通过 ✅")
 
 

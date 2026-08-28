@@ -310,7 +310,7 @@ def _render_review_view(task: dict, task_id: str) -> None:
         f"{remaining_comments} 条评论"
     )
 
-    c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
+    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 2])
     platform = c1.selectbox(
         "平台", ["全部"] + sorted({p["platform"] for p in posts}),
         key=f"rv_platform_{task_id}",
@@ -319,6 +319,10 @@ def _render_review_view(task: dict, task_id: str) -> None:
                                help="相关性与广告/官方都尚未处理")
     only_llm = c3.checkbox("只看 LLM 建议不相关/无意义", key=f"rv_llm_{task_id}")
     only_ad_suggested = c4.checkbox("只看广告预标", key=f"rv_ad_suggested_{task_id}")
+    only_low_conf = c5.checkbox(
+        "只看低置信（相似度不足）", key=f"rv_lowconf_{task_id}",
+        help="清洗层按连续相关分数标记：0 < 相似覆盖率 < 0.6 的待人工确认条目",
+    )
     tc1, tc2, tc3 = st.columns(3)
     if tc1.button("全部标记不相关/无意义", key=f"rv_all_{task_id}"):
         for p in posts:
@@ -354,6 +358,11 @@ def _render_review_view(task: dict, task_id: str) -> None:
             p for p in filtered
             if is_ad(p.get("content") or "", p.get("title") or "")
             or any(is_ad(c.get("text") or "") for c in (p.get("comments") or []))
+        ]
+    if only_low_conf:
+        filtered = [
+            p for p in filtered
+            if (p.get("platform_specific") or {}).get("low_confidence")
         ]
 
     total_pages = max(1, (len(filtered) + REVIEW_PAGE_SIZE - 1) // REVIEW_PAGE_SIZE)
@@ -417,6 +426,8 @@ def _render_review_post(
         st.caption(meta)
         if p.get("llm_relevant") is False:
             st.caption("🔖 LLM 建议不相关/无意义（人工最终决定）")
+        if (p.get("platform_specific") or {}).get("low_confidence"):
+            st.caption("🔖 低置信（相关分数 < 0.6，请人工确认相关性）")
         if suggested:
             st.caption(f"🔖 广告规则预标：{suggested}")
     mark = c2.checkbox("不相关/无意义", value=excluded, key=_review_key("rv", url))

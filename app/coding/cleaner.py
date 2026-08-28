@@ -72,6 +72,12 @@ OFFICIAL_PAGE_RE = re.compile("|".join(OFFICIAL_PAGE_PATTERNS))
 # 第三方评价/评分聚合页特征：标题含这些词时，"XX官网/首页"更可能是聚合页而非官方页
 REVIEW_AGG_WORDS = ("评价", "评论", "评分", "讨论", "论坛", "测评", "攻略")
 
+# F-030 阶段3（D1/D2，2026-08-28）：低置信分流阈值与桶容量。
+# 相似匹配覆盖率 < LOW_CONFIDENCE_SCORE → 打标并入 review_enabled 人工筛选页；
+# 桶容量 LOW_CONFIDENCE_CAP 条，超出按分数从低到高保留最低 cap 条。
+LOW_CONFIDENCE_SCORE = 0.6
+LOW_CONFIDENCE_CAP = 50
+
 # F-030 阶段1（2026-08-28）：丢弃记账 step 映射（对应 9 步流水线口径）。
 # step 取首条原因的落点：3 噪音清洗 / 4 认得出（样板·官方） / 6 置信度分流
 # （长度·信息不足） / 7 查得出重（去重）。
@@ -118,28 +124,28 @@ def _lcs_len(a: str, b: str) -> int:
     return m.size
 
 
-def _relevance_match(hay: str, subject: str, keywords: list[str]) -> str:
-    """容错相关性判定：归一化整词包含 / 别名 / 最长公共子串（前缀优先）。
+def _relevance_match(hay: str, subject: str, keywords: list[str]) -> tuple[float, str]:
+    """容错相关性判定 → (连续分数, 命中依据)。
 
-    返回命中依据；空串 = 未命中。规则（2026-08-22，替代原逐字硬匹配）：
-    - 归一化后整词包含仍是最强信号；
-    - 品牌别名（LYSK/叠纸/DJI 等）命中即相关；
-    - 最长公共子串 ≥2（中文）/≥3（字母数字）且为信号词前缀时视为相关，
-      覆盖「华润万家 vs 华润超市」「iPhone vs iphone」等变体。
+    D2（2026-08-28，F-030 阶段3）：整词包含=1.0 / 别名=0.9 /
+    相似=最长公共子串覆盖率（lcs_len ÷ 信号词长度，自然 0~1，前缀优先）/
+    未命中=0.0；reason 保留原命中依据文案；(0.0, "") = 未命中。
+    规则（2026-08-22 起）：归一化整词包含最强；品牌别名命中即相关；
+    最长公共子串 ≥2（中文）/≥3（字母数字）且为信号词前缀时计相似覆盖率。
     """
     hay_c = _compact_for_match(hay)
     if not hay_c:
-        return ""
+        return (0.0, "")
     for sig in [s for s in ([subject] + list(keywords)) if s and s.strip()]:
         sig_c = _compact_for_match(sig)
         if not sig_c:
             continue
         if sig_c in hay_c:
-            return f"包含「{sig}」"
+            return (1.0, f"包含「{sig}」")
         for alias in BRAND_ALIASES.get(sig.strip(), ()):
             alias_c = _compact_for_match(alias)
             if alias_c and alias_c in hay_c:
-                return f"包含别名「{alias}」（{sig}）"
+                return (0.9, f"包含别名「{alias}」（{sig}）")
         if len(sig_c) >= 4:
             thr = 3 if re.fullmatch(r"[a-z0-9 _\-]+", sig_c) else 2
             m = difflib.SequenceMatcher(
@@ -148,8 +154,9 @@ def _relevance_match(hay: str, subject: str, keywords: list[str]) -> str:
             if m.size >= thr:
                 matched = sig_c[m.a:m.a + m.size]
                 if sig_c.startswith(matched):
-                    return f"相似匹配「{sig}」"
-    return ""
+                    score = round(m.size / len(sig_c), 4)
+                    return (score, f"相似匹配「{sig}」")
+    return (0.0, "")
 
 
 def _has_real_content(title: str, content: str) -> bool:
@@ -319,10 +326,13 @@ def clean_posts(
         short_limit = 5 if is_ws else 10
         if len(content) < short_limit and len(title) < short_limit:
             reasons.append("文本过短")
-        match_hit = ""
+        match_hit: tuple[float, str] = (0.0, "")
         if subject or keywords:
+            # D2（F-030 阶段3）：消费 (score, reason) 元组——按分数判断，
+            # 避免「元组恒真」陷阱（if not match_hit 永不触发）。
             match_hit = _relevance_match(title + content, subject, keywords)
-            if not match_hit:
+            score, _reason = match_hit
+            if score <= 0:
                 if _has_real_content(title, content):
                     # 有实质正文但未命中：保留并标记低相关，交由 LLM 复核或人工
                     # 决定，避免「逐字硬匹配」误杀别名/变体相关的真实内容。
@@ -330,6 +340,10 @@ def clean_posts(
                 elif not reasons:
                     # 仅当无其它质量原因时才标「信息不足」，避免与样板/过短叠加
                     reasons.append("疑似不相关（信息不足）")
+            elif score < LOW_CONFIDENCE_SCORE:
+                # D1（F-030 阶段3）：相似匹配覆盖率不足 → 低置信打标，
+                # 随采集快照并入 review_enabled 人工筛选页一次处理（仅开启时展示）。
+                post.platform_specific["low_confidence"] = score
 
         if not reasons:
             title_key = title[:50]
@@ -371,7 +385,7 @@ def clean_posts(
                     "query": (post.platform_specific or {}).get("query", ""),
                     "reason": "；".join(reasons),
                     "content": content[:120],
-                    "match": match_hit or "",
+                    "match": match_hit[1],
                     # 2026-08-19（口径结构化）：去重原因只在无质量原因时出现，
                     # 按首条是否「重复」判定 duplicate/quality
                     "kind": (
@@ -389,6 +403,22 @@ def clean_posts(
         )
     return kept, dropped
 
+
+def cap_low_confidence(posts: list[Post], cap: int = LOW_CONFIDENCE_CAP) -> list[Post]:
+    """D1（F-030 阶段3）：低置信桶容量上限——>cap 条时按分数从低到高保留最低 cap 条。
+
+    原地操作：超出部分移除 low_confidence 标记（恢复普通保留帖）；
+    仅 review_enabled 时由 pipeline 调用（清洗层始终打标，分流由调用方决定）。
+    """
+    flagged = [
+        p for p in posts
+        if isinstance((p.platform_specific or {}).get("low_confidence"), (int, float))
+    ]
+    if len(flagged) > cap:
+        flagged.sort(key=lambda p: float(p.platform_specific["low_confidence"]))
+        for p in flagged[cap:]:
+            p.platform_specific.pop("low_confidence", None)
+    return posts
 
 CLEANERS = {
     "clean_text": clean_text,

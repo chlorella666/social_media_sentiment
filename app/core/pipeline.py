@@ -13,7 +13,7 @@ from typing import Callable
 
 from app.channels.registry import get_channel
 from app.channels.base import degraded_result
-from app.coding.cleaner import clean_posts
+from app.coding.cleaner import LOW_CONFIDENCE_CAP, cap_low_confidence, clean_posts
 from app.coding.coder import Coder
 from app.coding.insights import build_report_content
 from app.coding.llm_analyzer import (
@@ -1240,6 +1240,10 @@ class TaskRunner:
         # 补采一致性收尾：最终清洗并统一写回，保证 posts 与 channel_results 同源
         # （修复补采原始帖残留导致"报告 0 帖但漏斗有数"）
         posts = _reconcile_channel_posts(channel_results, plan, warnings)
+        # D1（F-030 阶段3）：低置信桶并入 review_enabled——仅显式开启时分流，
+        # >50 条按分数从低到高保留最低 50 条（超出恢复普通保留帖）。
+        if plan.review_enabled:
+            cap_low_confidence(posts, cap=LOW_CONFIDENCE_CAP)
         self.tracker.step(
             "collect", state="done", detail=f"完成 {len(plan.channels)} 个渠道", frac=1.0
         )

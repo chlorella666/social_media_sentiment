@@ -216,6 +216,7 @@ def _write_snapshot(task_id: str, plan, res: dict) -> Path:
                 "content": p.content,
                 "timestamp": p.timestamp,
                 "likes": p.likes,
+                "platform_specific": dict(p.platform_specific or {}),
                 "comments": [
                     {
                         "id": f"{p.url}::{i}",
@@ -302,6 +303,7 @@ def _apply_exclusions(snapshot: dict, task: dict[str, Any]):
                 timestamp=p.get("timestamp", ""),
                 likes=p.get("likes", 0),
                 ad_flag=p["url"] in ad_urls,
+                platform_specific=dict(p.get("platform_specific") or {}),
                 comments=[
                     Comment(
                         id=c.get("id", ""),
