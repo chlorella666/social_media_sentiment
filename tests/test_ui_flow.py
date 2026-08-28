@@ -900,7 +900,10 @@ def test_node_opencli_install_migration() -> None:
     if not (_n["has_key"] and _o["has_key"]):
         assert guide, "opencli 未就绪时应有引导按钮"
         guide[0].click().run()
-        assert at.session_state.get("cfg_center_expander") is True, "引导按钮应展开配置中心"
+        assert (
+            "cfg_center_expander" in at.session_state
+            and at.session_state["cfg_center_expander"] is True
+        ), "引导按钮应展开配置中心"  # streamlit>=1.62 SafeSessionState 无 .get，用 in/[] 兼容
         # 配置中心安装面板：按状态分层给出对应按钮
         if not _n["has_key"]:
             assert any(

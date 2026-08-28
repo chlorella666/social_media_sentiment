@@ -129,7 +129,8 @@ def test_opencli_installer() -> None:
 
     # F-013：显式注入 Node 目录到子进程 PATH（mock 掉注册表探测保证确定性）
     with mock.patch.object(health.subprocess, "Popen", side_effect=fake_popen), \
-         mock.patch.object(health, "_node_dirs_for_path", return_value=["C:/Program Files/nodejs"]):
+         mock.patch.object(health, "_node_dirs_for_path", return_value=["C:/Program Files/nodejs"]), \
+         mock.patch.object(health, "_opencli_ready", return_value=(True, "ok")):  # 环境无关：CI 无 opencli 时自检也应命中成功分支
         r = health.install_opencli(use_mirror=True)
         assert r["ok"] is True and "安装完成" in r["message"]
         assert calls[-1][-2:] == ["--registry", health.NPM_MIRROR_REGISTRY]
