@@ -1,4 +1,4 @@
-﻿# 社交媒体情感分析器（Social Media Sentiment Analyzer）
+# 社交媒体情感分析器（Social Media Sentiment Analyzer）
 
 ![CI](https://github.com/chlorella666/social_media_sentiment/actions/workflows/ci.yml/badge.svg)
 
@@ -40,6 +40,9 @@
 
 ### 🪟 Windows 版（推荐 Windows 10/11）
 
+> 📦 **直接下载便携包（推荐）**：[GitHub Releases](https://github.com/chlorella666/social_media_sentiment/releases/latest) 下载 `social_media_sentence_v0.1.19_win_x64.zip`；
+> 解压后双击「启动应用.bat」即开即用（zip 校验 SHA-256 见 Release 说明）。
+>
 > ⚠️ **系统要求：仅支持 Windows 10/11。** 应用内「一键安装 Node.js / opencli」依赖
 > 系统内置的 winget（Windows 10/11 自带）；Windows 7/8 无法一键安装，
 > 需手动安装 Python / Node.js，并手动执行 `npm install -g @jackwener/opencli`。
