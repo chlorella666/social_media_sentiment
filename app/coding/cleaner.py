@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import re
 import unicodedata
 from datetime import datetime, timedelta
@@ -69,6 +70,30 @@ OFFICIAL_PAGE_RE = re.compile("|".join(OFFICIAL_PAGE_PATTERNS))
 
 # 第三方评价/评分聚合页特征：标题含这些词时，"XX官网/首页"更可能是聚合页而非官方页
 REVIEW_AGG_WORDS = ("评价", "评论", "评分", "讨论", "论坛", "测评", "攻略")
+
+# F-030 阶段1（2026-08-28）：丢弃记账 step 映射（对应 9 步流水线口径）。
+# step 取首条原因的落点：3 噪音清洗 / 4 认得出（样板·官方） / 6 置信度分流
+# （长度·信息不足） / 7 查得出重（去重）。
+DROP_STEP = {
+    "正文为空": "3_clean",
+    "样板/页面壳文本": "4_boilerplate",
+    "官方页面": "4_official",
+    "文本过短": "6_length",
+    "疑似不相关（信息不足）": "6_relevance",
+    "重复（相同ID）": "7_dedup",
+    "重复（相同链接）": "7_dedup",
+    "重复（相同标题）": "7_dedup",
+    "重复（相同正文）": "7_dedup",
+}
+
+
+def _fingerprint(title: str, content: str) -> str:
+    """清洗前原文指纹（F-030 阶段1）：sha256(标题+换行+正文) 前 16 位十六进制。
+
+    用于丢弃记账回溯：任何被丢弃的数据可按指纹定位清洗前原文。
+    """
+    raw = f"{title or ''}\n{content or ''}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 # 品牌别名词典（2026-08-22 容错相关性判定）：常见缩写/玩家圈层别名。
 # 命中任一别名即视为与主体相关；后续可在设置/策略层扩展为可编辑。
@@ -277,7 +302,7 @@ def is_official_page(title: str) -> bool:
 def clean_posts(
     posts: list[Post], subject: str = "", keywords: list[str] | None = None
 ) -> tuple[list[Post], list[dict]]:
-    """过滤 + 去重，返回 (保留帖子, 丢弃记录[platform/url/title/reason])。
+    """过滤 + 去重，返回 (保留帖子, 丢弃记录[platform/url/title/reason/step/fingerprint/content])。
 
     规则：样板/页面壳、官网标题、清洗后为空、文本过短、与品牌/关键词不相关、
     四重去重。评论在此不处理（编码阶段按需过滤）。
@@ -293,6 +318,7 @@ def clean_posts(
     for post in posts:
         reasons: list[str] = []
         title = (post.title or "").strip()
+        fingerprint = _fingerprint(title, post.content or "")
         content = clean_text(post.content or "")
         is_ws = str(getattr(post, "platform", "") or "").startswith("websearch")
         if not content:
@@ -351,6 +377,8 @@ def clean_posts(
                     "platform": post.platform,
                     "url": post.url,
                     "title": title[:80],
+                    "step": DROP_STEP.get(reasons[0], "other"),
+                    "fingerprint": fingerprint,
                     "keyword": post.keyword,
                     "query": (post.platform_specific or {}).get("query", ""),
                     "reason": "；".join(reasons),

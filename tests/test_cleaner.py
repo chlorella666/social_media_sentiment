@@ -293,6 +293,30 @@ def test_f031_shell_zero_residual() -> None:
     assert len(kept2) == 2, _dropped_reasons(kept2, dropped2)
     print("✓ F-031 壳内容零残留 + 礼包码/兑换码真实讨论不误杀 通过")
 
+def test_cleaner_ledger_fields() -> None:
+    """F-030 阶段1：丢弃记录含 step/fingerprint，指纹可复现，判定行为不变。"""
+    import hashlib
+
+    posts = [
+        _post("weibo", "恋与深空 样板页 测试", "加载中", pid="a"),
+        _post("weibo", "恋与深空 重复甲 测试", "正文内容甲", pid="b"),
+        _post("weibo", "恋与深空 重复甲 测试", "正文内容乙", pid="c"),
+        _post("xiaohongshu", "今天天气真好适合出去玩", "今天天气真好适合出去玩", pid="d"),
+    ]
+    kept, dropped = cleaner.clean_posts(posts, subject="恋与深空")
+    by_url = {d["url"]: d for d in dropped}
+    sample = by_url["https://x.example/a"]
+    expected_fp = hashlib.sha256(
+        "恋与深空 样板页 测试\n加载中".encode("utf-8")
+    ).hexdigest()[:16]
+    assert sample["fingerprint"] == expected_fp
+    assert sample["step"] == "4_boilerplate"
+    assert by_url["https://x.example/c"]["step"] == "7_dedup"
+    assert by_url["https://x.example/d"]["step"] == "6_relevance"
+    for d in dropped:
+        assert "step" in d and "fingerprint" in d and "content" in d
+    print("✓ 开账：丢弃记录 step/fingerprint 可回溯且判定不变 通过")
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_websearch_short_text_not_dropped()
@@ -310,6 +334,7 @@ def main() -> None:
     test_clean_posts_full_reason_coverage()
     test_clean_posts_dedupe_keys()
     test_f031_shell_zero_residual()
+    test_cleaner_ledger_fields()
     print("清洗规则测试全部通过 ✅")
 
 
