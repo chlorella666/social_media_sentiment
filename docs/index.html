@@ -263,10 +263,10 @@ footer a:hover{color:#fff}
       <a class="btn btn-ghost" href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">查看源码与文档</a>
     </div>
     <div class="metrics">
-      <div class="metric"><div class="v num"><span data-count="5">5</span><span class="unit"> 渠道</span></div><div class="k">演示 / B站 / 全网搜索 / 微博 / 小红书</div></div>
-      <div class="metric"><div class="v num"><span data-count="6">6</span><span class="unit"> 步向导</span></div><div class="k">小白 5 分钟出一份报告</div></div>
-      <div class="metric"><div class="v num"><span data-count="86.9" data-decimals="1">86.9</span><span class="unit">%</span></div><div class="k">LLM 混合流水线准确率（黄金集实测）</div></div>
-      <div class="metric"><div class="v num"><span data-count="35">35</span><span class="unit">+ 份报告</span></div><div class="k">本地累计生成 · 仓库已公开</div></div>
+      <div class="metric"><div class="v num"><span data-count="5">4</span><span class="unit"> 渠道</span></div><div class="k"> Websearch(全网/知乎/贴吧/TapTap) / B站 / 微博 / 小红书</div></div>
+      <div class="metric"><div class="v num"><span data-count="5">5</span><span class="unit"> 分钟上手</span></div><div class="k">6步向导支持小白 5 分钟出一份报告</div></div>
+      <div class="metric"><div class="v num"><span data-count="86.9" data-decimals="1">86.9</span><span class="unit">%准确率</span></div><div class="k">LLM 混合流水线准确率（黄金集实测）</div></div>
+      <div class="metric"><div class="v num"><span data-count="35">35</span><span class="unit">+ 份报告</span></div><div class="k">本地累计生成</div></div>
     </div>
   </div>
 </header>
@@ -472,7 +472,7 @@ const DEMO = {
 const STEPS = [
   {t:"① 品牌和分析维度", d:"输入品牌/产品名，选择分析模块（内容 / 实物 / 服务）与具体维度，也可自定义维度。", mock:"已选择模块：服务内容 · 已选维度 6 个"},
   {t:"② 确认关键词", d:"预填品牌名/关键词，可手动增删；关键词策略层按渠道自动优化查询串（可选「关键词优化」开关）。", mock:"关键词可增删 · 策略层按渠道优化查询串"},
-  {t:"③ 渠道与时间", d:"勾选采集渠道（演示/B站/全网搜索/微博/小红书），设置时间范围与条数上限；小红书前置条件未就绪时引导到侧边栏「配置中心」安装。", mock:"已选 4 个渠道 · 上限 13 条/关键词"},
+  {t:"③ 渠道与时间", d:"勾选采集渠道（演示/B站/全网搜索/微博/小红书），设置时间范围与条数上限；小红书前置条件未就绪时引导到侧边栏「配置中心」进行一键安装。", mock:"已选 4 个渠道 · 上限 13 条/关键词"},
   {t:"④ 确认运行", d:"查看计划摘要与费用估算，确认后提交任务；渠道不可用/凭据缺失会在提交前红色拦截。", mock:"预计采集 156 条 · LLM 费用约 ¥0.3–1"},
   {t:"⑤ 后台执行", d:"任务进入本地队列，关掉页面也不中断；可随时取消，失败可一键重跑。", mock:"后台执行中：清洗 88% · 已保留 120 条"},
   {t:"⑥ 结果", d:"查看结论、指标、图表与证据链，下载 Excel / HTML / Word；难例可人工复核后重算。", mock:"报告已生成 · 证据卡 18 条 · 待复核 9 条"},
@@ -533,7 +533,7 @@ function renderStepper() {
       <div class="stage-info">
         <h3>${STEPS[cur].t}</h3>
         <p>${STEPS[cur].d}</p>
-        <div class="shot-note">▲ 应用真实界面截图<br>演示数据 · 恋与深空（脱敏样本）</div>
+        <div class="shot-note">▲ 应用真实界面截图</div>
       </div>
       <div class="shot-frame">
         <div class="shot-bar">
