@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>社交媒体情感分析器 · 产品展示</title>
-<meta name="description" content="输入品牌/关键词，自动采集五大平台真实讨论，词典 + LLM 判定情感，输出带证据链的报告。个人独立完成的本地桌面级舆情分析工具。">
+<meta name="description" content="输入品牌/关键词，自动采集微博 / 小红书 / B站 / 全网搜索的真实讨论，词典 + LLM 判定情感，输出带证据链的报告。个人独立完成的本地桌面级舆情分析工具。">
 <style>
 /* ============================================================
    设计令牌（与 design_entries/ui-designer/design_tokens.css 同源）
@@ -255,7 +255,7 @@ footer a:hover{color:#fff}
   <div class="wrap">
     <div class="pill"><span class="dot"></span>独立项目 · 2026.08 – 至今 · 本地优先</div>
     <h1>输入品牌/关键词<br>自动生成社交媒体情感分析报告</h1>
-    <p class="sub">自动采集 <b>微博 / 小红书 / B站 / 知乎 / 全网搜索</b> 的真实讨论，
+    <p class="sub">自动采集 <b>微博 / 小红书 / B站 / 全网搜索</b> 的真实讨论，
       用 <b>词典 + LLM</b> 判定每条内容的情感，输出带证据链的
       <b>Excel / HTML / Word</b> 三端报告——从 0 到 1 独立完成。</p>
     <div class="hero-cta">
@@ -263,10 +263,10 @@ footer a:hover{color:#fff}
       <a class="btn btn-ghost" href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">查看源码与文档</a>
     </div>
     <div class="metrics">
-      <div class="metric"><div class="v num"><span data-count="5">5</span><span class="unit"> 渠道</span></div><div class="k">统一适配器 · 注册表接入</div></div>
+      <div class="metric"><div class="v num"><span data-count="5">5</span><span class="unit"> 渠道</span></div><div class="k">演示 / B站 / 全网搜索 / 微博 / 小红书</div></div>
       <div class="metric"><div class="v num"><span data-count="6">6</span><span class="unit"> 步向导</span></div><div class="k">小白 5 分钟出一份报告</div></div>
-      <div class="metric"><div class="v num"><span data-count="84–89">84–89</span><span class="unit">%</span></div><div class="k">LLM 混合流水线准确率</div></div>
-      <div class="metric"><div class="v num"><span data-count="60">60</span><span class="unit">+ 份报告</span></div><div class="k">本地累计生成 · 已公开</div></div>
+      <div class="metric"><div class="v num"><span data-count="86.9" data-decimals="1">86.9</span><span class="unit">%</span></div><div class="k">LLM 混合流水线准确率（黄金集实测）</div></div>
+      <div class="metric"><div class="v num"><span data-count="35">35</span><span class="unit">+ 份报告</span></div><div class="k">本地累计生成 · 仓库已公开</div></div>
     </div>
   </div>
 </header>
@@ -328,36 +328,36 @@ footer a:hover{color:#fff}
   <div class="wrap">
     <div class="sec-head reveal">
       <p class="sec-kicker">Live Demo</p>
-      <h2>演示报告 · 虚构品牌「云朵咖啡」</h2>
+      <h2>演示报告 · 恋与深空玩家讨论（脱敏样本）</h2>
       <p>内置演示数据与真实报告完全同链路：采集 → 清洗 → 编码 → 证据链</p>
     </div>
-    <div class="demo-note reveal">仅演示用：虚构品牌与模拟数据，不包含任何真实用户信息</div>
-    <div class="conclusion-capsule reveal"><span>💡 分析结论</span>整体口碑健康但边际转弱，负面集中在「渠道与售后」与「价格价值」</div>
+    <div class="demo-note reveal">演示用：恋与深空玩家公开讨论（作者/ID 已匿名、正文已脱敏），与产品内「演示数据」同源</div>
+    <div class="conclusion-capsule reveal"><span>💡 分析结论</span>《恋与深空》近期舆情整体偏中性但负面情绪显著（负面 31.7%），集中在运营与客服（负面率 88.2%）及付费商业化（83.3%），情感走势后半段恶化（均分 -0.266），风险高企。</div>
     <div class="charts">
       <div class="chart-card reveal">
         <h3>整体情感分布</h3>
-        <p class="sub">编码 104 条文本 · 平均情感分 +0.07（偏正面）</p>
+        <p class="sub">编码 277 条文本 · 平均情感分 −0.08（情感分布基于剔除广告后的 271 条）</p>
         <div class="donut-row">
           <div class="donut">
             <svg viewBox="0 0 100 100" id="donutSvg"></svg>
-            <div class="center"><span class="n num" id="donutN">104</span><span class="t">编码文本</span></div>
+            <div class="center"><span class="n num" id="donutN">277</span><span class="t">编码文本</span></div>
           </div>
           <div class="legend" id="donutLegend"></div>
         </div>
       </div>
       <div class="chart-card reveal">
         <h3>平台分布</h3>
-        <p class="sub">四个平台 × 情感构成（已采集文本数）</p>
+        <p class="sub">四个平台 × 情感构成（编码文本数）</p>
         <div class="stack-list" id="stackList"></div>
       </div>
       <div class="chart-card reveal">
         <h3>维度负面率</h3>
-        <p class="sub">负面率最高的维度是「渠道与售后」（60.9%）</p>
+        <p class="sub">负面率最高的维度是「运营与客服」（88.2%）</p>
         <div class="dim-list" id="dimList"></div>
       </div>
       <div class="chart-card reveal">
         <h3>时间趋势 · 平均情感分</h3>
-        <p class="sub">近两周负面占比抬升，边际转弱信号明显</p>
+        <p class="sub">08-16 起均分转负，08-20 负面条数集中（20 条），后半段恶化信号明显</p>
         <div class="trend-wrap">
           <svg viewBox="0 0 560 190" id="trendSvg"></svg>
           <div class="trend-legend">
@@ -380,7 +380,7 @@ footer a:hover{color:#fff}
     </div>
     <div class="quality-grid">
       <div class="q-card reveal"><div class="v num"><span data-count="50.9" data-decimals="1">50.9</span><span class="unit">%</span></div><div class="k">词典直判准确率（黄金集三分类）</div><div class="note">从基线 35.4% 提升 +15.5pp</div></div>
-      <div class="q-card reveal"><div class="v num"><span data-count="84">84</span><span class="unit">–89%</span></div><div class="k">LLM 混合流水线准确率</div><div class="note">黄金集 / 边界集实测区间</div></div>
+      <div class="q-card reveal"><div class="v num"><span data-count="87">87</span><span class="unit">%</span></div><div class="k">LLM 混合流水线准确率（黄金集/边界集）</div><div class="note">黄金集 86.9% · 边界集 87.7%（2026-08-21 冻结）</div></div>
       <div class="q-card reveal"><div class="v num"><span data-count="38">38</span><span class="unit"> 项</span></div><div class="k">自动化测试</div><div class="note">一键回归 · 失败自动重跑</div></div>
       <div class="q-card reveal"><div class="v num small">¥<span data-count="0.3" data-decimals="1">0.3</span>–1</div><div class="k">单任务 LLM 成本</div><div class="note">词典直判降本 + 低置信路由</div></div>
     </div>
@@ -404,7 +404,7 @@ footer a:hover{color:#fff}
       <p>采集 → 清洗 → 编码 → 报告，每阶段独立、可回退、可观测</p>
     </div>
     <div class="pipeline">
-      <div class="pipe-step reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.5"/><path d="M21 3v6h-6"/></svg></div><h3>采集</h3><p>5 渠道注册表 · 配额预扣 · 风控退避</p></div>
+      <div class="pipe-step reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.5"/><path d="M21 3v6h-6"/></svg></div><h3>采集</h3><p>渠道注册表 · 配额预扣 · 风控退避</p></div>
       <div class="pipe-arrow">→</div>
       <div class="pipe-step reveal"><div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M7 12h10M10 18h4"/></svg></div><h3>清洗</h3><p>去重 · 脱敏 · 相关性 · 补采</p></div>
       <div class="pipe-arrow">→</div>
@@ -434,51 +434,46 @@ footer a:hover{color:#fff}
   <div class="wrap">
     <div>
       <div class="t"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>社交媒体情感分析器</div>
-      <p class="fnote">个人独立完成的本地桌面级舆情分析工具。演示数据为虚构品牌，图表数据取自项目内置演示报告，与产品内「演示数据」同链路。开源仓库：<a href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">chlorella666/social_media_sentiment</a></p>
+      <p class="fnote">个人独立完成的本地桌面级舆情分析工具。演示数据为恋与深空玩家公开讨论（脱敏样本：作者/ID 匿名、正文脱敏），图表取自项目内置演示报告，与产品内「演示数据」同链路。开源仓库：<a href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">chlorella666/social_media_sentiment</a></p>
     </div>
     <a class="btn btn-primary" href="https://github.com/chlorella666/social_media_sentiment" target="_blank" rel="noopener">GitHub · 查看源码</a>
   </div>
 </footer>
 
 <script>
-/* ============ 演示数据（来自项目内置 demo_report，虚构品牌云朵咖啡） ============ */
+/* ============ 演示数据（来自项目内置 demo_report，恋与深空脱敏样本） ============ */
 const DEMO = {
-  totalItems: 104, totalPosts: 26, avgScore: 0.07,
+  totalItems: 277, totalPosts: 185, avgScore: -0.0812,
   dist: [
-    {key:"pos", label:"正面", sym:"✓", n:47, pct:45.2, color:"var(--pos-500)", bg:"var(--pos-100)", cls:"tag-pos"},
-    {key:"neg", label:"负面", sym:"✗", n:38, pct:36.5, color:"var(--neg-500)", bg:"var(--neg-100)", cls:"tag-neg"},
-    {key:"neu", label:"中性", sym:"～", n:19, pct:18.3, color:"var(--neu-500)", bg:"var(--neu-100)", cls:"tag-neu"},
+    {key:"pos", label:"正面", sym:"✓", n:53, pct:19.6, color:"var(--pos-500)", bg:"var(--pos-100)", cls:"tag-pos"},
+    {key:"neg", label:"负面", sym:"✗", n:86, pct:31.7, color:"var(--neg-500)", bg:"var(--neg-100)", cls:"tag-neg"},
+    {key:"neu", label:"中性", sym:"～", n:132, pct:48.7, color:"var(--neu-500)", bg:"var(--neu-100)", cls:"tag-neu"},
   ],
   platforms: [
-    {name:"微博",  posts:36, pos:17, neg:13, neu:6},
-    {name:"小红书", posts:28, pos:11, neg:11, neu:6},
-    {name:"B站",   posts:24, pos:9,  neg:9,  neu:6},
-    {name:"知乎",  posts:16, pos:10, neg:5,  neu:1},
+    {name:"全网搜索", posts:147, pos:16, neg:36, neu:95},
+    {name:"微博",  posts:66, pos:18, neg:27, neu:21},
+    {name:"小红书", posts:46, pos:13, neg:21, neu:12},
+    {name:"B站",   posts:18, pos:7,  neg:3,  neu:8},
   ],
   dims: [
-    {name:"渠道与售后", n:23, neg:14, rate:60.9},
-    {name:"价格价值",   n:20, neg:11, rate:55.0},
-    {name:"使用体验",   n:13, neg:4,  rate:30.8},
-    {name:"品牌与营销", n:11, neg:3,  rate:27.3},
-    {name:"产品品质",   n:45, neg:10, rate:22.2},
-    {name:"安全合规",   n:6,  neg:1,  rate:16.7},
+    {name:"运营与客服",     n:51, neg:45, rate:88.2},
+    {name:"付费与商业化",   n:18, neg:15, rate:83.3},
+    {name:"功能实用性",     n:6,  neg:3,  rate:50.0},
+    {name:"界面与交互体验", n:2,  neg:1,  rate:50.0},
+    {name:"内容与资源质量", n:65, neg:29, rate:44.6},
   ],
   trend: [
-    ["07-21",0.375,1],["07-23",-0.125,2],["07-25",-0.15,2],["07-27",0.3375,1],
-    ["07-28",0.3,1],["07-30",0.225,1],["08-01",0.2,1],["08-03",0.425,1],
-    ["08-05",0.225,1],["08-07",0.5125,0],["08-08",0.3875,1],["08-10",0.4875,0],
-    ["08-11",0.0,2],["08-12",-0.3375,3],["08-13",-0.0063,2],["08-14",-0.1063,4],
-    ["08-15",0.025,2],["08-16",-0.1875,2],["08-17",-0.1187,4],["08-18",0.0042,5],
-    ["08-19",-0.3875,2],
+    ["08-05",0.08,2],["08-08",0.0,0],["08-10",0.45,0],["08-11",-0.36,3],["08-13",0.0,0],
+    ["08-14",0.2,3],["08-15",-0.0385,6],["08-16",-0.6571,6],["08-17",-0.5,7],["08-18",-0.3667,2],
+    ["08-19",0.3375,1],["08-20",-0.0964,20],["08-21",-0.3,1],
   ],
 };
-
 /* 6 步向导内容（与产品内 STEP_DEFS 对应） */
 const STEPS = [
   {t:"① 品牌和分析维度", d:"输入品牌/产品名，选择分析模块（内容 / 实物 / 服务）与具体维度，也可自定义维度。", mock:"已选择模块：服务内容 · 已选维度 6 个"},
-  {t:"② 确认关键词", d:"按维度自动生成关键词建议，可手动增删；关键词决定采集广度与质量。", mock:"生成关键词 12 个 · 可一键展开/编辑"},
-  {t:"③ 渠道与时间", d:"勾选采集渠道（演示/B站/全网/微博/小红书），设置时间范围与条数上限，可一键安装 opencli。", mock:"已选 4 个渠道 · 上限 13 条/关键词"},
-  {t:"④ 确认运行", d:"查看计划摘要与费用估算，确认后提交任务；demo-only 任务有红色二次确认。", mock:"预计采集 156 条 · LLM 费用约 ¥0.3–1"},
+  {t:"② 确认关键词", d:"预填品牌名/关键词，可手动增删；关键词策略层按渠道自动优化查询串（可选「关键词优化」开关）。", mock:"关键词可增删 · 策略层按渠道优化查询串"},
+  {t:"③ 渠道与时间", d:"勾选采集渠道（演示/B站/全网搜索/微博/小红书），设置时间范围与条数上限；小红书前置条件未就绪时引导到侧边栏「配置中心」安装。", mock:"已选 4 个渠道 · 上限 13 条/关键词"},
+  {t:"④ 确认运行", d:"查看计划摘要与费用估算，确认后提交任务；渠道不可用/凭据缺失会在提交前红色拦截。", mock:"预计采集 156 条 · LLM 费用约 ¥0.3–1"},
   {t:"⑤ 后台执行", d:"任务进入本地队列，关掉页面也不中断；可随时取消，失败可一键重跑。", mock:"后台执行中：清洗 88% · 已保留 120 条"},
   {t:"⑥ 结果", d:"查看结论、指标、图表与证据链，下载 Excel / HTML / Word；难例可人工复核后重算。", mock:"报告已生成 · 证据卡 18 条 · 待复核 9 条"},
 ];
@@ -538,7 +533,7 @@ function renderStepper() {
       <div class="stage-info">
         <h3>${STEPS[cur].t}</h3>
         <p>${STEPS[cur].d}</p>
-        <div class="shot-note">▲ 应用真实界面截图<br>演示数据 · 虚构品牌「云朵咖啡」</div>
+        <div class="shot-note">▲ 应用真实界面截图<br>演示数据 · 恋与深空（脱敏样本）</div>
       </div>
       <div class="shot-frame">
         <div class="shot-bar">
@@ -615,7 +610,7 @@ document.getElementById("dimList").innerHTML = DEMO.dims.map((d, i) => `
 {
   const W = 560, H = 190, padL = 34, padR = 12, padT = 14, padB = 26;
   const pts = DEMO.trend;
-  const minS = -0.5, maxS = 0.6;
+  const minS = -0.7, maxS = 0.6;
   const x = i => padL + i * (W - padL - padR) / (pts.length - 1);
   const y = s => padT + (maxS - s) / (maxS - minS) * (H - padT - padB);
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
@@ -626,15 +621,15 @@ document.getElementById("dimList").innerHTML = DEMO.dims.map((d, i) => `
   const dots = pts.map((p, i) => `<circle cx="${x(i)}" cy="${y(p[1])}" r="2.6" fill="var(--brand-500)"/>`).join("");
   const negDots = pts.map((p, i) => p[2] >= 3
     ? `<circle cx="${x(i)}" cy="${y(p[1])}" r="5" fill="none" stroke="var(--neg-500)" stroke-width="1.5"/>` : "").join("");
-  const labels = [0, 6, 12, 16, 20].map(i => `
+  const labels = [0, 3, 6, 9, 12].map(i => `
     <text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--gray-400)">${pts[i][0]}</text>`).join("");
   document.getElementById("trendSvg").innerHTML = `
     ${grid}
     <path d="${area}" fill="var(--brand-50)" opacity="0.8"/>
     <path d="${line}" fill="none" stroke="var(--brand-500)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
     ${negDots}${dots}${labels}
-    <line x1="${x(12)}" y1="${padT}" x2="${x(12)}" y2="${H - padB}" stroke="var(--gray-300)" stroke-width="1" stroke-dasharray="4 4"/>
-    <text x="${x(12)}" y="${padT - 4}" text-anchor="middle" font-size="10" fill="var(--gray-500)">近两周负面抬升</text>`;
+    <line x1="${x(9)}" y1="${padT}" x2="${x(9)}" y2="${H - padB}" stroke="var(--gray-300)" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="${x(9)}" y="${padT - 4}" text-anchor="middle" font-size="10" fill="var(--gray-500)">后半段负面抬升</text>`;
 }
 
 /* 维度条与堆叠条在进入视口后生长 */
