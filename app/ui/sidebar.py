@@ -63,12 +63,12 @@ def render_sidebar():
             "启用 LLM 精分析",
             value=False,
             key="llm_enabled",
-            help="默认词典模式（离线可跑，不发送数据）；开启后低置信度文本将发送给"
+            help="默认词典模式（离线可跑，不发送数据）；开启后文本将发送给"
                  "所选服务商，可提高准确率（按量计费）",
         )
         st.caption(
-            "准确率（内置评测集实测）：词典模式约 47%~51%，"
-            "LLM 精分析约 80%~88%。"
+            "准确率（整条情感，冻结基线 2026-08-21）：词典模式 50.9%"
+            "（主集 n=175）；LLM 精分析 86.9%（主集 n=175）／87.5%（边界集 n=220）。"
         )
         # 2.8（2026-08-18）：LLM 相关性复核随 LLM 自动开启，不再提供独立开关
         relevance_check_enabled = llm_enabled
@@ -79,7 +79,7 @@ def render_sidebar():
             api_key = st.text_input(
                 "API Key", type="password", key="api_key_input",
                 value=saved_key,
-                help="不填则使用词典预筛模式，离线可跑；本机已保存的 Key 会自动回填",
+                help="不填则使用词典模式，离线可跑；本机已保存的 Key 会自动回填",
             )
             col_save, col_clear = st.columns(2)
             if col_save.button("💾 保存到本机", width="stretch"):

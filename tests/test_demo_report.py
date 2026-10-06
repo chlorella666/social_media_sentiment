@@ -203,8 +203,14 @@ class TestDemoReport(unittest.TestCase):
         md = demo_report.accuracy_compare_md()
         self.assertIn("词典模式", md)
         self.assertIn("LLM 精分析", md)
-        self.assertIn("47%~51%", md)
-        self.assertIn("80%~88%", md)
+        # 2026-09-30 口径修正：改用冻结基线口径（整条情感准确率 + 样本量），
+        # 不再使用旧表述「词典 35%~46%、LLM 80%~88%」（口径不清）。
+        self.assertIn("50.9%", md)
+        self.assertIn("n=175", md)
+        self.assertIn("86.9%", md)
+        self.assertIn("87.5%", md)
+        self.assertIn("n=220", md)
+        self.assertIn("baseline_hybrid.json", md)
 
     def test_prepare_demo_files(self):
         b = demo_report.build_demo_bundle()

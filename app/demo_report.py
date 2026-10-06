@@ -13,9 +13,10 @@
 - insight_mode="llm"：本报告用于展示"LLM 精分析模式"的成品效果，
   页面会明确标注为演示数据。
 
-准确率对照（词典 vs LLM）：来源为内置评测集（脱敏真实评论，主集/边界集/
-数码3C 三卷），口径为整条情感准确率，详见 docs/评测记录.md 与
-docs/阶段2出口评估.md。
+准确率对照（词典 vs LLM）：口径为"整条情感准确率 + 样本量"，来源为仓库冻结
+基线（2026-08-21）`tests/fixtures/baseline_lexicon.json`（词典直判）、
+`baseline_hybrid.json`（混合模式·主集）、`baseline_edge_hybrid.json`
+（混合模式·边界集）；样本为脱敏真实评论，详见 docs/评测记录.md。
 """
 
 from __future__ import annotations
@@ -63,17 +64,20 @@ def _demo_source_path() -> Path | None:
     local = DEMO_DIR / "demo_source.json"
     return local if local.exists() else None
 
-# 准确率对照（产品明示用；数值来自内置评测集，口径：整条情感准确率）
+# 准确率对照（产品明示用；口径：整条情感准确率 + 样本量，取自 tests/fixtures
+# 冻结基线 2026-08-21——baseline_lexicon.json / baseline_hybrid.json /
+# baseline_edge_hybrid.json。旧表述「词典 35%~46%、LLM 80%~88%」口径不清已停用）
 ACCURACY_COMPARE = [
     {
         "mode": "词典模式（默认 · 离线免费）",
-        "accuracy": "约 47%~51%",
+        "accuracy": "主集 50.9%（n=175）",
         "note": "无 Key 可跑、零数据出境；反讽/黑话/方言等难例判定偏弱",
     },
     {
         "mode": "LLM 精分析（推荐）",
-        "accuracy": "约 80%~88%",
-        "note": "低置信文本发送给所选服务商，按量计费；支持维度级情感/叙事归因",
+        "accuracy": "主集 86.9%（n=175）／边界集 87.5%（n=220）",
+        "note": "大模型精分析：文本脱敏后全量交大模型判定（词典仅作异常兜底）；"
+                "按量计费；支持维度级情感/叙事归因",
     },
 ]
 
@@ -87,9 +91,11 @@ def accuracy_compare_md() -> str:
             f"  {r['note']}"
         )
     return (
-        "**两种模式准确率（内置评测集实测）**\n\n"
+        "**两种模式准确率（整条情感，冻结基线 2026-08-21）**\n\n"
         + "\n".join(rows)
-        + "\n\n> 数值基于项目内置评测集（脱敏真实评论，按领域综合）。"
+        + "\n\n> 数值取自仓库冻结基线 `tests/fixtures/baseline_lexicon.json`（词典直判）、"
+        "`baseline_hybrid.json`（混合模式·主集）、`baseline_edge_hybrid.json`（混合模式·边界集），"
+        "样本为脱敏真实评论。"
         "开启 LLM 后可获得更高准确率与更完整的分析维度。"
     )
 

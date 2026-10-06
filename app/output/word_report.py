@@ -63,6 +63,15 @@ CHART_BUILDERS = [
 _calc_fig = None
 
 
+_CN_NUM = "一二三四五六七八九十"
+
+
+def _h(doc: Document, title: str) -> None:
+    """一级标题（按实际顺序自动编号，跳过未渲染的章节不会跳号）。"""
+    n = sum(1 for p in doc.paragraphs if p.style.name.startswith("Heading 1"))
+    doc.add_heading(f"{_CN_NUM[n]}、{title}", level=1)
+
+
 def _get_calc_fig():
     """kaleido v1：启动一次渲染服务，之后所有图表共用（大幅提速）。"""
     global _calc_fig
@@ -154,7 +163,7 @@ def _add_treemap_image(doc: Document, fig, title: str) -> None:
 def _append_keyword_appendix(doc: Document, bundle: ReportBundle) -> None:
     """附录：关键词效果与采集明细（2026-08-19：从正文前段移入文末，
     与 HTML「方法与数据说明 → 附录」结构对齐）。"""
-    doc.add_heading("十、附录：关键词效果与采集明细", level=1)
+    _h(doc, "附录：关键词效果与采集明细")
     doc.add_paragraph(
         "以下为方法与数据说明：记录系统实际搜了什么、每个词/查询串采了多少、"
         "留了多少、丢了多少。"
@@ -241,7 +250,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         )
 
     s = bundle.summary
-    doc.add_heading("一、分析概览", level=1)
+    _h(doc, "分析概览")
     overview = doc.add_table(rows=0, cols=2)
     overview.style = "Table Grid"
     for k, v in [
@@ -255,7 +264,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         cells = overview.add_row().cells
         cells[0].text, cells[1].text = k, v
 
-    doc.add_heading("二、情感分布", level=1)
+    _h(doc, "情感分布")
     dist = s["sentiment_distribution"]
     table = doc.add_table(rows=1, cols=3)
     table.style = "Table Grid"
@@ -267,7 +276,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         row[1].text = str(dist[key]["count"])
         row[2].text = f"{dist[key]['ratio'] * 100:.1f}%"
 
-    doc.add_heading("三、平台统计", level=1)
+    _h(doc, "平台统计")
     ptable = doc.add_table(rows=1, cols=6)
     ptable.style = "Table Grid"
     hdr = ptable.rows[0].cells
@@ -283,7 +292,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         row[5].text = str(v["neutral"])
 
     if s["dimensions"]:
-        doc.add_heading("四、维度分析", level=1)
+        _h(doc, "维度分析")
         dtable = doc.add_table(rows=1, cols=4)
         dtable.style = "Table Grid"
         hdr = dtable.rows[0].cells
@@ -321,7 +330,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
                         f"来源：{c['platform']} · {c.get('date') or '日期未知'}{label}"
                     )
 
-    doc.add_heading("五、图表与解析", level=1)
+    _h(doc, "图表与解析")
     s = bundle.summary
     for cid, title, builder in CHART_BUILDERS:
         fig = builder(s)
@@ -397,7 +406,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
     # F-010（2026-08-26）：解读与建议段（与 HTML/Excel 同源：structured_summary）
     if bundle.structured_summary:
         _ss = bundle.structured_summary
-        doc.add_heading("六、解读与建议", level=1)
+        _h(doc, "解读与建议")
         _ss_src = getattr(bundle, "structured_summary_source", "rule")
         doc.add_paragraph(
             "来源：AI 归因（LLM 解读）" if _ss_src == "llm"
@@ -467,7 +476,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
             run.bold = True
             doc.add_paragraph(f"    代表短语：{'、'.join(_t.get('phrases') or [])}")
 
-    doc.add_heading(f"七、{findings_section_title(bundle.insight_mode)}", level=1)
+    _h(doc, findings_section_title(bundle.insight_mode))
     if bundle.findings:
         for f in bundle.findings:
             p = doc.add_paragraph()
@@ -509,7 +518,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
             p = doc.add_paragraph(line)
             p.paragraph_format.first_line_indent = Pt(24)
 
-    doc.add_heading("八、概览", level=1)
+    _h(doc, "概览")
     if bundle.conclusion_text:
         p = doc.add_paragraph(f"一句话总结：{bundle.conclusion_text}")
         p.paragraph_format.first_line_indent = Pt(24)
@@ -518,7 +527,7 @@ def build_word(bundle: ReportBundle) -> BytesIO:
         p.paragraph_format.first_line_indent = Pt(24)
 
     if bundle.warnings:
-        doc.add_heading("九、注意事项", level=1)
+        _h(doc, "注意事项")
         for w in bundle.warnings:
             doc.add_paragraph(f"- {w}")
 
