@@ -82,17 +82,32 @@ def _ensure_inside(path: Path, root: Path) -> Path:
     return resolved
 
 
-def _dir_age_days(path: Path) -> float:
-    """目录年龄：优先按名字时间戳（yyyyMMdd_HHmmss），无法解析回退 mtime。"""
-    m = REPORT_NAME_RE.match(path.name)
-    if m:
+def _dir_age_days(path: Path, now: datetime | None = None) -> float:
+    """目录年龄：取「目录名时间戳」与「文件系统 mtime」两者的**较小值**（向安全侧）。
+
+    为什么取较小值：清理是不可逆操作。目录名可能因系统时钟回拨（虚拟机快照回滚、
+    主板电池失效、手动改时间）而看起来"很老"，只信名字会误删刚写出的报告；
+    而 mtime 因整目录复制/迁移变新时，后果只是"少清理"，不会误删。
+    （2026-10-02 前只信目录名、解析失败才回退 mtime。）
+
+    now 可注入：测试传固定时刻，避免用例依赖真实挂钟（时间腐化）与运行时漂移。
+    默认 None → datetime.now()。
+    """
+    now = now or datetime.now()
+    ages: list[float] = []
+    if REPORT_NAME_RE.match(path.name):
         try:
             ts = datetime.strptime(path.name, "%Y%m%d_%H%M%S")
-            return max(0.0, (datetime.now() - ts).total_seconds() / 86400.0)
+            ages.append((now - ts).total_seconds() / 86400.0)
         except ValueError:
             pass
-    return max(0.0, (time.time() - path.stat().st_mtime) / 86400.0)
-
+    try:
+        ages.append((now.timestamp() - path.stat().st_mtime) / 86400.0)
+    except OSError:
+        pass
+    if not ages:
+        return 0.0
+    return max(0.0, min(ages))
 
 def _dir_size(path: Path) -> int:
     if path.is_file():
@@ -270,6 +285,7 @@ def archive_old_reports(
     keep: int = KEEP_RECENT,
     min_age_days: int = ARCHIVE_MIN_AGE_DAYS,
     dry_run: bool = True,
+    now: datetime | None = None,
 ) -> dict:
     """归档条件（双条件 + 终态 + 报告形态）：
     不在最近 keep 个 **且** 超过 min_age_days 天 **且** 目录名/result.json 合规
@@ -285,7 +301,7 @@ def archive_old_reports(
         reason = ""
         if d.name in keep_names:
             reason = "在最近保留范围内"
-        elif _dir_age_days(d) < min_age_days:
+        elif _dir_age_days(d, now=now) < min_age_days:
             reason = f"未满 {min_age_days} 天"
         else:
             task = jobs.find_task_by_output_dir(str(d))
@@ -342,6 +358,7 @@ def purge_archived(
     older_than_days: int = PURGE_AFTER_DAYS,
     use_recycle: bool = True,
     dry_run: bool = True,
+    now: datetime | None = None,
 ) -> dict:
     """删除超过保留期的归档目录（显式触发）；任务摘要保留并标记 purged。
     删除前重读任务状态，仍非终态则跳过。"""
@@ -349,7 +366,7 @@ def purge_archived(
     for d in sorted(_list_children(ARCHIVE_DIR)):
         if not _is_report_dir(d):
             continue
-        if _dir_age_days(d) < older_than_days:
+        if _dir_age_days(d, now=now) < older_than_days:
             skipped.append({"dir": d.name, "reason": "未达保留期"})
             continue
         task = jobs.find_tasks_by_output_tail(d.name)
